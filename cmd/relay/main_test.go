@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestPprofAddrIsLoopback(t *testing.T) {
 	cases := []struct {
@@ -28,5 +32,17 @@ func TestPprofAddrIsLoopback(t *testing.T) {
 				t.Errorf("pprofAddrIsLoopback(%q) returned ok=false but no reason", c.addr)
 			}
 		})
+	}
+}
+
+func TestRelayHandlerHealthDoesNotRequireVirtualHost(t *testing.T) {
+	handler := relayHandler(http.NotFoundHandler())
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/health", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want %d", response.Code, http.StatusOK)
 	}
 }

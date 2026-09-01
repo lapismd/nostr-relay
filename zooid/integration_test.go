@@ -153,6 +153,7 @@ func setupRelayWithConfig(ctx context.Context, t *testing.T, cfg relayConfig) *r
 		Networks:     []string{net.Name},
 		Env: map[string]string{
 			"DATABASE_URL":                      databaseURL,
+			"GROUP_REWRITE_DEBOUNCE_MS":         "0",
 			"RELAY_HOST":                        "localhost",
 			"RELAY_SECRET":                      relaySecret.Hex(),
 			"RELAY_PUBKEY":                      adminPubkey.Hex(),

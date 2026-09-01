@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/url"
+	"strings"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
@@ -17,14 +18,30 @@ type BlossomStore struct {
 	Events eventstore.Store
 }
 
+func allowBlobRead(config *Config, isMember bool) bool {
+	return config.Policy.Open || isMember
+}
+
+func allowBlobWrite(config *Config, isMember bool) bool {
+	return config.Policy.Open || isMember
+}
+
+func blossomPublicURL(config *Config) string {
+	if configured := strings.TrimRight(config.Blossom.PublicURL, "/"); configured != "" {
+		return configured
+	}
+	return "https://" + config.Host
+}
+
 func (bl *BlossomStore) Enable(instance *Instance) {
 	dir := Env("MEDIA")
 	fs := afero.NewOsFs()
-	backend := blossom.New(instance.Relay, "https://"+bl.Config.Host)
+	publicURL := blossomPublicURL(bl.Config)
+	backend := blossom.New(instance.Relay, publicURL)
 
 	backend.Store = blossom.EventStoreBlobIndexWrapper{
 		Store:      bl.Events,
-		ServiceURL: "https://" + bl.Config.Host,
+		ServiceURL: publicURL,
 	}
 
 	backend.StoreBlob = func(ctx context.Context, sha256 string, ext string, body []byte) error {
@@ -57,7 +74,7 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 			return true, "file too large", 413
 		}
 
-		if auth == nil || !instance.Management.IsMember(auth.PubKey) {
+		if auth == nil || !allowBlobWrite(instance.Config, instance.Management.IsMember(auth.PubKey)) {
 			return true, "unauthorized", 403
 		}
 
@@ -65,7 +82,8 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 	}
 
 	backend.RejectGet = func(ctx context.Context, auth *nostr.Event, sha256 string, ext string) (bool, string, int) {
-		if auth == nil || !instance.Management.IsMember(auth.PubKey) {
+		isMember := auth != nil && instance.Management.IsMember(auth.PubKey)
+		if !allowBlobRead(instance.Config, isMember) {
 			return true, "unauthorized", 403
 		}
 
@@ -73,7 +91,7 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 	}
 
 	backend.RejectList = func(ctx context.Context, auth *nostr.Event, pubkey nostr.PubKey) (bool, string, int) {
-		if auth == nil || !instance.Management.IsMember(auth.PubKey) {
+		if auth == nil || !allowBlobWrite(instance.Config, instance.Management.IsMember(auth.PubKey)) {
 			return true, "unauthorized", 403
 		}
 
@@ -81,7 +99,7 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 	}
 
 	backend.RejectDelete = func(ctx context.Context, auth *nostr.Event, sha256 string, ext string) (bool, string, int) {
-		if auth == nil || !instance.Management.IsMember(auth.PubKey) {
+		if auth == nil || !allowBlobWrite(instance.Config, instance.Management.IsMember(auth.PubKey)) {
 			return true, "unauthorized", 403
 		}
 

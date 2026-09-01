@@ -1,14 +1,56 @@
 services:
+  relay:
+    image: lapis-relay:local
+    build: .
+    environment:
+      DATABASE_URL: postgres://lapis_relay:dev@postgres:5432/lapis_relay?sslmode=disable
+      RELAY_HOST: ${LAPIS_RELAY_HOST:-registry.localhost:8281}
+      RELAY_SCHEMA: lapis_registry
+      RELAY_SECRET: ${LAPIS_RELAY_SECRET:?set an ephemeral local relay secret}
+      RELAY_PUBKEY: ${LAPIS_RELAY_OWNER_PUBKEY:?set the matching local relay owner pubkey}
+      ADMIN_PUBKEYS: ${LAPIS_RELAY_ADMIN_PUBKEYS:?set a TOML-formatted local admin pubkey list}
+      POLICY_OPEN: "true"
+      POLICY_PUBLIC_JOIN: "true"
+      GROUPS_AUTO_JOIN: "true"
+      GROUPS_ADMIN_CREATE_ONLY: "true"
+      GROUPS_PRIVATE_ADMIN_ONLY: "true"
+      GROUPS_PRIVATE_RELAY_ADMIN_ACCESS: "false"
+      BLOSSOM_ENABLED: "true"
+    ports:
+      - "${LAPIS_RELAY_PORT:-8281}:3334"
+    volumes:
+      - relay-config:/app/config
+      - relay-media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://127.0.0.1:3334/health",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: zooid
-      POSTGRES_USER: zooid
+      POSTGRES_DB: lapis_relay
+      POSTGRES_USER: lapis_relay
       POSTGRES_PASSWORD: dev
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lapis_relay -d lapis_relay"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   pgdata:
+  relay-config:
+  relay-media:

@@ -1,4 +1,29 @@
-# Zooid (Unicity Fork)
+# Lapis Relay
+
+Lapis Relay is the Lapis-maintained NIP-29 relay image. It is based on the
+[Unicity Relay](https://github.com/unicitynetwork/unicity-relay) fork of
+[Zooid](https://github.com/coracle-social/zooid) and retains the complete
+upstream history and MIT license. See [UPSTREAM.md](UPSTREAM.md) for the pinned
+import and update procedure.
+
+The first Lapis slice deliberately keeps the upstream protocol implementation
+intact. Lapis defaults restrict group creation to configured relay admins while
+ordinary authenticated users can use existing public groups.
+
+## Lapis container
+
+Build the local image:
+
+```sh
+docker build --tag lapis-relay:local .
+```
+
+The image runs `/bin/lapis-relay`. `docker compose up --build` starts the relay
+and PostgreSQL after the required relay secret, owner pubkey, and TOML-formatted
+admin pubkey list are provided through the environment. Never commit those
+values.
+
+## Upstream description
 
 This is a fork of [Zooid](https://github.com/coracle-social/zooid), a multi-tenant relay based on [Khatru](https://gitworkshop.dev/fiatjaf.com/nostrlib/tree/master/khatru) which implements a range of access controls. This fork is customized for use with [Unicity Sphere](https://github.com/unicitylabs/sphere) for NIP-29 group chat functionality.
 

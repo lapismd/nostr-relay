@@ -9,7 +9,7 @@ RUN go mod download
 COPY zooid zooid
 COPY cmd cmd
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o bin/zooid cmd/relay/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o bin/lapis-relay cmd/relay/main.go
 
 FROM alpine:3.20
 
@@ -17,7 +17,7 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY --from=build /app/bin/zooid /bin/zooid
+COPY --from=build /app/bin/lapis-relay /bin/lapis-relay
 COPY templates /templates
 COPY static /static
 COPY docker-entrypoint.sh /docker-entrypoint.sh

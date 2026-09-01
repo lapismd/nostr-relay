@@ -453,6 +453,45 @@ func TestEventStore_ReplaceEvent(t *testing.T) {
 	}
 }
 
+func TestEventStore_ReplaceEvent_DistinctAddresses(t *testing.T) {
+	store := createTestEventStore()
+	store.Init()
+
+	secret := nostr.Generate()
+	for index, d := range []string{"first", "second"} {
+		event := nostr.Event{
+			Kind:      nostr.Kind(45003),
+			CreatedAt: nostr.Timestamp(1_000_000 + index),
+			Content:   d,
+			Tags:      nostr.Tags{{"d", d}, {"h", "forum"}},
+		}
+		event.Sign(secret)
+		if err := store.ReplaceEvent(event); err != nil {
+			t.Fatalf("ReplaceEvent(%q) error = %v", d, err)
+		}
+	}
+
+	filter := nostr.Filter{
+		Kinds:   []nostr.Kind{nostr.Kind(45003)},
+		Authors: []nostr.PubKey{secret.Public()},
+	}
+	var events []nostr.Event
+	for event := range store.QueryEvents(filter, 0) {
+		events = append(events, event)
+	}
+	if len(events) != 2 {
+		counts := make(map[string]int, 2)
+		for _, d := range []string{"first", "second"} {
+			addressFilter := filter
+			addressFilter.Tags = nostr.TagMap{"d": []string{d}}
+			for range store.QueryEvents(addressFilter, 0) {
+				counts[d]++
+			}
+		}
+		t.Fatalf("distinct addressable events = %d, want 2 (address counts: %v)", len(events), counts)
+	}
+}
+
 func TestEventStore_ReplaceEvent_OlderEvent(t *testing.T) {
 	store := createTestEventStore()
 	store.Init()

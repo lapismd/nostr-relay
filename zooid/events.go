@@ -578,6 +578,14 @@ func (events *EventStore) saveEventWith(ctx context.Context, runner squirrel.Bas
 }
 
 func (events *EventStore) ReplaceEvent(evt nostr.Event) error {
+	// Khatru routes every non-regular, non-ephemeral kind through its
+	// ReplaceEvent hook. Nostr only defines replacement semantics for kinds
+	// 0/3, 10000-19999 and 30000-39999; application kinds outside those
+	// ranges (for example Buzz forum kinds 45001-45003) must remain distinct.
+	if !evt.Kind.IsReplaceable() && !evt.Kind.IsAddressable() {
+		return events.StoreEvent(evt)
+	}
+
 	// Use a serializable transaction so the read-decide-write-delete cycle is
 	// atomic. Without this, two concurrent goroutines could both read "no
 	// existing event", both insert, and leave duplicate replaceable events.

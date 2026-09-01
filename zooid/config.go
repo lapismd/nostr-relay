@@ -56,7 +56,8 @@ type Config struct {
 	} `toml:"management"`
 
 	Blossom struct {
-		Enabled bool `toml:"enabled"`
+		Enabled   bool   `toml:"enabled"`
+		PublicURL string `toml:"public_url"`
 	} `toml:"blossom"`
 
 	Roles map[string]Role `toml:"roles"`

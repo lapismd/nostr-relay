@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-# Zooid NIP-29 Relay Entrypoint
+# Lapis NIP-29 Relay Entrypoint
 # Generates config from environment variables if not present
 
 CONFIG_DIR="${CONFIG:-/app/config}"
@@ -9,15 +9,20 @@ MEDIA_DIR="${MEDIA:-/app/media}"
 
 # Default values
 RELAY_HOST="${RELAY_HOST:-localhost}"
-RELAY_SCHEMA="${RELAY_SCHEMA:-sphere_relay}"
+RELAY_SCHEMA="${RELAY_SCHEMA:-lapis_relay}"
 RELAY_SECRET="${RELAY_SECRET:-}"
-RELAY_NAME="${RELAY_NAME:-Sphere Relay}"
-RELAY_DESCRIPTION="${RELAY_DESCRIPTION:-NIP-29 Group Chat Relay for Unicity Sphere}"
+RELAY_NAME="${RELAY_NAME:-Lapis Relay}"
+RELAY_DESCRIPTION="${RELAY_DESCRIPTION:-NIP-29 community relay for the Lapis registry}"
 RELAY_PUBKEY="${RELAY_PUBKEY:-}"
 ADMIN_PUBKEYS="${ADMIN_PUBKEYS:-}"
+POLICY_OPEN="${POLICY_OPEN:-true}"
+POLICY_PUBLIC_JOIN="${POLICY_PUBLIC_JOIN:-true}"
+GROUPS_AUTO_JOIN="${GROUPS_AUTO_JOIN:-true}"
 GROUPS_ADMIN_CREATE_ONLY="${GROUPS_ADMIN_CREATE_ONLY:-true}"
 GROUPS_PRIVATE_ADMIN_ONLY="${GROUPS_PRIVATE_ADMIN_ONLY:-true}"
 GROUPS_PRIVATE_RELAY_ADMIN_ACCESS="${GROUPS_PRIVATE_RELAY_ADMIN_ACCESS:-false}"
+BLOSSOM_ENABLED="${BLOSSOM_ENABLED:-true}"
+BLOSSOM_PUBLIC_URL="${BLOSSOM_PUBLIC_URL:-https://$RELAY_HOST}"
 
 # Create directories
 mkdir -p "$CONFIG_DIR" "$MEDIA_DIR"
@@ -57,16 +62,20 @@ EOF
     cat >> "$CONFIG_FILE" << EOF
 
 [policy]
-open = true
-public_join = true
+open = $POLICY_OPEN
+public_join = $POLICY_PUBLIC_JOIN
 strip_signatures = false
 
 [groups]
 enabled = true
-auto_join = true
+auto_join = $GROUPS_AUTO_JOIN
 admin_create_only = $GROUPS_ADMIN_CREATE_ONLY
 private_admin_only = $GROUPS_PRIVATE_ADMIN_ONLY
 private_relay_admin_access = $GROUPS_PRIVATE_RELAY_ADMIN_ACCESS
+
+[blossom]
+enabled = $BLOSSOM_ENABLED
+public_url = "$BLOSSOM_PUBLIC_URL"
 EOF
 
     # Add admin role if pubkeys provided
@@ -92,5 +101,5 @@ else
 fi
 
 echo ""
-echo "Starting Zooid relay..."
-exec /bin/zooid "$@"
+echo "Starting Lapis relay..."
+exec /bin/lapis-relay "$@"

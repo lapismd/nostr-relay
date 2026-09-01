@@ -44,6 +44,26 @@ func pprofAddrIsLoopback(addr string) (bool, string) {
 	return true, ""
 }
 
+func relayHandler(metricsHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/metrics" {
+			metricsHandler.ServeHTTP(w, r)
+			return
+		}
+
+		instance, exists := zooid.Dispatch(r.Host)
+		if exists {
+			instance.Relay.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "Not Found", http.StatusNotFound)
+	})
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
@@ -61,22 +81,8 @@ func main() {
 	port := zooid.Env("PORT")
 	metricsHandler := promhttp.Handler()
 	srv := &http.Server{
-		Addr: fmt.Sprintf(":%s", port),
-		Handler: http.HandlerFunc(
-			func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/metrics" {
-					metricsHandler.ServeHTTP(w, r)
-					return
-				}
-
-				instance, exists := zooid.Dispatch(r.Host)
-				if exists {
-					instance.Relay.ServeHTTP(w, r)
-				} else {
-					http.Error(w, "Not Found", http.StatusNotFound)
-				}
-			},
-		),
+		Addr:    fmt.Sprintf(":%s", port),
+		Handler: relayHandler(metricsHandler),
 	}
 
 	go func() {
