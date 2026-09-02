@@ -234,6 +234,34 @@ func newNostrClient(ctx context.Context, t *testing.T, uri string, secret nostr.
 	return client
 }
 
+func newAnonymousNostrClient(ctx context.Context, t *testing.T, uri string, secret nostr.SecretKey) *nostrClient {
+	opts := &websocket.DialOptions{Host: "localhost"}
+	conn, _, err := websocket.Dial(ctx, uri, opts)
+	if err != nil {
+		t.Fatalf("Failed to connect to relay: %v", err)
+	}
+
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, challenge, err := conn.Read(readCtx)
+	if err != nil {
+		conn.Close(websocket.StatusNormalClosure, "")
+		t.Fatalf("Failed to read AUTH challenge: %v", err)
+	}
+	var envelope []json.RawMessage
+	if err := json.Unmarshal(challenge, &envelope); err != nil || len(envelope) < 2 {
+		conn.Close(websocket.StatusNormalClosure, "")
+		t.Fatalf("Invalid AUTH challenge: %s", string(challenge))
+	}
+	var messageType string
+	if err := json.Unmarshal(envelope[0], &messageType); err != nil || messageType != "AUTH" {
+		conn.Close(websocket.StatusNormalClosure, "")
+		t.Fatalf("Expected AUTH challenge, got: %s", string(challenge))
+	}
+
+	return &nostrClient{conn: conn, secret: secret}
+}
+
 func (c *nostrClient) authenticate(ctx context.Context, t *testing.T) {
 	// Read the AUTH challenge from relay
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -311,36 +339,42 @@ func (c *nostrClient) sendEvent(ctx context.Context, t *testing.T, event *nostr.
 		t.Fatalf("Failed to send event: %v", err)
 	}
 
-	// Read response
-	_, respData, err := c.conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("Failed to read response: %v", err)
-	}
-
-	var resp []json.RawMessage
-	json.Unmarshal(respData, &resp)
-
-	if len(resp) < 3 {
-		t.Fatalf("Invalid response: %s", string(respData))
-	}
-
-	var msgType string
-	json.Unmarshal(resp[0], &msgType)
-
-	if msgType == "OK" {
-		var success bool
-		json.Unmarshal(resp[2], &success)
-		if !success {
-			var reason string
-			if len(resp) > 3 {
-				json.Unmarshal(resp[3], &reason)
-			}
-			return "rejected:" + reason
+	for {
+		_, respData, err := c.conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("Failed to read response: %v", err)
 		}
-		return "ok"
-	}
 
-	return string(respData)
+		var resp []json.RawMessage
+		json.Unmarshal(respData, &resp)
+		if len(resp) < 1 {
+			t.Fatalf("Invalid response: %s", string(respData))
+		}
+
+		var msgType string
+		json.Unmarshal(resp[0], &msgType)
+		if msgType == "AUTH" {
+			continue
+		}
+		if len(resp) < 3 {
+			t.Fatalf("Invalid response: %s", string(respData))
+		}
+
+		if msgType == "OK" {
+			var success bool
+			json.Unmarshal(resp[2], &success)
+			if !success {
+				var reason string
+				if len(resp) > 3 {
+					json.Unmarshal(resp[3], &reason)
+				}
+				return "rejected:" + reason
+			}
+			return "ok"
+		}
+
+		return string(respData)
+	}
 }
 
 func (c *nostrClient) subscribe(ctx context.Context, t *testing.T, subID string, filter map[string]interface{}) []nostr.Event {
@@ -2861,4 +2895,69 @@ func TestIntegration_WriteRestrictedGroup_MembersListIncludesRoles(t *testing.T)
 	}
 
 	t.Logf("Members list correctly includes roles")
+}
+
+func TestAnonymousReadOnlyPublicGroups(t *testing.T) {
+	ctx := context.Background()
+	relay := setupRelay(ctx, t, false)
+	defer relay.Cleanup(ctx)
+
+	admin := newNostrClient(ctx, t, relay.URI, relaySecret)
+	defer admin.close()
+
+	for _, group := range []struct {
+		id      string
+		content string
+	}{
+		{id: "anonymous-public", content: `{"name":"Public"}`},
+		{id: "anonymous-private", content: `{"name":"Private","private":true}`},
+	} {
+		result := admin.sendEvent(ctx, t, &nostr.Event{
+			Kind:      nostr.Kind(KindCreateGroup),
+			CreatedAt: nostr.Now(),
+			Tags:      nostr.Tags{{"h", group.id}},
+			Content:   group.content,
+		})
+		if result != "ok" {
+			t.Fatalf("Failed to create %s: %s", group.id, result)
+		}
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	publicMessage := &nostr.Event{
+		Kind:      nostr.Kind(KindGroupChatMessage),
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"h", "anonymous-public"}},
+		Content:   "public message",
+	}
+	privateMessage := &nostr.Event{
+		Kind:      nostr.Kind(KindGroupChatMessage),
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"h", "anonymous-private"}},
+		Content:   "private message",
+	}
+	for _, event := range []*nostr.Event{publicMessage, privateMessage} {
+		if result := admin.sendEvent(ctx, t, event); result != "ok" {
+			t.Fatalf("Failed to publish group message: %s", result)
+		}
+	}
+
+	reader := newAnonymousNostrClient(ctx, t, relay.URI, nostr.Generate())
+	defer reader.close()
+	events := reader.subscribe(ctx, t, "anonymous-public-read", map[string]interface{}{
+		"kinds": []int{KindGroupChatMessage},
+	})
+	if len(events) != 1 || events[0].ID != publicMessage.ID {
+		t.Fatalf("anonymous reader received %d events, want only the public message", len(events))
+	}
+
+	result := reader.sendEvent(ctx, t, &nostr.Event{
+		Kind:      nostr.Kind(KindGroupChatMessage),
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"h", "anonymous-public"}},
+		Content:   "unauthenticated write",
+	})
+	if !strings.Contains(result, "auth-required") {
+		t.Fatalf("anonymous write was not rejected: %s", result)
+	}
 }

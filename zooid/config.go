@@ -33,7 +33,8 @@ type Config struct {
 	} `toml:"info"`
 
 	Policy struct {
-		Open            bool `toml:"open"` // Allow all authenticated users (no membership required)
+		Open            bool `toml:"open"`           // Allow all authenticated users (no membership required)
+		AnonymousRead   bool `toml:"anonymous_read"` // Allow read-only access to public community data without NIP-42
 		PublicJoin      bool `toml:"public_join"`
 		StripSignatures bool `toml:"strip_signatures"`
 	} `toml:"policy"`
@@ -70,8 +71,8 @@ type Config struct {
 func LoadConfig(filename string) (*Config, error) {
 	path := filepath.Join(Env("CONFIG"), filename)
 
-	var config Config
-	if _, err := toml.DecodeFile(path, &config); err != nil {
+	config, err := decodeConfigFile(path)
+	if err != nil {
 		return nil, fmt.Errorf("Failed to parse config file %s: %w", path, err)
 	}
 
@@ -101,6 +102,13 @@ func LoadConfig(filename string) (*Config, error) {
 	config.secret = secret
 
 	return &config, nil
+}
+
+func decodeConfigFile(path string) (Config, error) {
+	var config Config
+	config.Policy.AnonymousRead = true
+	_, err := toml.DecodeFile(path, &config)
+	return config, err
 }
 
 func (config *Config) Save() error {

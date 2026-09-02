@@ -8,7 +8,8 @@ import and update procedure.
 
 The first Lapis slice deliberately keeps the upstream protocol implementation
 intact. Lapis defaults restrict group creation to configured relay admins while
-ordinary authenticated users can use existing public groups.
+anonymous readers can browse public groups and authenticated users can use
+them.
 
 ## Lapis container
 
@@ -43,6 +44,12 @@ if g.Config.Policy.Open && !HasTag(meta.Tags, "private") {
 ```
 
 This enables the "browse and join" workflow where users can discover public groups, view their messages, and then join if interested.
+
+Lapis also defaults `anonymous_read = true`. Unauthenticated clients may read
+public, non-hidden group content plus public profile and emoji metadata. Private
+groups, hidden groups, direct messages, invites, and application-specific state
+remain filtered. Publishing and every state-changing action still require
+NIP-42 authentication.
 
 ### Group Creation and Privacy Controls
 
@@ -120,6 +127,8 @@ Contains information for populating the relay's `nip11` document.
 
 Contains policy and access related configuration.
 
+- `open` - whether authenticated users can use public groups without relay membership. Defaults to `false` for upstream config files; the Lapis container defaults it to `true`.
+- `anonymous_read` - whether unauthenticated clients can read public, non-hidden group content and public profile/emoji metadata. Defaults to `true`; set it to `false` to require NIP-42 for reads.
 - `public_join` - whether to allow non-members to join the relay without an invite code. Defaults to `false`.
 - `strip_signatures` - whether to remove signatures when serving events to non-admins. This requires clients/users to trust the relay to properly authenticate signatures. Be cautious about using this; a malicious relay will be able to execute all kinds of attacks, including potentially serving events unrelated to a community use case.
 
@@ -192,6 +201,8 @@ pubkey = "<hex public key>"
 description = "A community relay for my friends"
 
 [policy]
+open = true
+anonymous_read = true
 public_join = true
 strip_signatures = false
 
@@ -427,6 +438,7 @@ When running in AWS ECS, these environment variables configure the relay:
 | `RELAY_NAME` | Display name |
 | `RELAY_DESCRIPTION` | Description |
 | `ADMIN_PUBKEYS` | Admin pubkeys (quoted, comma-separated) |
+| `POLICY_ANONYMOUS_READ` | Allow unauthenticated read-only access to public community data (default: `true`) |
 | `GROUPS_ADMIN_CREATE_ONLY` | Only admins can create groups (default: `true`) |
 | `GROUPS_PRIVATE_ADMIN_ONLY` | Only admins can create private groups (default: `true`) |
 | `GROUPS_PRIVATE_RELAY_ADMIN_ACCESS` | Relay admins can see/moderate private groups (default: `false`) |

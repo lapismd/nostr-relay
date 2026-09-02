@@ -290,7 +290,15 @@ func (instance *Instance) OnConnect(ctx context.Context) {
 }
 
 func (instance *Instance) PreventBroadcast(ws *khatru.WebSocket, filter nostr.Filter, event nostr.Event) bool {
-	return instance.IsWriteOnlyEvent(event) || isLargeListEvent(event)
+	if instance.IsWriteOnlyEvent(event) || isLargeListEvent(event) {
+		return true
+	}
+
+	pubkey, authenticated := khatru.GetAuthed(ws.Context)
+	if !authenticated {
+		return !instance.Config.Policy.AnonymousRead || !instance.CanAnonymousRead(event)
+	}
+	return instance.Groups.IsGroupEvent(event) && !instance.Groups.CanRead(pubkey, event)
 }
 
 func (instance *Instance) StoreEvent(ctx context.Context, event nostr.Event) error {
@@ -311,6 +319,9 @@ func (instance *Instance) OnRequest(ctx context.Context, filter nostr.Filter) (r
 	pubkey, ok := khatru.GetAuthed(ctx)
 
 	if !ok {
+		if instance.Config.Policy.AnonymousRead {
+			return false, ""
+		}
 		return true, "auth-required: authentication is required for access"
 	}
 
@@ -331,7 +342,7 @@ func (instance *Instance) QueryStored(ctx context.Context, filter nostr.Filter) 
 				}
 			}
 		} else {
-			pubkey, _ := khatru.GetAuthed(ctx)
+			pubkey, authenticated := khatru.GetAuthed(ctx)
 			generated := make([]nostr.Event, 0)
 
 			if slices.Contains(filter.Kinds, RELAY_INVITE) && instance.Config.CanInvite(pubkey) {
@@ -361,6 +372,16 @@ func (instance *Instance) QueryStored(ctx context.Context, filter nostr.Filter) 
 					continue
 				}
 
+				if !authenticated {
+					if !instance.Config.Policy.AnonymousRead || !instance.CanAnonymousRead(event) {
+						continue
+					}
+					if !yield(instance.StripSignature(ctx, event)) {
+						return
+					}
+					continue
+				}
+
 				if instance.Groups.IsGroupEvent(event) {
 					if !instance.Groups.CanRead(pubkey, event) {
 						continue
@@ -373,6 +394,28 @@ func (instance *Instance) QueryStored(ctx context.Context, filter nostr.Filter) 
 			}
 		}
 	}
+}
+
+// CanAnonymousRead limits unauthenticated clients to public community data.
+// It intentionally does not use a zero pubkey with membership checks: a zero
+// key can match an absent creator cache entry and incorrectly grant access.
+func (instance *Instance) CanAnonymousRead(event nostr.Event) bool {
+	if !instance.Config.Policy.Open || !instance.Config.Policy.AnonymousRead {
+		return false
+	}
+	if event.Kind == nostr.KindProfileMetadata || event.Kind == nostr.KindEmojiList || event.Kind == nostr.KindEmojiSets {
+		return true
+	}
+	if !instance.Groups.IsGroupEvent(event) {
+		return false
+	}
+
+	h := GetGroupIDFromEvent(event)
+	if h == "" || h == "_" {
+		return false
+	}
+	metadata, found := instance.Groups.GetMetadata(h)
+	return found && !HasTag(metadata.Tags, "private") && !HasTag(metadata.Tags, "hidden")
 }
 
 // Event publishing

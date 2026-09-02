@@ -1,10 +1,42 @@
 package zooid
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"fiatjaf.com/nostr"
 )
+
+func TestLoadConfig_AnonymousReadDefaultsOnAndCanBeDisabled(t *testing.T) {
+	configDir := t.TempDir()
+
+	for _, test := range []struct {
+		name     string
+		policy   string
+		expected bool
+	}{
+		{name: "default", policy: "", expected: true},
+		{name: "disabled", policy: "anonymous_read = false\n", expected: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			filename := test.name + ".toml"
+			path := filepath.Join(configDir, filename)
+			contents := "[policy]\n" + test.policy
+			if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			config, err := decodeConfigFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.Policy.AnonymousRead != test.expected {
+				t.Fatalf("AnonymousRead = %v, want %v", config.Policy.AnonymousRead, test.expected)
+			}
+		})
+	}
+}
 
 func TestConfig_IsOwner(t *testing.T) {
 	ownerPubkey := nostr.MustPubKeyFromHex("1234567890123456789012345678901234567890123456789012345678901234")

@@ -72,6 +72,101 @@ func createTestInstance() *Instance {
 	return instance
 }
 
+func createAnonymousReadTestInstance() *Instance {
+	config := &Config{}
+	config.Policy.Open = true
+	config.Policy.AnonymousRead = true
+	config.Groups.Enabled = true
+
+	groups := &GroupStore{Config: config, cachesWarmed: true}
+	groups.metadataCache.Store("public", &groupMetaCache{
+		event: nostr.Event{
+			Kind: nostr.KindSimpleGroupMetadata,
+			Tags: nostr.Tags{{"d", "public"}},
+		},
+		found: true,
+	})
+	groups.metadataCache.Store("private", &groupMetaCache{
+		event: nostr.Event{
+			Kind: nostr.KindSimpleGroupMetadata,
+			Tags: nostr.Tags{{"d", "private"}, {"private"}},
+		},
+		found:   true,
+		private: true,
+	})
+	groups.metadataCache.Store("hidden", &groupMetaCache{
+		event: nostr.Event{
+			Kind: nostr.KindSimpleGroupMetadata,
+			Tags: nostr.Tags{{"d", "hidden"}, {"hidden"}},
+		},
+		found:  true,
+		hidden: true,
+	})
+	return &Instance{Config: config, Groups: groups}
+}
+
+func TestInstance_AnonymousReadPolicy(t *testing.T) {
+	instance := createAnonymousReadTestInstance()
+
+	if reject, msg := instance.OnRequest(context.Background(), nostr.Filter{}); reject || msg != "" {
+		t.Fatalf("anonymous request rejected: %s", msg)
+	}
+
+	instance.Config.Policy.AnonymousRead = false
+	if reject, msg := instance.OnRequest(context.Background(), nostr.Filter{}); !reject || msg != "auth-required: authentication is required for access" {
+		t.Fatalf("anonymous request without policy = (%v, %q)", reject, msg)
+	}
+
+	if reject, msg := instance.OnEvent(context.Background(), nostr.Event{}); !reject || msg != "auth-required: authentication is required for access" {
+		t.Fatalf("anonymous write = (%v, %q)", reject, msg)
+	}
+}
+
+func TestInstance_CanAnonymousReadOnlyPublicCommunityData(t *testing.T) {
+	instance := createAnonymousReadTestInstance()
+	tests := []struct {
+		name  string
+		event nostr.Event
+		want  bool
+	}{
+		{name: "public group message", event: nostr.Event{Kind: nostr.KindSimpleGroupChatMessage, Tags: nostr.Tags{{"h", "public"}}}, want: true},
+		{name: "private group message", event: nostr.Event{Kind: nostr.KindSimpleGroupChatMessage, Tags: nostr.Tags{{"h", "private"}}}, want: false},
+		{name: "hidden group message", event: nostr.Event{Kind: nostr.KindSimpleGroupChatMessage, Tags: nostr.Tags{{"h", "hidden"}}}, want: false},
+		{name: "profile", event: nostr.Event{Kind: nostr.KindProfileMetadata}, want: true},
+		{name: "emoji set", event: nostr.Event{Kind: nostr.KindEmojiSets}, want: true},
+		{name: "application state", event: nostr.Event{Kind: nostr.KindApplicationSpecificData}, want: false},
+		{name: "gift wrap", event: nostr.Event{Kind: nostr.KindGiftWrap}, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := instance.CanAnonymousRead(test.event); got != test.want {
+				t.Fatalf("CanAnonymousRead() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInstance_PreventBroadcastFiltersAnonymousSubscribers(t *testing.T) {
+	instance := createAnonymousReadTestInstance()
+	ws := &khatru.WebSocket{Context: context.Background()}
+
+	public := nostr.Event{Kind: nostr.KindSimpleGroupChatMessage, Tags: nostr.Tags{{"h", "public"}}}
+	if instance.PreventBroadcast(ws, nostr.Filter{}, public) {
+		t.Fatal("public group message should reach anonymous subscribers")
+	}
+
+	private := nostr.Event{Kind: nostr.KindSimpleGroupChatMessage, Tags: nostr.Tags{{"h", "private"}}}
+	if !instance.PreventBroadcast(ws, nostr.Filter{}, private) {
+		t.Fatal("private group message should not reach anonymous subscribers")
+	}
+
+	state := nostr.Event{Kind: nostr.KindApplicationSpecificData}
+	if !instance.PreventBroadcast(ws, nostr.Filter{}, state) {
+		t.Fatal("application state should not reach anonymous subscribers")
+	}
+}
+
 func TestInstance_AllowRecipientEvent(t *testing.T) {
 	instance := createTestInstance()
 

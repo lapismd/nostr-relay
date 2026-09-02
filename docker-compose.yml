@@ -10,6 +10,7 @@ services:
       RELAY_PUBKEY: ${LAPIS_RELAY_OWNER_PUBKEY:?set the matching local relay owner pubkey}
       ADMIN_PUBKEYS: ${LAPIS_RELAY_ADMIN_PUBKEYS:?set a TOML-formatted local admin pubkey list}
       POLICY_OPEN: "true"
+      POLICY_ANONYMOUS_READ: "true"
       POLICY_PUBLIC_JOIN: "true"
       GROUPS_AUTO_JOIN: "true"
       GROUPS_ADMIN_CREATE_ONLY: "true"
