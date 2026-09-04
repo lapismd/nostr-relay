@@ -1287,8 +1287,10 @@ func (g *GroupStore) CheckWrite(event nostr.Event) string {
 		return "restricted: you are not a member of that group"
 	}
 
-	// Write-restricted check: only users with "writer" role, admins, or creator can post
-	if HasTag(meta.Tags, "write-restricted") && !g.CanWrite(h, event.PubKey) {
+	// Write restriction applies to authored content, not NIP-25 reactions. Closed
+	// groups still require membership above, while public announcement groups let
+	// authenticated readers react without granting them permission to post.
+	if event.Kind != nostr.KindReaction && HasTag(meta.Tags, "write-restricted") && !g.CanWrite(h, event.PubKey) {
 		return "restricted: this group only allows designated writers to post"
 	}
 

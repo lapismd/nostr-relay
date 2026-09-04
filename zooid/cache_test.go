@@ -818,6 +818,37 @@ func TestCanWrite_WriteRestricted_Creator(t *testing.T) {
 	}
 }
 
+func TestCheckWrite_WriteRestricted_ReactionAllowedForNonWriter(t *testing.T) {
+	groups, _ := createTestGroupStore()
+	groups.Config.Info.Pubkey = nostr.Generate().Public().Hex()
+	groups.WarmCaches()
+
+	groups.UpdateMetadata(nostr.Event{
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"h", "announcements"}},
+		Content:   `{"name":"Announcements","write-restricted":true}`,
+	})
+	nonWriter := nostr.Generate().Public()
+	reaction := nostr.Event{
+		Kind:      nostr.KindReaction,
+		CreatedAt: nostr.Now(),
+		PubKey:    nonWriter,
+		Tags:      nostr.Tags{{"h", "announcements"}, {"e", "target"}},
+		Content:   "+",
+	}
+
+	if result := groups.CheckWrite(reaction); result != "" {
+		t.Errorf("CheckWrite should allow a non-writer reaction, got: %s", result)
+	}
+
+	message := reaction
+	message.Kind = nostr.KindSimpleGroupChatMessage
+	message.Content = "This should still require a writer"
+	if result := groups.CheckWrite(message); result != "restricted: this group only allows designated writers to post" {
+		t.Errorf("CheckWrite should still reject non-writer posts, got: %s", result)
+	}
+}
+
 func TestCheckWrite_WriteRestrictedCreation_AdminAllowed(t *testing.T) {
 	groups, _ := createTestGroupStore()
 	admin := nostr.Generate().Public()

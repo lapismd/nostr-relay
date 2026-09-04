@@ -91,7 +91,7 @@ Added configurable group creation policies and private group access control:
 
 ### Per-Group Write Permissions (Write-Restricted Groups)
 
-Added support for write-restricted groups (announcement channels). A group with the `write-restricted` metadata flag only allows designated writers, admins, and the group creator to post. Regular members can read but not write.
+Added support for write-restricted groups (announcement channels). A group with the `write-restricted` metadata flag only allows designated writers, admins, and the group creator to post. Regular authenticated readers can read and publish NIP-25 reactions; they cannot publish messages, topics, or replies. Closed groups still require membership before reacting.
 
 - Uses NIP-29 roles on put-user events (kind 9000) — the `writer` role designates who can post
 - Only relay admins can create or set `write-restricted` on groups
@@ -172,7 +172,7 @@ Configures NIP 29 support.
 - `private_admin_only` - only relay admins can create private groups. Defaults to `true`.
 - `private_relay_admin_access` - relay admins can see and moderate private groups. When `false`, only the group creator can moderate their private group. Defaults to `false`.
 
-Groups also support a `write-restricted` metadata flag (set in the group creation content JSON). When set, only members with the `writer` role, relay admins, and the group creator can post. The `writer` role is assigned via kind 9000 (put-user) events with `["p", "<pubkey>", "writer"]` tags. Only relay admins can create write-restricted groups or add the flag to existing groups.
+Groups also support a `write-restricted` metadata flag (set in the group creation content JSON). When set, only members with the `writer` role, relay admins, and the group creator can post messages, topics, or replies. Authenticated readers may still publish NIP-25 kind 7 reactions; closed groups continue to require membership. The `writer` role is assigned via kind 9000 (put-user) events with `["p", "<pubkey>", "writer"]` tags. Only relay admins can create write-restricted groups or add the flag to existing groups.
 
 #### `[groups.retention]`
 
