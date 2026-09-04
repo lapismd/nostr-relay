@@ -6,6 +6,7 @@ COPY go.mod go.sum ./
 
 RUN go mod download
 
+COPY internal internal
 COPY zooid zooid
 COPY cmd cmd
 
@@ -18,8 +19,8 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 
 COPY --from=build /app/bin/lapis-relay /bin/lapis-relay
-COPY templates /templates
-COPY static /static
+COPY templates /app/templates
+COPY static /app/static
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 
 RUN chmod +x /docker-entrypoint.sh && \

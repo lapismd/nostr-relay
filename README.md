@@ -11,6 +11,31 @@ intact. Lapis defaults restrict group creation to configured relay admins while
 anonymous readers can browse public groups and authenticated users can use
 them.
 
+## Buzz client compatibility
+
+The Lapis image supports the core HTTP bridge used by Buzz desktop and mobile
+clients alongside the standard Nostr WebSocket transport:
+
+- `POST /query` queries one or more Nostr filters.
+- `POST /events` submits a signed event through the normal relay policy and
+  storage pipeline.
+- `POST /count` counts unique events matching one or more filters.
+- `GET /info` returns the same NIP-11 document as `GET /` with an
+  `Accept: application/nostr+json` header.
+- `GET|HEAD /media/{sha256_ext}` is an alias for the existing Blossom blob
+  route. Uploads use the standard `PUT /upload` endpoint; the legacy Buzz
+  spelling `PUT /media/upload` is an internal alias for the same handler.
+
+The three POST routes require a fresh NIP-98 event whose `u`, `method`, and
+`payload` tags match the request. Auth events are accepted within a 60-second
+window and may be used only once per running relay process. Query results and
+event writes go through the same membership and NIP-29 authorization hooks as
+WebSocket traffic.
+
+The adapter lives in `internal/buzzcompat`; `zooid/buzz_compat.go` is its only
+integration point with the upstream-derived relay. Keep Buzz-specific behavior
+behind that boundary when updating the fork.
+
 ## Lapis container
 
 Build the local image:
