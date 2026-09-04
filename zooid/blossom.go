@@ -82,7 +82,12 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 	}
 
 	backend.RejectGet = func(ctx context.Context, auth *nostr.Event, sha256 string, ext string) (bool, string, int) {
-		isMember := auth != nil && instance.Management.IsMember(auth.PubKey)
+		pubkey, authenticated := authenticatedPubkey(ctx)
+		if auth != nil {
+			pubkey = auth.PubKey
+			authenticated = true
+		}
+		isMember := authenticated && instance.Management.IsMember(pubkey)
 		if !allowBlobRead(instance.Config, isMember) {
 			return true, "unauthorized", 403
 		}

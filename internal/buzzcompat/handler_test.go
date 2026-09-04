@@ -11,6 +11,9 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,6 +212,116 @@ func TestInfoAndMediaAliasDelegate(t *testing.T) {
 	}
 }
 
+func TestBlossomUploadNormalizesBuzzAuthorization(t *testing.T) {
+	secret := nostr.Generate()
+	hash := strings.Repeat("a", 64)
+	event, raw, authorization := blossomAuthorization(t, secret, "upload", nostr.Tags{{"x", hash}})
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != "/upload" {
+			t.Errorf("delegated path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Nostr "+base64.StdEncoding.EncodeToString(raw) {
+			t.Errorf("authorization was not normalized: %q", got)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(r.Header.Get("Authorization"), "Nostr "))
+		if err != nil {
+			t.Errorf("normalized token is not standard Base64: %v", err)
+		}
+		var got nostr.Event
+		if err := json.Unmarshal(decoded, &got); err != nil || got.ID != event.ID {
+			t.Errorf("normalized event mismatch: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := New(Backend{})
+	server := httptest.NewServer(handler.Wrap(next))
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPut, server.URL+"/upload", bytes.NewReader([]byte("image")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", authorization)
+	request.Header.Set("X-SHA-256", hash)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || !called {
+		t.Fatalf("status=%s called=%v", response.Status, called)
+	}
+}
+
+func TestBlossomReadAcceptsBuzzAuthorityScope(t *testing.T) {
+	secret := nostr.Generate()
+	hash := strings.Repeat("b", 64)
+	var authorization string
+	called := false
+	handler := New(Backend{
+		WithAuthenticatedPubkey: func(ctx context.Context, pubkey nostr.PubKey) context.Context {
+			return context.WithValue(ctx, testPubkeyKey{}, pubkey)
+		},
+	})
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != "/"+hash+".png" || r.Header.Get("Authorization") != "" {
+			t.Errorf("delegated path/header = %q/%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		if pubkey, ok := r.Context().Value(testPubkeyKey{}).(nostr.PubKey); !ok || pubkey != secret.Public() {
+			t.Error("Buzz Blossom signer was not propagated")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(handler.Wrap(next))
+	defer server.Close()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, authorization = blossomAuthorization(t, secret, "get", nostr.Tags{{"server", serverURL.Host}})
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/media/"+hash+".png", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", authorization)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || !called {
+		t.Fatalf("status=%s called=%v", response.Status, called)
+	}
+}
+
+func TestBlossomReadRejectsWrongServerScope(t *testing.T) {
+	secret := nostr.Generate()
+	hash := strings.Repeat("c", 64)
+	_, _, authorization := blossomAuthorization(t, secret, "get", nostr.Tags{{"server", "other.example"}})
+	called := false
+	handler := New(Backend{WithAuthenticatedPubkey: func(ctx context.Context, _ nostr.PubKey) context.Context { return ctx }})
+	server := httptest.NewServer(handler.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })))
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/"+hash+".png", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", authorization)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || called {
+		t.Fatalf("status=%s called=%v", response.Status, called)
+	}
+}
+
 func authenticatedRequest(t *testing.T, secret nostr.SecretKey, method, target string, body []byte, now time.Time) *http.Request {
 	t.Helper()
 	payload := sha256.Sum256(body)
@@ -245,4 +358,25 @@ func signedEvent(t *testing.T, secret nostr.SecretKey, kind nostr.Kind, content 
 		t.Fatal(err)
 	}
 	return event
+}
+
+func blossomAuthorization(t *testing.T, secret nostr.SecretKey, operation string, extraTags nostr.Tags) (nostr.Event, []byte, string) {
+	t.Helper()
+	event := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      nostr.KindBlobs,
+		Content:   operation + " buzz-media",
+		Tags: append(nostr.Tags{
+			{"t", operation},
+			{"expiration", strconv.FormatInt(time.Now().Add(5*time.Minute).Unix(), 10)},
+		}, extraTags...),
+	}
+	if err := event.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event, raw, "Nostr " + base64.RawURLEncoding.EncodeToString(raw)
 }

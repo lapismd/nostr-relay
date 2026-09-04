@@ -32,6 +32,11 @@ window and may be used only once per running relay process. Query results and
 event writes go through the same membership and NIP-29 authorization hooks as
 WebSocket traffic.
 
+Buzz's Blossom tokens use unpadded Base64URL and authority-scoped BUD-11
+`server` tags. The compatibility adapter verifies those tokens and passes their
+authenticated identity into the existing Blossom read/write policy; upstream
+Khatru remains unmodified.
+
 The adapter lives in `internal/buzzcompat`; `zooid/buzz_compat.go` is its only
 integration point with the upstream-derived relay. Keep Buzz-specific behavior
 behind that boundary when updating the fork.

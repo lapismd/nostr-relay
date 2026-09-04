@@ -16,6 +16,7 @@ import (
 	"iter"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,13 +80,16 @@ func (h *Handler) Wrap(next http.Handler) *http.ServeMux {
 	mux.HandleFunc("/events", h.handleEvents)
 	mux.HandleFunc("/count", h.handleCount)
 	mux.HandleFunc("/info", h.handleInfo)
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		h.serveBlossomUpload(next, w, r, "/upload")
+	})
 	mux.HandleFunc("/media/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/media/upload" {
 			if r.Method != http.MethodPut {
 				methodNotAllowed(w, http.MethodPut)
 				return
 			}
-			serveRewrittenPath(next, w, r, "/upload")
+			h.serveBlossomUpload(next, w, r, "/upload")
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -97,10 +101,67 @@ func (h *Handler) Wrap(next http.Handler) *http.ServeMux {
 			http.NotFound(w, r)
 			return
 		}
-		serveRewrittenPath(next, w, r, "/"+name)
+		h.serveBlossomRead(next, w, r, "/"+name)
 	})
-	mux.Handle("/", next)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && blobHash(r.URL.Path) != "" {
+			h.serveBlossomRead(next, w, r, r.URL.Path)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 	return mux
+}
+
+func (h *Handler) serveBlossomUpload(next http.Handler, w http.ResponseWriter, r *http.Request, path string) {
+	if r.Method != http.MethodPut && !(path == "/upload" && r.Method == http.MethodHead) {
+		methodNotAllowed(w, http.MethodPut, http.MethodHead)
+		return
+	}
+	clone := cloneWithPath(r, path)
+	if clone.Header.Get("Authorization") != "" {
+		event, raw, err := parseBlossomAuth(clone, "upload")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if requestHash := clone.Header.Get("X-SHA-256"); requestHash != "" {
+			if claimedHash, ok := tagValue(event.Tags, "x"); !ok || !strings.EqualFold(claimedHash, requestHash) {
+				writeError(w, http.StatusForbidden, "Blossom upload hash does not match request")
+				return
+			}
+		}
+		// Khatru's Blossom decoder only accepts padded standard Base64. Buzz
+		// deliberately emits unpadded Base64URL, so canonicalize the verified
+		// event without changing its signed JSON bytes.
+		clone.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(raw))
+	}
+	next.ServeHTTP(w, clone)
+}
+
+func (h *Handler) serveBlossomRead(next http.Handler, w http.ResponseWriter, r *http.Request, path string) {
+	clone := cloneWithPath(r, path)
+	if clone.Header.Get("Authorization") == "" {
+		next.ServeHTTP(w, clone)
+		return
+	}
+	event, _, err := parseBlossomAuth(clone, "get")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	hash := blobHash(path)
+	claimedHash, hasHash := tagValue(event.Tags, "x")
+	server, hasServer := tagValue(event.Tags, "server")
+	if !(hasHash && strings.EqualFold(claimedHash, hash)) && !(hasServer && serverMatchesRequest(server, clone)) {
+		writeError(w, http.StatusForbidden, "Blossom read authorization is not scoped to this blob or server")
+		return
+	}
+	clone = clone.WithContext(h.backend.WithAuthenticatedPubkey(clone.Context(), event.PubKey))
+	// The token has already been fully validated. Removing it avoids Khatru's
+	// incompatible full-URL comparison for Buzz's BUD-11 authority tag.
+	clone.Header.Del("Authorization")
+	next.ServeHTTP(w, clone)
 }
 
 func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
@@ -239,21 +300,9 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, body []by
 }
 
 func parseNIP98(r *http.Request, body []byte, now time.Time) (nostr.Event, error) {
-	var event nostr.Event
-	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
-	if len(authorization) < 7 || !strings.EqualFold(authorization[:6], "Nostr ") {
-		return event, errors.New("missing NIP-98 authorization")
-	}
-	encoded := strings.TrimSpace(authorization[6:])
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	event, _, err := decodeAuthorization(r.Header.Get("Authorization"))
 	if err != nil {
-		decoded, err = base64.RawStdEncoding.DecodeString(encoded)
-	}
-	if err != nil {
-		return event, errors.New("invalid base64 auth event")
-	}
-	if err := json.Unmarshal(decoded, &event); err != nil {
-		return event, errors.New("invalid auth event JSON")
+		return event, fmt.Errorf("invalid NIP-98 authorization: %w", err)
 	}
 	if event.Kind != nostr.KindHTTPAuth || event.Content != "" || !event.CheckID() || !event.VerifySignature() {
 		return event, errors.New("invalid NIP-98 auth event")
@@ -277,6 +326,58 @@ func parseNIP98(r *http.Request, body []byte, now time.Time) (nostr.Event, error
 		return event, errors.New("auth event payload does not match request")
 	}
 	return event, nil
+}
+
+func parseBlossomAuth(r *http.Request, operation string) (nostr.Event, []byte, error) {
+	event, raw, err := decodeAuthorization(r.Header.Get("Authorization"))
+	if err != nil {
+		return event, nil, fmt.Errorf("invalid Blossom authorization: %w", err)
+	}
+	if event.Kind != nostr.KindBlobs || !event.CheckID() || !event.VerifySignature() {
+		return event, nil, errors.New("invalid Blossom authorization event")
+	}
+	expirationValue, ok := tagValue(event.Tags, "expiration")
+	if !ok {
+		return event, nil, errors.New("Blossom authorization is missing expiration")
+	}
+	expiration, err := strconv.ParseInt(expirationValue, 10, 64)
+	if err != nil || nostr.Timestamp(expiration) < nostr.Now() {
+		return event, nil, errors.New("Blossom authorization has expired")
+	}
+	if action, ok := tagValue(event.Tags, "t"); !ok || action != operation {
+		return event, nil, fmt.Errorf("Blossom authorization does not permit %s", operation)
+	}
+	return event, raw, nil
+}
+
+func decodeAuthorization(authorization string) (nostr.Event, []byte, error) {
+	var event nostr.Event
+	authorization = strings.TrimSpace(authorization)
+	if len(authorization) < 7 || !strings.EqualFold(authorization[:6], "Nostr ") {
+		return event, nil, errors.New("missing Nostr authorization")
+	}
+	encoded := strings.TrimSpace(authorization[6:])
+	encodings := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	}
+	var decoded []byte
+	var err error
+	for _, encoding := range encodings {
+		decoded, err = encoding.DecodeString(encoded)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return event, nil, errors.New("invalid base64 auth event")
+	}
+	if err := json.Unmarshal(decoded, &event); err != nil {
+		return event, nil, errors.New("invalid auth event JSON")
+	}
+	return event, decoded, nil
 }
 
 func requestURL(r *http.Request) string {
@@ -303,12 +404,37 @@ func normalizeURL(raw string) string {
 	return parsed.String()
 }
 
-func serveRewrittenPath(next http.Handler, w http.ResponseWriter, r *http.Request, path string) {
+func cloneWithPath(r *http.Request, path string) *http.Request {
 	clone := r.Clone(r.Context())
 	clonedURL := *r.URL
 	clonedURL.Path = path
 	clone.URL = &clonedURL
-	next.ServeHTTP(w, clone)
+	return clone
+}
+
+func blobHash(path string) string {
+	name := strings.TrimPrefix(path, "/")
+	if strings.Contains(name, "/") {
+		return ""
+	}
+	if dot := strings.IndexByte(name, '.'); dot >= 0 {
+		name = name[:dot]
+	}
+	if len(name) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(name); err != nil {
+		return ""
+	}
+	return strings.ToLower(name)
+}
+
+func serverMatchesRequest(server string, r *http.Request) bool {
+	server = strings.TrimSpace(strings.TrimRight(server, "/"))
+	if parsed, err := url.Parse(server); err == nil && parsed.Host != "" {
+		server = parsed.Host
+	}
+	return strings.EqualFold(server, r.Host)
 }
 
 func tagValue(tags nostr.Tags, name string) (string, bool) {
