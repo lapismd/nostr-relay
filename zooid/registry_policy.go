@@ -73,13 +73,25 @@ func (p *RegistryPolicy) CheckWrite(event nostr.Event) (handled bool, reason str
 	if p == nil || !p.Config.Registry.Enabled || exactTag(event.Tags, "h") != p.Config.Registry.ReleaseGroupID {
 		return false, ""
 	}
-	if event.Kind == nostr.KindReaction {
+	if event.Kind == nostr.KindReaction && isRegistryDecisionEnvelope(event) {
 		return p.checkDecision(event)
 	}
 	if event.Kind == nostr.KindSimpleGroupChatMessage && hasExactTopic(event.Tags, registryHeadTopic) {
 		return p.checkHead(event)
 	}
 	return false, ""
+}
+
+func isRegistryDecisionEnvelope(event nostr.Event) bool {
+	if len(event.Tags) != 2 || slices.ContainsFunc(event.Tags, func(tag nostr.Tag) bool { return len(tag) != 2 }) || exactTag(event.Tags, "e") == "" {
+		return false
+	}
+	switch strings.TrimSpace(event.Content) {
+	case "✅", "❌", "🚫", "withdrawn":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *RegistryPolicy) checkDecision(event nostr.Event) (bool, string) {

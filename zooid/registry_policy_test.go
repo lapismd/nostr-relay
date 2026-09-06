@@ -58,6 +58,24 @@ func TestRegistryPolicyRequiresCuratorRoleAndPublisherOwnership(t *testing.T) {
 	}
 }
 
+func TestRegistryPolicyLeavesOrdinaryReleaseReactionsToNIP25Policy(t *testing.T) {
+	policy, curator, _, release := registryPolicyFixture(t)
+	reaction := nostr.Event{
+		PubKey:  curator,
+		Kind:    nostr.KindReaction,
+		Content: "✅",
+		Tags: nostr.Tags{
+			{"h", "plugin-releases"},
+			{"e", release.ID.Hex()},
+			{"p", release.PubKey.Hex()},
+			{"k", "9"},
+		},
+	}
+	if handled, reason := policy.CheckWrite(reaction); handled || reason != "" {
+		t.Fatalf("ordinary NIP-25 reaction should use the generic policy: handled=%v reason=%q", handled, reason)
+	}
+}
+
 func TestRegistryPolicyHeadCompareAndSwap(t *testing.T) {
 	policy, curator, _, release := registryPolicyFixture(t)
 	createdAt := time.Unix(1_800_000_000, 0).UTC()
