@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/khatru"
+	"zooid/internal/khatru"
 	"fiatjaf.com/nostr/nip86"
 )
 

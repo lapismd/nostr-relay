@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/khatru"
+	"zooid/internal/khatru"
 )
 
 func createTestManagementStore() *ManagementStore {
@@ -14,7 +14,7 @@ func createTestManagementStore() *ManagementStore {
 		secret: nostr.Generate(),
 	}
 	schema := &Schema{Name: "test_" + RandomString(8)}
-	relay := &khatru.Relay{}
+	relay := khatru.NewRelay()
 	events := &EventStore{
 		Relay:   relay,
 		Config:  config,

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/khatru"
+	"zooid/internal/khatru"
 )
 
 // Helper to create a GroupStore with a shared ManagementStore for cache tests
@@ -16,7 +16,7 @@ func createTestGroupStore() (*GroupStore, *ManagementStore) {
 	}
 	config.Groups.Enabled = true
 	schema := &Schema{Name: "test_" + RandomString(8)}
-	relay := &khatru.Relay{}
+	relay := khatru.NewRelay()
 	events := &EventStore{
 		Relay:   relay,
 		Config:  config,

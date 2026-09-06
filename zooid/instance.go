@@ -12,9 +12,9 @@ import (
 	"unsafe"
 
 	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/khatru"
 	"github.com/fasthttp/websocket"
 	"github.com/gosimple/slug"
+	"zooid/internal/khatru"
 )
 
 type Instance struct {
@@ -310,7 +310,8 @@ func (instance *Instance) StoreEvent(ctx context.Context, event nostr.Event) err
 }
 
 func (instance *Instance) ReplaceEvent(ctx context.Context, event nostr.Event) error {
-	return instance.Events.ReplaceEvent(event)
+	_, err := instance.Events.ReplaceEvent(event)
+	return err
 }
 
 func (instance *Instance) DeleteEvent(ctx context.Context, id nostr.ID) error {

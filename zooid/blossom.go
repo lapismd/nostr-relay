@@ -9,7 +9,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
-	"fiatjaf.com/nostr/khatru/blossom"
+	"zooid/internal/khatru/blossom"
 	"github.com/spf13/afero"
 )
 

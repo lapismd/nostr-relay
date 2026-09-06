@@ -418,7 +418,7 @@ func TestEventStore_ReplaceEvent(t *testing.T) {
 	}
 	event1.Sign(secret)
 
-	err := store.ReplaceEvent(event1)
+	_, err := store.ReplaceEvent(event1)
 	if err != nil {
 		t.Errorf("ReplaceEvent() error = %v", err)
 	}
@@ -432,7 +432,7 @@ func TestEventStore_ReplaceEvent(t *testing.T) {
 	}
 	event2.Sign(secret)
 
-	err = store.ReplaceEvent(event2)
+	_, err = store.ReplaceEvent(event2)
 	if err != nil {
 		t.Errorf("ReplaceEvent() error = %v", err)
 	}
@@ -466,7 +466,7 @@ func TestEventStore_ReplaceEvent_DistinctAddresses(t *testing.T) {
 			Tags:      nostr.Tags{{"d", d}, {"h", "forum"}},
 		}
 		event.Sign(secret)
-		if err := store.ReplaceEvent(event); err != nil {
+		if _, err := store.ReplaceEvent(event); err != nil {
 			t.Fatalf("ReplaceEvent(%q) error = %v", d, err)
 		}
 	}
@@ -507,7 +507,7 @@ func TestEventStore_ReplaceEvent_OlderEvent(t *testing.T) {
 	}
 	event1.Sign(secret)
 
-	store.ReplaceEvent(event1)
+	_, _ = store.ReplaceEvent(event1)
 
 	// Try to replace with older event - should be ignored
 	event2 := nostr.Event{
@@ -518,7 +518,7 @@ func TestEventStore_ReplaceEvent_OlderEvent(t *testing.T) {
 	}
 	event2.Sign(secret)
 
-	err := store.ReplaceEvent(event2)
+	_, err := store.ReplaceEvent(event2)
 	if err != nil {
 		t.Errorf("ReplaceEvent() with older event error = %v", err)
 	}
@@ -557,7 +557,7 @@ func TestEventStore_ReplaceEvent_SerializationRetry(t *testing.T) {
 		Tags:      nostr.Tags{{"d", "conflict-test"}},
 	}
 	event1.Sign(secret)
-	if err := store.ReplaceEvent(event1); err != nil {
+	if _, err := store.ReplaceEvent(event1); err != nil {
 		t.Fatalf("seed ReplaceEvent: %v", err)
 	}
 
@@ -596,7 +596,8 @@ func TestEventStore_ReplaceEvent_SerializationRetry(t *testing.T) {
 	}
 	event2.Sign(secret)
 	go func() {
-		done <- store.ReplaceEvent(event2)
+		_, err := store.ReplaceEvent(event2)
+		done <- err
 	}()
 
 	// Give the goroutine a moment to start its transaction, then commit ours
@@ -671,7 +672,8 @@ func TestEventStore_ReplaceEvent_PoolSaturation_Issue18(t *testing.T) {
 					Tags:      nostr.Tags{{"d", fmt.Sprintf("issue18-%d", idx)}},
 				}
 				evt.Sign(secret)
-				done <- callerResult{idx: idx, err: store.ReplaceEvent(evt)}
+				_, err := store.ReplaceEvent(evt)
+				done <- callerResult{idx: idx, err: err}
 			}(i)
 		}
 

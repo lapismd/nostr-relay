@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"fiatjaf.com/nostr"
-	"fiatjaf.com/nostr/khatru"
 	"zooid/internal/buzzcompat"
+	"zooid/internal/khatru"
 )
 
 type authenticatedPubkeyContextKey struct{}
@@ -25,7 +25,7 @@ func authenticatedPubkey(ctx context.Context) (nostr.PubKey, bool) {
 // enableBuzzCompatibility is the sole integration point between the
 // upstream-derived relay and Lapis's Buzz transport adapter.
 func enableBuzzCompatibility(instance *Instance) {
-	instance.Relay.Info.AddSupportedNIP(98)
+	instance.Relay.Info.AddSupportedNIP("98")
 	base := instance.Relay.Router()
 	handler := buzzcompat.New(buzzcompat.Backend{
 		WithAuthenticatedPubkey: withAuthenticatedPubkey,

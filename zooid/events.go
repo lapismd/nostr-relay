@@ -17,10 +17,10 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
-	"fiatjaf.com/nostr/khatru"
 	"github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/prometheus/client_golang/prometheus"
+	"zooid/internal/khatru"
 )
 
 // Global Squirrel builder with Dollar placeholder format for PostgreSQL
@@ -577,13 +577,13 @@ func (events *EventStore) saveEventWith(ctx context.Context, runner squirrel.Bas
 	return nil
 }
 
-func (events *EventStore) ReplaceEvent(evt nostr.Event) error {
+func (events *EventStore) ReplaceEvent(evt nostr.Event) ([]nostr.Event, error) {
 	// Khatru routes every non-regular, non-ephemeral kind through its
 	// ReplaceEvent hook. Nostr only defines replacement semantics for kinds
 	// 0/3, 10000-19999 and 30000-39999; application kinds outside those
 	// ranges (for example Buzz forum kinds 45001-45003) must remain distinct.
 	if !evt.Kind.IsReplaceable() && !evt.Kind.IsAddressable() {
-		return events.StoreEvent(evt)
+		return nil, events.StoreEvent(evt)
 	}
 
 	// Use a serializable transaction so the read-decide-write-delete cycle is
@@ -606,11 +606,12 @@ func (events *EventStore) ReplaceEvent(evt nostr.Event) error {
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("replace event budget exceeded after %d attempts: %w", attempt, ctxErr)
+			return nil, fmt.Errorf("replace event budget exceeded after %d attempts: %w", attempt, ctxErr)
 		}
-		err = events.replaceEventOnce(ctx, evt)
+		var deleted []nostr.Event
+		deleted, err = events.replaceEventOnce(ctx, evt)
 		if err == nil {
-			return nil
+			return deleted, nil
 		}
 		// If our budget elapsed during the attempt (BeginTx parked on the pool
 		// wait queue, or pgx aborted mid-tx because the context expired), the
@@ -619,7 +620,7 @@ func (events *EventStore) ReplaceEvent(evt nostr.Event) error {
 		// "budget exceeded" message we use for the proactive ctx.Err() check
 		// above and the retry-sleep ctx.Done branch — keeps log triage simple.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return fmt.Errorf("replace event budget exceeded after %d attempts: %w", attempt+1, err)
+			return nil, fmt.Errorf("replace event budget exceeded after %d attempts: %w", attempt+1, err)
 		}
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "40001" {
@@ -643,7 +644,7 @@ func (events *EventStore) ReplaceEvent(evt nostr.Event) error {
 				select {
 				case <-ctx.Done():
 					timer.Stop()
-					return fmt.Errorf("replace event budget exceeded after %d attempts: %w", attempt+1, ctx.Err())
+					return nil, fmt.Errorf("replace event budget exceeded after %d attempts: %w", attempt+1, ctx.Err())
 				case <-timer.C:
 				}
 				continue
@@ -652,17 +653,17 @@ func (events *EventStore) ReplaceEvent(evt nostr.Event) error {
 				evt.Kind, evt.Tags.GetD(), attempt+1, maxAttempts)
 			break
 		}
-		return err // non-retriable error
+		return nil, err // non-retriable error
 	}
-	return fmt.Errorf("serialization conflict after %d attempts: %w", maxAttempts, err)
+	return nil, fmt.Errorf("serialization conflict after %d attempts: %w", maxAttempts, err)
 }
 
-func (events *EventStore) replaceEventOnce(ctx context.Context, evt nostr.Event) error {
+func (events *EventStore) replaceEventOnce(ctx context.Context, evt nostr.Event) ([]nostr.Event, error) {
 	tx, err := GetDb().BeginTx(ctx, &sql.TxOptions{
 		Isolation: sql.LevelSerializable,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -673,9 +674,11 @@ func (events *EventStore) replaceEventOnce(ctx context.Context, evt nostr.Event)
 
 	shouldSave := true
 	shouldDelete := make([]nostr.ID, 0)
+	deleted := make([]nostr.Event, 0)
 	for previous := range events.queryEventsWith(ctx, tx, filter, 0) {
 		if previous.CreatedAt <= evt.CreatedAt {
 			shouldDelete = append(shouldDelete, previous.ID)
+			deleted = append(deleted, previous)
 		} else {
 			shouldSave = false
 		}
@@ -683,17 +686,20 @@ func (events *EventStore) replaceEventOnce(ctx context.Context, evt nostr.Event)
 
 	if shouldSave {
 		if err := events.saveEventWith(ctx, tx, evt); err != nil && err != eventstore.ErrDupEvent {
-			return fmt.Errorf("failed to save: %w", err)
+			return nil, fmt.Errorf("failed to save: %w", err)
 		}
 	}
 
 	for _, id := range shouldDelete {
 		if err := events.deleteEventWith(ctx, tx, id); err != nil {
-			return fmt.Errorf("failed to delete old event: %w", err)
+			return nil, fmt.Errorf("failed to delete old event: %w", err)
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return deleted, nil
 }
 
 func (events *EventStore) CountEvents(filter nostr.Filter) (uint32, error) {
@@ -723,7 +729,8 @@ func (events *EventStore) CountEvents(filter nostr.Filter) (uint32, error) {
 
 func (events *EventStore) StoreEvent(event nostr.Event) error {
 	if event.Kind.IsReplaceable() || event.Kind.IsAddressable() {
-		return events.ReplaceEvent(event)
+		_, err := events.ReplaceEvent(event)
+		return err
 	}
 
 	if err := events.SaveEvent(event); err != nil && err != eventstore.ErrDupEvent {
