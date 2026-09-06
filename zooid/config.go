@@ -61,6 +61,12 @@ type Config struct {
 		PublicURL string `toml:"public_url"`
 	} `toml:"blossom"`
 
+	Registry struct {
+		Enabled        bool   `toml:"enabled"`
+		ReleaseGroupID string `toml:"release_group_id"`
+		CuratorRole    string `toml:"curator_role"`
+	} `toml:"registry"`
+
 	Roles map[string]Role `toml:"roles"`
 
 	// Private/parsed values
@@ -87,6 +93,14 @@ func LoadConfig(filename string) (*Config, error) {
 	// Validate retention config early so operators get immediate feedback
 	if err := config.validateRetention(); err != nil {
 		return nil, fmt.Errorf("invalid retention config in %s: %w", path, err)
+	}
+	if config.Registry.Enabled {
+		if strings.TrimSpace(config.Registry.ReleaseGroupID) == "" {
+			return nil, fmt.Errorf("registry.release_group_id is required when registry policy is enabled")
+		}
+		if strings.TrimSpace(config.Registry.CuratorRole) == "" {
+			return nil, fmt.Errorf("registry.curator_role is required when registry policy is enabled")
+		}
 	}
 
 	secret, err := nostr.SecretKeyFromHex(config.Secret)

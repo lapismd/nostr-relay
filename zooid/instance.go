@@ -29,6 +29,7 @@ type Instance struct {
 	Blossom    *BlossomStore
 	Management *ManagementStore
 	Groups     *GroupStore
+	Registry   *RegistryPolicy
 }
 
 func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
@@ -85,6 +86,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		Management: management,
 		Groups:     groups,
 	}
+	instance.Registry = NewRegistryPolicy(config, groups, events)
 
 	// NIP 11 info
 
@@ -466,8 +468,14 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 	}
 
 	if instance.Groups.IsGroupEvent(event) {
-		if err := instance.Groups.CheckWrite(event); err != "" {
-			return true, err
+		handled, registryReason := instance.Registry.CheckWrite(event)
+		if registryReason != "" {
+			return true, registryReason
+		}
+		if !handled {
+			if err := instance.Groups.CheckWrite(event); err != "" {
+				return true, err
+			}
 		}
 	}
 
