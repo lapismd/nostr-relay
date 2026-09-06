@@ -1,0 +1,537 @@
+diff -ruN base/internal/khatru/count.go modified/internal/khatru/count.go
+--- base/internal/khatru/count.go	1970-01-01 01:00:00
++++ modified/internal/khatru/count.go	2026-09-06 10:33:44
+@@ -0,0 +1,207 @@
++package khatru
++
++import (
++	"context"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"strings"
++
++	"fiatjaf.com/nostr"
++	"fiatjaf.com/nostr/nip45"
++)
++
++// CountResult is the result of counting the union of one or more NIP-45
++// filters. HyperLogLog contains the 256 registers defined by NIP-45 when the
++// request is eligible for HLL aggregation.
++type CountResult struct {
++	Count       uint64
++	Approximate bool
++	HyperLogLog []byte
++}
++
++type countRequestEnvelope struct {
++	SubscriptionID string
++	Filters        []nostr.Filter
++}
++
++type countResponseEnvelope struct {
++	SubscriptionID string
++	Result         CountResult
++}
++
++type countResponsePayload struct {
++	Count       uint64 `json:"count"`
++	Approximate bool   `json:"approximate,omitempty"`
++	HyperLogLog string `json:"hll,omitempty"`
++}
++
++func (envelope countResponseEnvelope) MarshalJSON() ([]byte, error) {
++	payload := countResponsePayload{
++		Count:       envelope.Result.Count,
++		Approximate: envelope.Result.Approximate,
++	}
++	if len(envelope.Result.HyperLogLog) > 0 {
++		if len(envelope.Result.HyperLogLog) != 256 {
++			return nil, fmt.Errorf("invalid HLL register count %d", len(envelope.Result.HyperLogLog))
++		}
++		payload.HyperLogLog = hex.EncodeToString(envelope.Result.HyperLogLog)
++	}
++	return json.Marshal([]any{"COUNT", envelope.SubscriptionID, payload})
++}
++
++func envelopeLabel(message string) string {
++	firstQuote := strings.IndexByte(message, '"')
++	if firstQuote < 0 {
++		return ""
++	}
++	remainder := message[firstQuote+1:]
++	secondQuote := strings.IndexByte(remainder, '"')
++	if secondQuote < 0 {
++		return ""
++	}
++	return remainder[:secondQuote]
++}
++
++func parseCountRequest(message string) (countRequestEnvelope, error) {
++	var raw []json.RawMessage
++	if err := json.Unmarshal([]byte(message), &raw); err != nil {
++		return countRequestEnvelope{}, fmt.Errorf("invalid JSON: %w", err)
++	}
++	if len(raw) < 3 {
++		return countRequestEnvelope{}, errors.New("missing filters")
++	}
++
++	var label string
++	if err := json.Unmarshal(raw[0], &label); err != nil || label != "COUNT" {
++		return countRequestEnvelope{}, errors.New("invalid COUNT label")
++	}
++
++	var request countRequestEnvelope
++	if err := json.Unmarshal(raw[1], &request.SubscriptionID); err != nil {
++		return request, errors.New("subscription ID must be a string")
++	}
++	if request.SubscriptionID == "" || len(request.SubscriptionID) > 64 {
++		return request, errors.New("subscription ID must contain 1 to 64 characters")
++	}
++
++	request.Filters = make([]nostr.Filter, 0, len(raw)-2)
++	for index, filterJSON := range raw[2:] {
++		var responseShape struct {
++			Count *uint64 `json:"count"`
++		}
++		if err := json.Unmarshal(filterJSON, &responseShape); err == nil && responseShape.Count != nil {
++			return request, fmt.Errorf("filter %d is a COUNT response, not a filter", index)
++		}
++
++		var filter nostr.Filter
++		if err := json.Unmarshal(filterJSON, &filter); err != nil {
++			return request, fmt.Errorf("filter %d: %w", index, err)
++		}
++		request.Filters = append(request.Filters, filter)
++	}
++
++	return request, nil
++}
++
++func normalizeCountReason(message, fallback string) string {
++	message = strings.TrimSpace(message)
++	if message == "" {
++		message = "count request refused"
++	}
++	if prefix, _, found := strings.Cut(message, ": "); found {
++		switch prefix {
++		case "auth-required", "restricted", "invalid", "error":
++			return message
++		}
++	}
++	return fallback + ": " + message
++}
++
++func (rl *Relay) handleRawCountMessage(ctx context.Context, ws *WebSocket, message string) {
++	request, err := parseCountRequest(message)
++	if err != nil {
++		ws.WriteJSON(nostr.ClosedEnvelope{
++			SubscriptionID: request.SubscriptionID,
++			Reason:         normalizeCountReason(err.Error(), "invalid"),
++		})
++		return
++	}
++
++	if rl.CountMany == nil && rl.Count == nil && rl.CountHLL == nil {
++		ws.WriteJSON(nostr.ClosedEnvelope{
++			SubscriptionID: request.SubscriptionID,
++			Reason:         "error: this relay does not support NIP-45",
++		})
++		return
++	}
++
++	countCtx := context.WithValue(ctx, subscriptionIdKey, request.SubscriptionID)
++	if rl.OnCountMany != nil {
++		if reject, reason := rl.OnCountMany(countCtx, request.Filters); reject {
++			rl.closeCountRequest(ctx, ws, request.SubscriptionID, normalizeCountReason(reason, "restricted"))
++			return
++		}
++	} else if rl.OnCount != nil {
++		for _, filter := range request.Filters {
++			if reject, reason := rl.OnCount(countCtx, filter); reject {
++				rl.closeCountRequest(ctx, ws, request.SubscriptionID, normalizeCountReason(reason, "restricted"))
++				return
++			}
++		}
++	}
++
++	result, err := rl.executeCount(countCtx, request.Filters)
++	if err != nil {
++		rl.closeCountRequest(ctx, ws, request.SubscriptionID, normalizeCountReason(err.Error(), "error"))
++		return
++	}
++	if len(request.Filters) > 1 && len(result.HyperLogLog) > 0 {
++		firstOffset := nip45.HyperLogLogEventPubkeyOffsetForFilter(request.Filters[0])
++		for _, filter := range request.Filters[1:] {
++			if firstOffset < 0 || nip45.HyperLogLogEventPubkeyOffsetForFilter(filter) != firstOffset {
++				result.HyperLogLog = nil
++				break
++			}
++		}
++	}
++
++	if err := ws.WriteJSON(countResponseEnvelope{SubscriptionID: request.SubscriptionID, Result: result}); err != nil {
++		rl.Log.Printf("failed to write COUNT response: %v", err)
++	}
++}
++
++func (rl *Relay) closeCountRequest(ctx context.Context, ws *WebSocket, subscriptionID, reason string) {
++	if strings.HasPrefix(reason, "auth-required:") {
++		RequestAuth(ctx)
++	}
++	ws.WriteJSON(nostr.ClosedEnvelope{SubscriptionID: subscriptionID, Reason: reason})
++}
++
++func (rl *Relay) executeCount(ctx context.Context, filters []nostr.Filter) (CountResult, error) {
++	if rl.CountMany != nil {
++		return rl.CountMany(ctx, filters)
++	}
++	if len(filters) != 1 {
++		return CountResult{}, errors.New("multiple filters require CountMany support")
++	}
++
++	filter := filters[0]
++	if offset := nip45.HyperLogLogEventPubkeyOffsetForFilter(filter); offset >= 0 && rl.CountHLL != nil {
++		count, hll, err := rl.CountHLL(ctx, filter, offset)
++		if err != nil {
++			return CountResult{}, err
++		}
++		result := CountResult{Count: uint64(count)}
++		if hll != nil && hll.Count() > 0 {
++			result.HyperLogLog = hll.GetRegisters()
++		}
++		return result, nil
++	}
++	if rl.Count == nil {
++		return CountResult{}, errors.New("the configured count hook cannot serve this filter")
++	}
++	count, err := rl.Count(ctx, filter)
++	return CountResult{Count: uint64(count)}, err
++}
+diff -ruN base/internal/khatru/count_test.go modified/internal/khatru/count_test.go
+--- base/internal/khatru/count_test.go	1970-01-01 01:00:00
++++ modified/internal/khatru/count_test.go	2026-09-06 10:33:44
+@@ -0,0 +1,177 @@
++package khatru
++
++import (
++	"context"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"fiatjaf.com/nostr"
++	"fiatjaf.com/nostr/nip11"
++	"fiatjaf.com/nostr/nip45/hyperloglog"
++	"github.com/fasthttp/websocket"
++	"github.com/stretchr/testify/require"
++)
++
++func TestParseCountRequestPreservesEveryFilter(t *testing.T) {
++	request, err := parseCountRequest(`[
++		"COUNT", "count-1",
++		{"kinds":[1],"#p":["one"],"limit":10},
++		{"kinds":[7],"#e":["two"]}
++	]`)
++	require.NoError(t, err)
++	require.Equal(t, "count-1", request.SubscriptionID)
++	require.Len(t, request.Filters, 2)
++	require.Equal(t, []nostr.Kind{1}, request.Filters[0].Kinds)
++	require.Equal(t, []string{"one"}, request.Filters[0].Tags["p"])
++	require.Equal(t, 10, request.Filters[0].Limit)
++	require.Equal(t, []nostr.Kind{7}, request.Filters[1].Kinds)
++}
++
++func TestCountResponseSerialization(t *testing.T) {
++	approximate, err := json.Marshal(countResponseEnvelope{
++		SubscriptionID: "count-1",
++		Result:         CountResult{Count: 42, Approximate: true},
++	})
++	require.NoError(t, err)
++	require.JSONEq(t, `["COUNT","count-1",{"count":42,"approximate":true}]`, string(approximate))
++
++	exact, err := json.Marshal(countResponseEnvelope{
++		SubscriptionID: "count-2",
++		Result:         CountResult{Count: 7},
++	})
++	require.NoError(t, err)
++	require.JSONEq(t, `["COUNT","count-2",{"count":7}]`, string(exact))
++	require.NotContains(t, string(exact), "approximate")
++
++	registers := make([]byte, 256)
++	registers[3] = 5
++	hll, err := json.Marshal(countResponseEnvelope{
++		SubscriptionID: "count-3",
++		Result:         CountResult{Count: 1, HyperLogLog: registers},
++	})
++	require.NoError(t, err)
++	require.Contains(t, string(hll), hex.EncodeToString(registers))
++}
++
++func TestCountManyAndLegacyHooks(t *testing.T) {
++	relay := NewRelay()
++	relay.CountMany = func(_ context.Context, filters []nostr.Filter) (CountResult, error) {
++		require.Len(t, filters, 2)
++		return CountResult{Count: 9, Approximate: true}, nil
++	}
++	result, err := relay.executeCount(t.Context(), []nostr.Filter{{Kinds: []nostr.Kind{1}}, {Kinds: []nostr.Kind{7}}})
++	require.NoError(t, err)
++	require.Equal(t, CountResult{Count: 9, Approximate: true}, result)
++
++	relay.CountMany = nil
++	relay.Count = func(context.Context, nostr.Filter) (uint32, error) { return 3, nil }
++	result, err = relay.executeCount(t.Context(), []nostr.Filter{{Kinds: []nostr.Kind{1}}})
++	require.NoError(t, err)
++	require.Equal(t, uint64(3), result.Count)
++
++	_, err = relay.executeCount(t.Context(), []nostr.Filter{{}, {}})
++	require.ErrorContains(t, err, "CountMany")
++}
++
++func TestLegacyHyperLogLogIsPreserved(t *testing.T) {
++	target := strings.Repeat("a", 64)
++	filter := nostr.Filter{Kinds: []nostr.Kind{7}, Tags: nostr.TagMap{"e": {target}}}
++	relay := NewRelay()
++	relay.CountHLL = func(_ context.Context, got nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error) {
++		require.Equal(t, filter, got)
++		hll := hyperloglog.New(offset)
++		var pubkey nostr.PubKey
++		pubkey[0] = 1
++		hll.Add(pubkey)
++		return 1, hll, nil
++	}
++	result, err := relay.executeCount(t.Context(), []nostr.Filter{filter})
++	require.NoError(t, err)
++	require.Equal(t, uint64(1), result.Count)
++	require.Len(t, result.HyperLogLog, 256)
++}
++
++func TestNIP11AdvertisesCountMany(t *testing.T) {
++	relay := NewRelay()
++	relay.CountMany = func(context.Context, []nostr.Filter) (CountResult, error) { return CountResult{}, nil }
++	request := httptest.NewRequest(http.MethodGet, "http://relay.example", nil)
++	recorder := httptest.NewRecorder()
++	relay.HandleNIP11(recorder, request)
++
++	var info nip11.RelayInformationDocument
++	require.NoError(t, json.NewDecoder(recorder.Body).Decode(&info))
++	require.Contains(t, info.SupportedNIPs, any(45))
++}
++
++func TestCountFailuresUseClosedAndAuthChallenge(t *testing.T) {
++	relay := NewRelay()
++	relay.CountMany = func(context.Context, []nostr.Filter) (CountResult, error) {
++		return CountResult{}, errors.New("database unavailable")
++	}
++	assertCountClosed(t, relay, `["COUNT","failed",{}]`, "error: database unavailable", false)
++
++	relay.OnCountMany = func(context.Context, []nostr.Filter) (bool, string) {
++		return true, "auth-required: sign in to count"
++	}
++	assertCountClosed(t, relay, `["COUNT","private",{}]`, "auth-required: sign in to count", true)
++}
++
++func TestWebSocketCountManyPreservesFiltersAndApproximation(t *testing.T) {
++	relay := NewRelay()
++	relay.CountMany = func(_ context.Context, filters []nostr.Filter) (CountResult, error) {
++		require.Len(t, filters, 2)
++		require.Equal(t, []nostr.Kind{11}, filters[0].Kinds)
++		require.Equal(t, []nostr.Kind{1111}, filters[1].Kinds)
++		return CountResult{Count: 123_456, Approximate: true}, nil
++	}
++	server := httptest.NewServer(relay)
++	defer server.Close()
++	connection, _, err := websocket.DefaultDialer.Dial("ws"+server.URL[4:], nil)
++	require.NoError(t, err)
++	defer connection.Close()
++	require.NoError(t, connection.WriteMessage(websocket.TextMessage, []byte(
++		`["COUNT","multi",{"kinds":[11]},{"kinds":[1111]}]`,
++	)))
++	require.NoError(t, connection.SetReadDeadline(time.Now().Add(3*time.Second)))
++	_, response, err := connection.ReadMessage()
++	require.NoError(t, err)
++	require.JSONEq(t, `["COUNT","multi",{"count":123456,"approximate":true}]`, string(response))
++}
++
++func assertCountClosed(t *testing.T, relay *Relay, request, expectedReason string, expectAuth bool) {
++	t.Helper()
++	server := httptest.NewServer(relay)
++	defer server.Close()
++
++	connection, _, err := websocket.DefaultDialer.Dial("ws"+server.URL[4:], nil)
++	require.NoError(t, err)
++	defer connection.Close()
++	require.NoError(t, connection.WriteMessage(websocket.TextMessage, []byte(request)))
++	require.NoError(t, connection.SetReadDeadline(time.Now().Add(3*time.Second)))
++
++	sawAuth := false
++	for {
++		_, message, err := connection.ReadMessage()
++		require.NoError(t, err)
++		var envelope []json.RawMessage
++		require.NoError(t, json.Unmarshal(message, &envelope))
++		var label string
++		require.NoError(t, json.Unmarshal(envelope[0], &label))
++		if label == "AUTH" {
++			sawAuth = true
++			continue
++		}
++		require.Equal(t, "CLOSED", label)
++		var reason string
++		require.NoError(t, json.Unmarshal(envelope[2], &reason))
++		require.Equal(t, expectedReason, reason)
++		break
++	}
++	require.Equal(t, expectAuth, sawAuth)
++}
+diff -ruN base/internal/khatru/handlers.go modified/internal/khatru/handlers.go
+--- base/internal/khatru/handlers.go	2026-09-06 10:33:44
++++ modified/internal/khatru/handlers.go	2026-09-06 10:33:44
+@@ -15,8 +15,6 @@
+ 
+ 	"fiatjaf.com/nostr"
+ 	"fiatjaf.com/nostr/nip42"
+-	"fiatjaf.com/nostr/nip45"
+-	"fiatjaf.com/nostr/nip45/hyperloglog"
+ 	"fiatjaf.com/nostr/nip70"
+ 	"fiatjaf.com/nostr/nip77"
+ 	"fiatjaf.com/nostr/nip77/negentropy"
+@@ -168,6 +166,11 @@
+ 			message := unsafe.String(unsafe.SliceData(msgb), len(msgb))
+ 
+ 			go func(message string) {
++				if envelopeLabel(message) == "COUNT" {
++					rl.handleRawCountMessage(ctx, ws, message)
++					return
++				}
++
+ 				envelope, err := nostr.ParseMessage(message)
+ 				if err != nil {
+ 					if err == nostr.UnknownLabel && rl.Negentropy {
+@@ -271,31 +274,6 @@
+ 						}
+ 					}
+ 					ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: ok, Reason: reason})
+-				case *nostr.CountEnvelope:
+-					if rl.Count == nil && rl.CountHLL == nil {
+-						ws.WriteJSON(nostr.ClosedEnvelope{SubscriptionID: env.SubscriptionID, Reason: "unsupported: this relay does not support NIP-45"})
+-						return
+-					}
+-
+-					var total uint32
+-					var hll *hyperloglog.HyperLogLog
+-
+-					if offset := nip45.HyperLogLogEventPubkeyOffsetForFilter(env.Filter); offset != -1 {
+-						total, hll = rl.handleCountRequestWithHLL(ctx, ws, env.Filter, offset)
+-					} else {
+-						total = rl.handleCountRequest(ctx, ws, env.Filter)
+-					}
+-
+-					resp := nostr.CountEnvelope{
+-						SubscriptionID: env.SubscriptionID,
+-						Count:          &total,
+-					}
+-					if hll != nil && hll.Count() > 0 {
+-						resp.HyperLogLog = hll.GetRegisters()
+-					}
+-
+-					ws.WriteJSON(resp)
+-
+ 				case *nostr.ReqEnvelope:
+ 					rl.removeListenerId(ws, env.SubscriptionID)
+ 
+diff -ruN base/internal/khatru/nip11.go modified/internal/khatru/nip11.go
+--- base/internal/khatru/nip11.go	2026-09-06 10:33:44
++++ modified/internal/khatru/nip11.go	2026-09-06 10:33:44
+@@ -14,7 +14,7 @@
+ 	if nil != rl.DeleteEvent {
+ 		info.AddSupportedNIP("9")
+ 	}
+-	if nil != rl.Count {
++	if nil != rl.CountMany || nil != rl.Count || nil != rl.CountHLL {
+ 		info.AddSupportedNIP("45")
+ 	}
+ 	if rl.Negentropy {
+diff -ruN base/internal/khatru/relay.go modified/internal/khatru/relay.go
+--- base/internal/khatru/relay.go	2026-09-06 10:33:44
++++ modified/internal/khatru/relay.go	2026-09-06 10:33:44
+@@ -79,9 +79,11 @@
+ 	OnEphemeralEvent          func(ctx context.Context, event nostr.Event)
+ 	OnRequest                 func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+ 	OnCount                   func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
++	OnCountMany               func(ctx context.Context, filters []nostr.Filter) (reject bool, msg string)
+ 	QueryStored               func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
+ 	Count                     func(ctx context.Context, filter nostr.Filter) (uint32, error)
+ 	CountHLL                  func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error)
++	CountMany                 func(ctx context.Context, filters []nostr.Filter) (CountResult, error)
+ 	RejectConnection          func(r *http.Request) bool
+ 	OnConnect                 func(ctx context.Context)
+ 	OnDisconnect              func(ctx context.Context)
+diff -ruN base/internal/khatru/responding.go modified/internal/khatru/responding.go
+--- base/internal/khatru/responding.go	2026-09-06 10:33:44
++++ modified/internal/khatru/responding.go	2026-09-06 10:33:44
+@@ -5,7 +5,6 @@
+ 	"errors"
+ 
+ 	"fiatjaf.com/nostr"
+-	"fiatjaf.com/nostr/nip45/hyperloglog"
+ )
+ 
+ func (rl *Relay) handleRequest(ctx context.Context, id string, ws *WebSocket, filter nostr.Filter) error {
+@@ -34,50 +33,4 @@
+ 	}
+ 
+ 	return nil
+-}
+-
+-func (rl *Relay) handleCountRequest(ctx context.Context, ws *WebSocket, filter nostr.Filter) uint32 {
+-	// check if we'll reject this filter
+-	if nil != rl.OnCount {
+-		if rejecting, msg := rl.OnCount(ctx, filter); rejecting {
+-			ws.WriteJSON(nostr.NoticeEnvelope(msg))
+-			return 0
+-		}
+-	}
+-
+-	// run the functions to count (generally it will be just one)
+-	if nil != rl.Count {
+-		res, err := rl.Count(ctx, filter)
+-		if err != nil {
+-			ws.WriteJSON(nostr.NoticeEnvelope(err.Error()))
+-		}
+-		return res
+-	}
+-
+-	return 0
+-}
+-
+-func (rl *Relay) handleCountRequestWithHLL(
+-	ctx context.Context,
+-	ws *WebSocket,
+-	filter nostr.Filter,
+-	offset int,
+-) (uint32, *hyperloglog.HyperLogLog) {
+-	// check if we'll reject this filter
+-	if nil != rl.OnCount {
+-		if rejecting, msg := rl.OnCount(ctx, filter); rejecting {
+-			ws.WriteJSON(nostr.NoticeEnvelope(msg))
+-			return 0, nil
+-		}
+-	}
+-
+-	if nil != rl.CountHLL {
+-		res, hll, err := rl.CountHLL(ctx, filter, offset)
+-		if err != nil {
+-			ws.WriteJSON(nostr.NoticeEnvelope(err.Error()))
+-		}
+-		return res, hll
+-	}
+-
+-	return 0, nil
+ }

@@ -121,6 +121,23 @@ var (
 		Help:    "Duration spent blocked yielding query results to the consumer (back-pressure)",
 		Buckets: queryDurationBuckets,
 	}, []string{"instance"})
+
+	CountRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "zooid_count_requests_total",
+		Help: "Count requests by exact, approximate, rejected, timeout, or error outcome",
+	}, []string{"instance", "outcome"})
+
+	CountDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "zooid_count_duration_seconds",
+		Help:    "Duration of visibility-safe PostgreSQL count requests",
+		Buckets: queryDurationBuckets,
+	}, []string{"instance", "outcome"})
+
+	CountRowEstimate = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "zooid_count_row_estimate",
+		Help:    "PostgreSQL planner row estimate for accepted count requests",
+		Buckets: []float64{10, 100, 1_000, 10_000, 50_000, 100_000, 500_000, 1_000_000},
+	}, []string{"instance"})
 )
 
 func init() {
@@ -141,6 +158,9 @@ func init() {
 		QueryDuration,
 		QueryDBDuration,
 		QueryDrainDuration,
+		CountRequests,
+		CountDuration,
+		CountRowEstimate,
 	)
 }
 

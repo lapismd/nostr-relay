@@ -31,7 +31,16 @@ func enableBuzzCompatibility(instance *Instance) {
 		WithAuthenticatedPubkey: withAuthenticatedPubkey,
 		AuthorizeQuery:          instance.OnRequest,
 		Query:                   instance.QueryStored,
-		Publish:                 instance.Relay.AddEvent,
+		QueryBefore:             instance.QueryStoredBefore,
+		CountMany: func(ctx context.Context, filters []nostr.Filter) (buzzcompat.CountResult, error) {
+			result, err := instance.CountStored(ctx, filters)
+			return buzzcompat.CountResult{
+				Count:       result.Count,
+				Approximate: result.Approximate,
+				HyperLogLog: nostr.HexEncodeToString(result.HyperLogLog),
+			}, err
+		},
+		Publish: instance.Relay.AddEvent,
 		Broadcast: func(event nostr.Event) {
 			instance.Relay.BroadcastEvent(event)
 		},

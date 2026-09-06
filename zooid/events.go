@@ -191,6 +191,22 @@ func (events *EventStore) QueryEvents(filter nostr.Filter, maxLimit int) iter.Se
 // and cancellation flow from the parent (e.g. replaceEventOnce's 60s
 // budget). The caller is responsible for setting any deadline on ctx.
 func (events *EventStore) queryEventsWith(ctx context.Context, runner squirrel.BaseRunner, filter nostr.Filter, maxLimit int) iter.Seq[nostr.Event] {
+	return events.queryEventsBeforeWith(ctx, runner, filter, "", maxLimit)
+}
+
+func (events *EventStore) QueryEventsBefore(ctx context.Context, filter nostr.Filter, beforeID string, maxLimit int) iter.Seq[nostr.Event] {
+	return func(yield func(nostr.Event) bool) {
+		queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+		defer cancel()
+		for event := range events.queryEventsBeforeWith(queryCtx, GetDb(), filter, beforeID, maxLimit) {
+			if !yield(event) {
+				return
+			}
+		}
+	}
+}
+
+func (events *EventStore) queryEventsBeforeWith(ctx context.Context, runner squirrel.BaseRunner, filter nostr.Filter, beforeID string, maxLimit int) iter.Seq[nostr.Event] {
 	return func(yield func(nostr.Event) bool) {
 		if filter.LimitZero {
 			return
@@ -208,7 +224,7 @@ func (events *EventStore) queryEventsWith(ctx context.Context, runner squirrel.B
 		queryStart := time.Now()
 		var drainTotal time.Duration
 
-		qb, err := events.buildSelectQuery(filter)
+		qb, err := events.buildSelectQueryBefore(filter, beforeID)
 		if err != nil {
 			observeQueryTimings(totalObserver, dbObserver, drainObserver, queryStart, drainTotal)
 			log.Printf("QueryEvents buildSelectQuery error: %v", err)
@@ -293,6 +309,10 @@ func observeQueryTimings(total, db, drain prometheus.Observer, queryStart time.T
 }
 
 func (events *EventStore) buildSelectQuery(filter nostr.Filter) (squirrel.SelectBuilder, error) {
+	return events.buildSelectQueryBefore(filter, "")
+}
+
+func (events *EventStore) buildSelectQueryBefore(filter nostr.Filter, beforeID string) (squirrel.SelectBuilder, error) {
 	eventsTable := events.Schema.Prefix("events")
 	eventTagsTable := events.Schema.Prefix("event_tags")
 
@@ -389,7 +409,7 @@ func (events *EventStore) buildSelectQuery(filter nostr.Filter) (squirrel.Select
 			From(eventsTable)
 	}
 
-	qb = qb.OrderBy(col + "created_at DESC")
+	qb = qb.OrderBy(col+"created_at DESC", col+"id ASC")
 
 	if filter.Search != "" {
 		qb = qb.Where(col+"search_vector @@ plainto_tsquery('english', ?)", filter.Search)
@@ -419,7 +439,15 @@ func (events *EventStore) buildSelectQuery(filter nostr.Filter) (squirrel.Select
 		qb = qb.Where(squirrel.GtOrEq{col + "created_at": filter.Since})
 	}
 
-	if filter.Until != 0 {
+	if filter.Until != 0 && beforeID != "" {
+		qb = qb.Where(squirrel.Or{
+			squirrel.Lt{col + "created_at": filter.Until},
+			squirrel.And{
+				squirrel.Eq{col + "created_at": filter.Until},
+				squirrel.Gt{col + "id": beforeID},
+			},
+		})
+	} else if filter.Until != 0 {
 		qb = qb.Where(squirrel.LtOrEq{col + "created_at": filter.Until})
 	}
 
@@ -703,26 +731,22 @@ func (events *EventStore) replaceEventOnce(ctx context.Context, evt nostr.Event)
 }
 
 func (events *EventStore) CountEvents(filter nostr.Filter) (uint32, error) {
-	// Strip limit for a true total count; ORDER BY in the subquery is
-	// optimized away by PostgreSQL's planner inside COUNT(*).
-	filter.Limit = 0
-	qb, err := events.buildSelectQuery(filter)
+	query, args, err := events.buildRawCountUnionQuery([]nostr.Filter{filter})
 	if err != nil {
 		return 0, fmt.Errorf("failed to build count query: %w", err)
 	}
-	qb = qb.RemoveLimit()
-
-	countQb := sb.Select("COUNT(*)").FromSelect(qb, "subquery")
 
 	ctx, cancel := context.WithTimeout(events.rootCtx, dbOpTimeout)
 	defer cancel()
 
-	var count uint32
-	if err := countQb.RunWith(GetDb()).QueryRowContext(ctx).Scan(&count); err != nil {
+	count, err := events.executeCount(ctx, query, args)
+	if err != nil {
 		return 0, fmt.Errorf("failed to count events: %w", err)
 	}
-
-	return count, nil
+	if count > uint64(^uint32(0)) {
+		return ^uint32(0), nil
+	}
+	return uint32(count), nil
 }
 
 // Non-eventstore methods

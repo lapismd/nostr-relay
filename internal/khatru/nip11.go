@@ -14,7 +14,7 @@ func (rl *Relay) HandleNIP11(w http.ResponseWriter, r *http.Request) {
 	if nil != rl.DeleteEvent {
 		info.AddSupportedNIP("9")
 	}
-	if nil != rl.Count {
+	if nil != rl.CountMany || nil != rl.Count || nil != rl.CountHLL {
 		info.AddSupportedNIP("45")
 	}
 	if rl.Negentropy {

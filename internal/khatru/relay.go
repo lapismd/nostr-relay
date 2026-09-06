@@ -79,9 +79,11 @@ type Relay struct {
 	OnEphemeralEvent          func(ctx context.Context, event nostr.Event)
 	OnRequest                 func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
 	OnCount                   func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+	OnCountMany               func(ctx context.Context, filters []nostr.Filter) (reject bool, msg string)
 	QueryStored               func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
 	Count                     func(ctx context.Context, filter nostr.Filter) (uint32, error)
 	CountHLL                  func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error)
+	CountMany                 func(ctx context.Context, filters []nostr.Filter) (CountResult, error)
 	RejectConnection          func(r *http.Request) bool
 	OnConnect                 func(ctx context.Context)
 	OnDisconnect              func(ctx context.Context)

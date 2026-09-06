@@ -16,6 +16,7 @@ import (
 	"iter"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,9 +37,22 @@ type Backend struct {
 	WithAuthenticatedPubkey func(context.Context, nostr.PubKey) context.Context
 	AuthorizeQuery          func(context.Context, nostr.Filter) (bool, string)
 	Query                   func(context.Context, nostr.Filter) iter.Seq[nostr.Event]
+	QueryBefore             func(context.Context, nostr.Filter, string) iter.Seq[nostr.Event]
+	CountMany               func(context.Context, []nostr.Filter) (CountResult, error)
 	Publish                 func(context.Context, nostr.Event) (bool, error)
 	Broadcast               func(nostr.Event)
 	NIP11                   http.HandlerFunc
+}
+
+type CountResult struct {
+	Count       uint64 `json:"count"`
+	Approximate bool   `json:"approximate,omitempty"`
+	HyperLogLog string `json:"hll,omitempty"`
+}
+
+type queryFilter struct {
+	Filter   nostr.Filter
+	BeforeID string
 }
 
 // Handler serves Buzz's core HTTP bridge and delegates every other request to
@@ -186,30 +200,43 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var filters []nostr.Filter
-	if err := decodeJSON(body, &filters); err != nil {
+	filters, err := decodeQueryFilters(body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid filters: "+err.Error())
 		return
 	}
 
 	events := make([]nostr.Event, 0)
 	seen := make(map[nostr.ID]struct{})
-	for _, filter := range filters {
-		if reject, message := h.backend.AuthorizeQuery(ctx, filter); reject {
+	for _, queryFilter := range filters {
+		if reject, message := h.backend.AuthorizeQuery(ctx, queryFilter.Filter); reject {
 			writeError(w, http.StatusForbidden, message)
 			return
 		}
-		for event := range h.backend.Query(ctx, filter) {
+		query := h.backend.Query(ctx, queryFilter.Filter)
+		if queryFilter.BeforeID != "" {
+			if h.backend.QueryBefore == nil {
+				writeError(w, http.StatusBadRequest, "before_id is not supported")
+				return
+			}
+			query = h.backend.QueryBefore(ctx, queryFilter.Filter, queryFilter.BeforeID)
+		}
+		for event := range query {
 			if _, duplicate := seen[event.ID]; duplicate {
 				continue
 			}
 			seen[event.ID] = struct{}{}
 			events = append(events, event)
-			if len(events) >= queryLimit {
-				writeJSON(w, http.StatusOK, events)
-				return
-			}
 		}
+	}
+	sort.Slice(events, func(left, right int) bool {
+		if events[left].CreatedAt != events[right].CreatedAt {
+			return events[left].CreatedAt > events[right].CreatedAt
+		}
+		return events[left].ID.Hex() < events[right].ID.Hex()
+	})
+	if len(events) > queryLimit {
+		events = events[:queryLimit]
 	}
 	writeJSON(w, http.StatusOK, events)
 }
@@ -234,17 +261,58 @@ func (h *Handler) handleCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	seen := make(map[nostr.ID]struct{})
 	for _, filter := range filters {
 		if reject, message := h.backend.AuthorizeQuery(ctx, filter); reject {
 			writeError(w, http.StatusForbidden, message)
 			return
 		}
-		for event := range h.backend.Query(ctx, filter) {
-			seen[event.ID] = struct{}{}
-		}
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"count": len(seen)})
+	if h.backend.CountMany == nil {
+		writeError(w, http.StatusNotImplemented, "count is not supported")
+		return
+	}
+	result, err := h.backend.CountMany(ctx, filters)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.HasPrefix(err.Error(), "restricted:") || strings.HasPrefix(err.Error(), "auth-required:") {
+			status = http.StatusForbidden
+		} else if strings.HasPrefix(err.Error(), "invalid:") {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func decodeQueryFilters(body []byte) ([]queryFilter, error) {
+	var raw []json.RawMessage
+	if err := decodeJSON(body, &raw); err != nil {
+		return nil, err
+	}
+	filters := make([]queryFilter, 0, len(raw))
+	for index, item := range raw {
+		var filter nostr.Filter
+		if err := json.Unmarshal(item, &filter); err != nil {
+			return nil, fmt.Errorf("filter %d: %w", index, err)
+		}
+		var extension struct {
+			BeforeID string `json:"before_id"`
+		}
+		if err := json.Unmarshal(item, &extension); err != nil {
+			return nil, fmt.Errorf("filter %d: %w", index, err)
+		}
+		if extension.BeforeID != "" {
+			if filter.Until == 0 {
+				return nil, fmt.Errorf("filter %d: before_id requires until", index)
+			}
+			if _, err := nostr.IDFromHex(extension.BeforeID); err != nil {
+				return nil, fmt.Errorf("filter %d: invalid before_id", index)
+			}
+		}
+		filters = append(filters, queryFilter{Filter: filter, BeforeID: extension.BeforeID})
+	}
+	return filters, nil
 }
 
 func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {

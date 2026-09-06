@@ -1225,6 +1225,47 @@ func TestEventStore_QueryEvents_TagAndKindCTE(t *testing.T) {
 	}
 }
 
+func TestEventStore_QueryEventsBeforeUsesStableSameSecondCursor(t *testing.T) {
+	store := createTestEventStore()
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		event := nostr.Event{
+			Kind:      11,
+			CreatedAt: 1_700_000_000,
+			Content:   fmt.Sprintf("post-%d", index),
+			Tags:      nostr.Tags{{"h", "cursor"}},
+		}
+		event.Sign(nostr.Generate())
+		if err := store.SaveEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	filter := nostr.Filter{
+		Kinds: []nostr.Kind{11},
+		Tags:  nostr.TagMap{"h": {"cursor"}},
+		Until: 1_700_000_000,
+		Limit: 1,
+	}
+	var first []nostr.Event
+	for event := range store.QueryEventsBefore(context.Background(), filter, "", 100) {
+		first = append(first, event)
+	}
+	if len(first) != 1 {
+		t.Fatalf("first page has %d events", len(first))
+	}
+
+	var second []nostr.Event
+	for event := range store.QueryEventsBefore(context.Background(), filter, first[0].ID.Hex(), 100) {
+		second = append(second, event)
+	}
+	if len(second) != 1 || second[0].ID.Hex() <= first[0].ID.Hex() {
+		t.Fatalf("second page does not advance (created_at,id): first=%s second=%#v", first[0].ID.Hex(), second)
+	}
+}
+
 // TestEventStore_Init_UpgradeFromPre002 simulates the production
 // upgrade path: a schema that was already initialized before
 // migration 002 existed. The `event_tags.kind` column is missing, the

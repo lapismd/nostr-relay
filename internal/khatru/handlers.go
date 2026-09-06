@@ -15,8 +15,6 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip42"
-	"fiatjaf.com/nostr/nip45"
-	"fiatjaf.com/nostr/nip45/hyperloglog"
 	"fiatjaf.com/nostr/nip70"
 	"fiatjaf.com/nostr/nip77"
 	"fiatjaf.com/nostr/nip77/negentropy"
@@ -168,6 +166,11 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 			message := unsafe.String(unsafe.SliceData(msgb), len(msgb))
 
 			go func(message string) {
+				if envelopeLabel(message) == "COUNT" {
+					rl.handleRawCountMessage(ctx, ws, message)
+					return
+				}
+
 				envelope, err := nostr.ParseMessage(message)
 				if err != nil {
 					if err == nostr.UnknownLabel && rl.Negentropy {
@@ -271,31 +274,6 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: ok, Reason: reason})
-				case *nostr.CountEnvelope:
-					if rl.Count == nil && rl.CountHLL == nil {
-						ws.WriteJSON(nostr.ClosedEnvelope{SubscriptionID: env.SubscriptionID, Reason: "unsupported: this relay does not support NIP-45"})
-						return
-					}
-
-					var total uint32
-					var hll *hyperloglog.HyperLogLog
-
-					if offset := nip45.HyperLogLogEventPubkeyOffsetForFilter(env.Filter); offset != -1 {
-						total, hll = rl.handleCountRequestWithHLL(ctx, ws, env.Filter, offset)
-					} else {
-						total = rl.handleCountRequest(ctx, ws, env.Filter)
-					}
-
-					resp := nostr.CountEnvelope{
-						SubscriptionID: env.SubscriptionID,
-						Count:          &total,
-					}
-					if hll != nil && hll.Count() > 0 {
-						resp.HyperLogLog = hll.GetRegisters()
-					}
-
-					ws.WriteJSON(resp)
-
 				case *nostr.ReqEnvelope:
 					rl.removeListenerId(ws, env.SubscriptionID)
 

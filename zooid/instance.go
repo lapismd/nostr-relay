@@ -109,7 +109,9 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	instance.Relay.ReplaceEvent = instance.ReplaceEvent
 	instance.Relay.DeleteEvent = instance.DeleteEvent
 	instance.Relay.OnRequest = instance.OnRequest
+	instance.Relay.OnCountMany = instance.OnCountMany
 	instance.Relay.QueryStored = instance.QueryStored
+	instance.Relay.CountMany = instance.CountStored
 	instance.Relay.OnEvent = instance.OnEvent
 	instance.Relay.OnEventSaved = instance.OnEventSaved
 	instance.Relay.OnEphemeralEvent = instance.OnEphemeralEvent
@@ -339,9 +341,17 @@ func (instance *Instance) OnRequest(ctx context.Context, filter nostr.Filter) (r
 }
 
 func (instance *Instance) QueryStored(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event] {
+	return instance.queryStored(ctx, filter, "")
+}
+
+func (instance *Instance) QueryStoredBefore(ctx context.Context, filter nostr.Filter, beforeID string) iter.Seq[nostr.Event] {
+	return instance.queryStored(ctx, filter, beforeID)
+}
+
+func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, beforeID string) iter.Seq[nostr.Event] {
 	return func(yield func(nostr.Event) bool) {
 		if khatru.IsInternalCall(ctx) {
-			for event := range instance.Events.QueryEvents(filter, 0) {
+			for event := range instance.Events.QueryEventsBefore(ctx, filter, beforeID, 0) {
 				if !yield(event) {
 					return
 				}
@@ -364,7 +374,7 @@ func (instance *Instance) QueryStored(ctx context.Context, filter nostr.Filter) 
 				}
 			}
 
-			for event := range instance.Events.QueryEvents(filter, 1000) {
+			for event := range instance.Events.QueryEventsBefore(ctx, filter, beforeID, 1000) {
 				if event.Kind == RELAY_INVITE {
 					continue
 				}

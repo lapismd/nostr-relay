@@ -3,6 +3,7 @@
 package zooid
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -21,7 +23,7 @@ const (
 	perfNumEvents  = 500_000
 	perfNumMembers = 10_000
 	perfNumGroups  = 10
-	perfBatchSize  = 5_000
+	perfBatchSize  = 1_000
 )
 
 var perfGroups = []string{
@@ -51,8 +53,27 @@ func seedPerfData(t *testing.T) *EventStore {
 		}
 
 		db := GetDb()
+		copyConn, err := pgx.Connect(context.Background(), Env("DATABASE_URL"))
+		if err != nil {
+			perfSetupErr = fmt.Errorf("connect COPY client: %w", err)
+			return
+		}
+		defer copyConn.Close(context.Background())
 		eventsTable := store.Schema.Prefix("events")
 		tagsTable := store.Schema.Prefix("event_tags")
+		for _, table := range []string{tagsTable, eventsTable} {
+			if _, err := copyConn.Exec(context.Background(), "ALTER TABLE "+table+" SET UNLOGGED"); err != nil {
+				perfSetupErr = fmt.Errorf("make fixture table unlogged: %w", err)
+				return
+			}
+		}
+		if _, err := copyConn.Exec(context.Background(), "ALTER TABLE "+eventsTable+" DISABLE TRIGGER USER"); err != nil {
+			perfSetupErr = fmt.Errorf("disable fixture triggers: %w", err)
+			return
+		}
+		defer func() {
+			_, _ = copyConn.Exec(context.Background(), "ALTER TABLE "+eventsTable+" ENABLE TRIGGER USER")
+		}()
 
 		// Pre-generate 10K valid nostr pubkeys. Using nostr.Generate()
 		// ensures every pubkey passes PubKeyFromHex validation when
@@ -90,13 +111,14 @@ func seedPerfData(t *testing.T) *EventStore {
 				batchEnd = perfNumEvents
 			}
 
-			tx, err := db.Begin()
+			tx, err := copyConn.Begin(context.Background())
 			if err != nil {
 				perfSetupErr = fmt.Errorf("begin tx: %w", err)
 				return
 			}
 
-			var eventVals, tagVals []string
+			eventRows := make([][]any, 0, batchEnd-batchStart)
+			tagRows := make([][]any, 0, batchEnd-batchStart)
 			for i := batchStart; i < batchEnd; i++ {
 				memberIdx := i % perfNumMembers
 				pubkey := pubkeys[memberIdx]
@@ -108,35 +130,34 @@ func seedPerfData(t *testing.T) *EventStore {
 				// Avoid all-zeros (index 0) just in case.
 				id := fmt.Sprintf("%064x", i+1)
 
-				eventVals = append(eventVals, fmt.Sprintf(
-					"('%s',%d,9,'%s','msg %d in %s','[[\"h\",\"%s\"]]','%s')",
-					id, ts, pubkey, i, group, group, sig,
-				))
-				tagVals = append(tagVals, fmt.Sprintf(
-					"('%s','h','%s')", id, group,
-				))
+				eventRows = append(eventRows, []any{
+					id, ts, 9, pubkey, fmt.Sprintf("msg %d in %s", i, group),
+					fmt.Sprintf(`[["h","%s"]]`, group), sig,
+				})
+				tagRows = append(tagRows, []any{id, "h", group, 9})
 			}
 
-			eventSQL := fmt.Sprintf(
-				"INSERT INTO %s (id,created_at,kind,pubkey,content,tags,sig) VALUES %s ON CONFLICT(id) DO NOTHING",
-				eventsTable, strings.Join(eventVals, ","),
-			)
-			tagSQL := fmt.Sprintf(
-				"INSERT INTO %s (event_id,key,value) VALUES %s",
-				tagsTable, strings.Join(tagVals, ","),
-			)
-
-			if _, err := tx.Exec(eventSQL); err != nil {
-				tx.Rollback()
+			if _, err := tx.CopyFrom(
+				context.Background(),
+				pgx.Identifier{strings.ToLower(eventsTable)},
+				[]string{"id", "created_at", "kind", "pubkey", "content", "tags", "sig"},
+				pgx.CopyFromRows(eventRows),
+			); err != nil {
+				tx.Rollback(context.Background())
 				perfSetupErr = fmt.Errorf("insert events: %w", err)
 				return
 			}
-			if _, err := tx.Exec(tagSQL); err != nil {
-				tx.Rollback()
+			if _, err := tx.CopyFrom(
+				context.Background(),
+				pgx.Identifier{strings.ToLower(tagsTable)},
+				[]string{"event_id", "key", "value", "kind"},
+				pgx.CopyFromRows(tagRows),
+			); err != nil {
+				tx.Rollback(context.Background())
 				perfSetupErr = fmt.Errorf("insert tags: %w", err)
 				return
 			}
-			if err := tx.Commit(); err != nil {
+			if err := tx.Commit(context.Background()); err != nil {
 				perfSetupErr = fmt.Errorf("commit: %w", err)
 				return
 			}
@@ -144,6 +165,46 @@ func seedPerfData(t *testing.T) *EventStore {
 			if (batchStart+perfBatchSize)%100_000 == 0 {
 				t.Logf("  %d / %d events inserted...", batchStart+perfBatchSize, perfNumEvents)
 			}
+		}
+
+		// Add a realistic long Registry discussion so the same fixture covers
+		// exact NIP-45 counts and newest-page latency for kinds 11/1111.
+		tx, err := copyConn.Begin(context.Background())
+		if err != nil {
+			perfSetupErr = fmt.Errorf("begin discussion tx: %w", err)
+			return
+		}
+		discussionEvents := make([][]any, 0, 260)
+		discussionTags := make([][]any, 0, 260)
+		for i := 0; i < 260; i++ {
+			kind := 11
+			if i > 0 {
+				kind = 1111
+			}
+			id := fmt.Sprintf("%064x", perfNumEvents+i+1)
+			discussionEvents = append(discussionEvents, []any{
+				id, baseTS + int64(perfNumEvents+i), kind, pubkeys[i],
+				fmt.Sprintf("registry reply %d", i), `[["h","registry-discussion"]]`, memberSigs[i],
+			})
+			discussionTags = append(discussionTags, []any{id, "h", "registry-discussion", kind})
+		}
+		if _, err := tx.CopyFrom(context.Background(), pgx.Identifier{strings.ToLower(eventsTable)}, []string{"id", "created_at", "kind", "pubkey", "content", "tags", "sig"}, pgx.CopyFromRows(discussionEvents)); err != nil {
+			tx.Rollback(context.Background())
+			perfSetupErr = fmt.Errorf("insert discussion events: %w", err)
+			return
+		}
+		if _, err := tx.CopyFrom(context.Background(), pgx.Identifier{strings.ToLower(tagsTable)}, []string{"event_id", "key", "value", "kind"}, pgx.CopyFromRows(discussionTags)); err != nil {
+			tx.Rollback(context.Background())
+			perfSetupErr = fmt.Errorf("insert discussion tags: %w", err)
+			return
+		}
+		if err := tx.Commit(context.Background()); err != nil {
+			perfSetupErr = fmt.Errorf("commit discussion events: %w", err)
+			return
+		}
+		if _, err := copyConn.Exec(context.Background(), "ALTER TABLE "+eventsTable+" ENABLE TRIGGER USER"); err != nil {
+			perfSetupErr = fmt.Errorf("enable fixture triggers: %w", err)
+			return
 		}
 		t.Logf("Seeded %d events in %v", perfNumEvents, time.Since(start))
 
@@ -242,6 +303,19 @@ func TestIntegration_QueryPerformance(t *testing.T) {
 
 	store := seedPerfData(t)
 	eventsTable := store.Schema.Prefix("events")
+
+	// Keep the concurrent tag-first sort in memory. Docker's small writable
+	// layer otherwise fills with one temporary sort file per simulated client,
+	// which tests container disk capacity rather than query latency.
+	db := GetDb()
+	if _, err := db.Exec("ALTER SYSTEM SET work_mem = '32MB'"); err != nil {
+		t.Fatalf("configure performance work_mem: %v", err)
+	}
+	if _, err := db.Exec("SELECT pg_reload_conf()"); err != nil {
+		t.Fatalf("reload performance work_mem: %v", err)
+	}
+	db.SetMaxIdleConns(0)
+	db.SetMaxIdleConns(5)
 
 	// Each group has perfNumEvents/perfNumGroups = 50K events.
 	eventsPerGroup := perfNumEvents / perfNumGroups
@@ -391,6 +465,53 @@ func TestIntegration_QueryPerformance(t *testing.T) {
 		}
 		if dur > 5*time.Second {
 			t.Errorf("Count too slow: %v (want < 5s)", dur)
+		}
+	})
+
+	t.Run("BoundedNewestRegistryPageAndExactCount", func(t *testing.T) {
+		filter := nostr.Filter{
+			Kinds: []nostr.Kind{11, 1111},
+			Tags:  nostr.TagMap{"h": {"registry-discussion"}},
+			Limit: 20,
+		}
+		start := time.Now()
+		var posts int
+		for range store.QueryEvents(filter, 20) {
+			posts++
+		}
+		if posts != 20 {
+			t.Fatalf("newest Registry page returned %d posts", posts)
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("newest Registry page took %v", elapsed)
+		}
+		count, err := store.CountEvents(filter)
+		if err != nil || count != 260 {
+			t.Fatalf("Registry count = %d, %v", count, err)
+		}
+	})
+
+	t.Run("BroadSafeCountUsesPlannerEstimate", func(t *testing.T) {
+		config := *store.Config
+		config.Policy.Open = true
+		config.Policy.AnonymousRead = true
+		groups := &GroupStore{Config: &config, Events: store, cachesWarmed: true}
+		for _, group := range []string{"general", "random"} {
+			groups.metadataCache.Store(group, &groupMetaCache{
+				found: true,
+				event: nostr.Event{Kind: nostr.KindSimpleGroupMetadata, Tags: nostr.Tags{{"d", group}}},
+			})
+		}
+		instance := &Instance{Config: &config, Events: store, Groups: groups}
+		result, err := instance.CountStored(context.Background(), []nostr.Filter{{
+			Kinds: []nostr.Kind{9},
+			Tags:  nostr.TagMap{"h": {"general", "random"}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Approximate || result.Count <= exactCountEstimateThreshold {
+			t.Fatalf("broad count = %#v, want planner estimate above %d", result, exactCountEstimateThreshold)
 		}
 	})
 

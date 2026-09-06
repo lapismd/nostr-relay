@@ -38,6 +38,7 @@ cp "$module_dir/LICENSE" "$generated_dir/LICENSE"
 cp "$source_dir/README.md" "$generated_dir/README.md"
 cp "$source_dir"/*.go "$generated_dir/"
 cp "$source_dir/blossom"/*.go "$generated_dir/blossom/"
+chmod -R u+w "$generated_dir"
 
 find "$generated_dir" -type f -name '*.go' -exec perl -pi -e \
   's#fiatjaf\.com/nostr/khatru/blossom#zooid/internal/khatru/blossom#g; s#fiatjaf\.com/nostr/khatru#zooid/internal/khatru#g' {} +
