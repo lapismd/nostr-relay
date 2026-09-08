@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"github.com/stretchr/testify/require"
 )
 
 func createTestEventStore() *EventStore {
@@ -228,6 +229,80 @@ func TestEventStore_QueryEvents_ByTags(t *testing.T) {
 	if len(events) != 3 {
 		t.Errorf("QueryEvents() with multi-character tag key should ignore tag filter and return all 3 events, got %d", len(events))
 	}
+}
+
+func TestEventStore_QueryEvents_ByBuzzChannel(t *testing.T) {
+	store := createTestEventStore()
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	matching := nostr.Event{
+		Kind:      30621,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"d", "notes"}, {"buzz-channel", "notes-channel"}},
+	}
+	matching.Sign(nostr.Generate())
+	other := nostr.Event{
+		Kind:      30621,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"d", "other"}, {"buzz-channel", "other-channel"}},
+	}
+	other.Sign(nostr.Generate())
+	if err := store.SaveEvent(matching); err != nil {
+		t.Fatalf("save matching: %v", err)
+	}
+	if err := store.SaveEvent(other); err != nil {
+		t.Fatalf("save other: %v", err)
+	}
+
+	filter := nostr.Filter{Tags: nostr.TagMap{"buzz-channel": {"notes-channel"}}}
+	var got []nostr.Event
+	for event := range store.QueryEvents(filter, 0) {
+		got = append(got, event)
+	}
+	require.Len(t, got, 1)
+	require.Equal(t, matching.ID, got[0].ID)
+}
+
+func TestMigration003BackfillsBuzzChannelTags(t *testing.T) {
+	store := createTestEventStore()
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	event := nostr.Event{
+		Kind:      30617,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"d", "notes"}, {"buzz-channel", "notes-channel"}},
+	}
+	event.Sign(nostr.Generate())
+	if err := store.SaveEvent(event); err != nil {
+		t.Fatalf("SaveEvent: %v", err)
+	}
+
+	tagsTable := store.Schema.Prefix("event_tags")
+	if _, err := GetDb().ExecContext(store.rootCtx,
+		"DELETE FROM "+tagsTable+" WHERE event_id = $1 AND key = 'buzz-channel'",
+		event.ID.Hex()); err != nil {
+		t.Fatalf("remove indexed tag: %v", err)
+	}
+	kvKey := fmt.Sprintf("migration:%s:003_buzz_channel_tag.sql", store.Schema.Name)
+	if _, err := GetDb().ExecContext(store.rootCtx, "DELETE FROM kv WHERE key = $1", kvKey); err != nil {
+		t.Fatalf("delete migration marker: %v", err)
+	}
+
+	if err := RunMigrations(store.rootCtx, store.Schema); err != nil {
+		t.Fatalf("rerun migrations: %v", err)
+	}
+
+	var kind int
+	if err := GetDb().QueryRowContext(store.rootCtx,
+		"SELECT kind FROM "+tagsTable+" WHERE event_id = $1 AND key = 'buzz-channel' AND value = $2",
+		event.ID.Hex(), "notes-channel").Scan(&kind); err != nil {
+		t.Fatalf("query backfilled tag: %v", err)
+	}
+	require.Equal(t, int(event.Kind), kind)
 }
 
 func TestEventStore_QueryEvents_TimeRange(t *testing.T) {

@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/prometheus/client_golang/prometheus"
 	"zooid/internal/khatru"
+	"zooid/internal/projecttask"
 )
 
 // Global Squirrel builder with Dollar placeholder format for PostgreSQL
@@ -316,14 +317,16 @@ func (events *EventStore) buildSelectQueryBefore(filter nostr.Filter, beforeID s
 	eventsTable := events.Schema.Prefix("events")
 	eventTagsTable := events.Schema.Prefix("event_tags")
 
-	// Collect valid single-letter tag filters and sort for deterministic SQL.
+	// Collect indexed tag filters and sort for deterministic SQL. Nostr's
+	// single-letter tags remain generic; buzz-channel is the one explicit
+	// application extension required by Buzz project discovery.
 	type tagFilter struct {
 		key    string
 		values []interface{}
 	}
 	var tagFilters []tagFilter
 	for tagKey, tagValues := range filter.Tags {
-		if len(tagValues) == 0 || len(tagKey) != 1 {
+		if len(tagValues) == 0 || !isIndexedTagKey(tagKey) {
 			continue
 		}
 		vals := make([]interface{}, len(tagValues))
@@ -560,7 +563,7 @@ func (events *EventStore) saveEventWith(ctx context.Context, runner squirrel.Bas
 		return eventstore.ErrDupEvent
 	}
 
-	// Insert single-letter tags into event_tags, chunked to stay below
+	// Insert indexed tags into event_tags, chunked to stay below
 	// Postgres's 65535 extended-protocol parameter limit. With 4 columns
 	// per row (event_id, key, value, kind), 15000 rows × 4 = 60000 params
 	// stays under the 65535 cap and matches the round-trip economy that
@@ -582,7 +585,7 @@ func (events *EventStore) saveEventWith(ctx context.Context, runner squirrel.Bas
 	n := 0
 
 	for _, tag := range evt.Tags {
-		if len(tag) < 2 || len(tag[0]) != 1 {
+		if len(tag) < 2 || !isIndexedTagKey(tag[0]) {
 			continue
 		}
 		batch = batch.Values(eventID, tag[0], tag[1], eventKind)
@@ -603,6 +606,10 @@ func (events *EventStore) saveEventWith(ctx context.Context, runner squirrel.Bas
 	}
 
 	return nil
+}
+
+func isIndexedTagKey(key string) bool {
+	return len(key) == 1 || key == projecttask.TagBuzzChannel
 }
 
 func (events *EventStore) ReplaceEvent(evt nostr.Event) ([]nostr.Event, error) {
