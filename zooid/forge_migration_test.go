@@ -17,6 +17,14 @@ import (
 type fakeWalGitImporter struct {
 	*fakeGitHubProvider
 	requests []forge.ImportRequest
+	mirrored []forge.CIRequest
+	targets  []forge.CIMirrorTarget
+}
+
+func (backend *fakeWalGitImporter) MirrorCommit(_ context.Context, repository forge.Repository, commit string, target forge.CIMirrorTarget, mirrorRef string) error {
+	backend.mirrored = append(backend.mirrored, forge.CIRequest{Repository: repository, Commit: commit, MirrorRef: mirrorRef})
+	backend.targets = append(backend.targets, target)
+	return nil
 }
 
 func (backend *fakeWalGitImporter) Name() string { return forge.BackendWalGit }

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 	"github.com/stretchr/testify/require"
@@ -209,4 +210,51 @@ func TestMirrorWebhookDoesNotImportRootsAndKeepsMappedLifecycleObservational(t *
 	require.Len(t, notes, 1)
 	statuses := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindStatusClosed}, Tags: nostr.TagMap{"e": {root.ID.Hex()}}})
 	require.Empty(t, statuses)
+}
+
+func TestWorkflowRunWebhookCompletesExactCommitAndPublishesCIActivity(t *testing.T) {
+	policy, store, _, repository := configureWebhookTest(t)
+	ci := &fakeGitHubProvider{}
+	require.NoError(t, policy.Registry.RegisterCI(ci))
+	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
+	integration, found, err := policy.repositoryIntegration(context.Background(), coordinate)
+	require.NoError(t, err)
+	require.True(t, found)
+	integration.CIBackend = forge.BackendGitHub
+	integration.CIConnectionID = "connection"
+	integration.CIExternalRepositoryID = "84"
+	integration.CIExternalRepository = "lapis/ci-mirror"
+	integration.CIWorkflow = "ci.yml"
+	require.NoError(t, policy.setExplicitIntegration(context.Background(), integration, repository.ID.Hex()))
+	commit := strings.Repeat("d", 40)
+	updatedAt := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, policy.saveForgeCIRun(context.Background(), forgeCIRun{
+		OperationID: "ci_webhook", Provider: forge.BackendGitHub, ConnectionID: "connection",
+		Coordinate: coordinate, Commit: commit, Workflow: "ci.yml",
+		MirrorRef: "refs/heads/lapis-ci/ci_webhook", Status: "requested", CleanupState: "pending",
+	}))
+	body, err := json.Marshal(map[string]any{
+		"action": "completed", "installation": map[string]any{"id": 99},
+		"repository": map[string]any{"id": 84},
+		"workflow_run": map[string]any{
+			"id": 91001, "head_sha": commit, "head_branch": "lapis-ci/ci_webhook",
+			"status": "completed", "conclusion": "failure",
+			"html_url": "https://github.com/lapis/ci-mirror/actions/runs/91001", "updated_at": updatedAt,
+		},
+	})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	policy.ServeGitHubWebhook(recorder, githubWebhookRequest(body, "ci-complete", "workflow_run", "webhook-secret"))
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	require.NoError(t, policy.ProcessGitHubWebhookOnce(context.Background()))
+	require.Equal(t, []string{"refs/heads/lapis-ci/ci_webhook"}, ci.ciCleaned)
+	run, found, err := policy.loadForgeCIRun(context.Background(), "ci_webhook")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "failure", run.Status)
+	require.Equal(t, "91001", run.ProviderRunID)
+	events := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindTextNote}, Tags: nostr.TagMap{"t": {"ci"}, "c": {commit}}})
+	require.Len(t, events, 1)
+	require.Equal(t, "failure", events[0].Tags.Find("status")[1])
+	require.Equal(t, nostr.Timestamp(updatedAt.Unix()), events[0].CreatedAt)
 }

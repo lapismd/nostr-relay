@@ -76,17 +76,20 @@ func (policy *GitForgePolicy) repositoryIntegration(ctx context.Context, coordin
 	defer cancel()
 	var integration forge.Integration
 	var mirrorBackend, ciBackend, connectionID, externalID, externalRepository string
+	var ciConnectionID, ciExternalID, ciExternalRepository, ciWorkflow string
 	err := GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
 		SELECT announcement_id, configuration_source, git_backend,
 		       collaboration_backend, mirror_backend, ci_backend, connection_id,
 		       external_repository_id, external_repository, generation,
-		       health_state, health_detail
+		       health_state, health_detail, ci_connection_id,
+		       ci_external_repository_id, ci_external_repository, ci_workflow
 		FROM {{.Name}}__repository_integrations
 		WHERE owner = $1 AND repo = $2`), coordinate.Owner.Hex(), coordinate.ID).Scan(
 		&integration.AnnouncementID, &integration.ConfigurationSource, &integration.GitBackend,
 		&integration.CollaborationBackend, &mirrorBackend, &ciBackend, &connectionID,
 		&externalID, &externalRepository, &integration.Generation,
-		&integration.HealthState, &integration.HealthDetail)
+		&integration.HealthState, &integration.HealthDetail, &ciConnectionID,
+		&ciExternalID, &ciExternalRepository, &ciWorkflow)
 	if err == sql.ErrNoRows {
 		return forge.Integration{}, false, nil
 	}
@@ -99,6 +102,10 @@ func (policy *GitForgePolicy) repositoryIntegration(ctx context.Context, coordin
 	integration.ConnectionID = connectionID
 	integration.ExternalRepositoryID = externalID
 	integration.ExternalRepository = externalRepository
+	integration.CIConnectionID = ciConnectionID
+	integration.CIExternalRepositoryID = ciExternalID
+	integration.CIExternalRepository = ciExternalRepository
+	integration.CIWorkflow = ciWorkflow
 	return integration, true, nil
 }
 

@@ -26,6 +26,11 @@ type fakeGitHubProvider struct {
 	cloneURL         string
 	cloneUsername    string
 	clonePassword    string
+	ciStarts         []forge.CIRequest
+	ciRun            forge.CIRun
+	ciStatus         forge.CIRun
+	ciCancelled      []string
+	ciCleaned        []string
 }
 
 func (provider *fakeGitHubProvider) ValidateConnection(_ context.Context, connection githubforge.Connection) (githubforge.Connection, error) {
@@ -64,8 +69,8 @@ func (*fakeGitHubProvider) DefaultBranch(context.Context, forge.Repository, stri
 func (*fakeGitHubProvider) Refs(context.Context, forge.Repository, forge.RefsRequest) (forge.Response, error) {
 	return forge.Response{}, nil
 }
-func (*fakeGitHubProvider) Resolve(context.Context, forge.Repository, forge.RevisionRequest) (string, error) {
-	return "", nil
+func (*fakeGitHubProvider) Resolve(_ context.Context, _ forge.Repository, request forge.RevisionRequest) (string, error) {
+	return request.Revision, nil
 }
 func (*fakeGitHubProvider) Tree(context.Context, forge.Repository, forge.RevisionRequest) (forge.Response, error) {
 	return forge.Response{}, nil
@@ -104,6 +109,28 @@ func (provider *fakeGitHubProvider) Project(_ context.Context, projection forge.
 		CorrelationMarker: projection.CorrelationMarker, Payload: projection.Payload,
 	})
 	return provider.result, nil
+}
+func (provider *fakeGitHubProvider) Start(_ context.Context, request forge.CIRequest) (forge.CIRun, error) {
+	provider.ciStarts = append(provider.ciStarts, request)
+	return provider.ciRun, nil
+}
+func (provider *fakeGitHubProvider) Status(context.Context, forge.Repository, string) (forge.CIRun, error) {
+	return provider.ciStatus, nil
+}
+func (provider *fakeGitHubProvider) Discover(_ context.Context, request forge.CIRequest) (forge.CIRun, error) {
+	provider.ciStarts = append(provider.ciStarts, request)
+	return provider.ciStatus, nil
+}
+func (provider *fakeGitHubProvider) Cancel(_ context.Context, _ forge.Repository, runID string) error {
+	provider.ciCancelled = append(provider.ciCancelled, runID)
+	return nil
+}
+func (provider *fakeGitHubProvider) Cleanup(_ context.Context, _ forge.Repository, ref string) error {
+	provider.ciCleaned = append(provider.ciCleaned, ref)
+	return nil
+}
+func (*fakeGitHubProvider) MirrorTarget(context.Context, forge.Repository) (forge.CIMirrorTarget, error) {
+	return forge.CIMirrorTarget{CloneURL: "https://github.com/lapis/ci-mirror.git", Username: "x-access-token", Password: "opaque-ci-token"}, nil
 }
 
 type fakeCredentialStore map[string][]byte
@@ -144,6 +171,7 @@ func TestForgeGitHubConnectionAttachCapabilitiesAndHealth(t *testing.T) {
 		"env:BRIDGE": []byte(bridge.Hex()),
 	}
 	require.NoError(t, policy.Registry.RegisterGit(provider))
+	require.NoError(t, policy.Registry.RegisterCI(provider))
 
 	connectionBody, err := json.Marshal(map[string]any{
 		"app_id": "123", "installation_id": 99, "credential_ref": "env:APP_KEY",
@@ -174,7 +202,8 @@ func TestForgeGitHubConnectionAttachCapabilitiesAndHealth(t *testing.T) {
 	attachmentBody, err := json.Marshal(map[string]any{
 		"expected_announcement_id": announcement.ID.Hex(), "git_backend": "github",
 		"collaboration_backend": "relay", "connection_id": connectionID,
-		"external_repository_id": "42",
+		"external_repository_id": "42", "ci_backend": "github",
+		"ci_connection_id": connectionID, "ci_external_repository_id": "42", "ci_workflow": "ci.yml",
 	})
 	require.NoError(t, err)
 	attachmentURL := "https://relay.example/api/forge/repositories/" + announcement.PubKey.Hex() + "/notes/integration"
@@ -183,6 +212,7 @@ func TestForgeGitHubConnectionAttachCapabilitiesAndHealth(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.Contains(t, recorder.Body.String(), `"auth":"provider"`)
 	require.Contains(t, recorder.Body.String(), `"smart_http":{"read":false,"write":false}`)
+	require.Contains(t, recorder.Body.String(), `"ci":true`)
 
 	capabilitiesURL := "https://relay.example/api/forge/repositories/" + announcement.PubKey.Hex() + "/notes/capabilities"
 	recorder = httptest.NewRecorder()

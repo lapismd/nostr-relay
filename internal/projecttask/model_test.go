@@ -93,6 +93,27 @@ func TestValidateEventOnlyClaimsTaskShapedNotesAndComments(t *testing.T) {
 	require.ErrorContains(t, err, "e, k, and p")
 }
 
+func TestValidateCIActivity(t *testing.T) {
+	owner := pubkey(t, "c")
+	event := nostr.Event{Kind: nostr.KindTextNote, Content: "GitHub Actions success", Tags: nostr.Tags{
+		{"t", "ci"}, {"a", RepositoryCoordinate{Owner: owner, ID: "notes"}.String()},
+		{"c", strings.Repeat("a", 40)}, {"status", "success"}, {"external-run-id", "7001"},
+	}}
+	recognized, err := ValidateEvent(event)
+	require.True(t, recognized)
+	require.NoError(t, err)
+
+	missingCommit := event
+	missingCommit.Tags = removeNamedTags(event.Tags, "c")
+	_, err = ValidateEvent(missingCommit)
+	require.ErrorContains(t, err, "c tag is required")
+
+	badRoot := event
+	badRoot.Tags = append(event.Tags.CloneDeep(), nostr.Tag{"e", "not-an-id"})
+	_, err = ValidateEvent(badRoot)
+	require.ErrorContains(t, err, "valid event ID")
+}
+
 func TestValidateTombstoneRequiresDirectAddressOwner(t *testing.T) {
 	owner := pubkey(t, "4")
 	other := pubkey(t, "5")

@@ -76,6 +76,9 @@ func ValidateEvent(event nostr.Event) (bool, error) {
 			return true, validateNIP22WorkItemComment(event)
 		}
 	case nostr.KindTextNote:
+		if isCIActivity(event) {
+			return true, validateCIActivity(event)
+		}
 		if isBuzzWorkItemNote(event) {
 			return true, validateBuzzWorkItemNote(event)
 		}
@@ -378,6 +381,46 @@ func validateSingleton(tags nostr.Tags, name string, maxBytes int, required bool
 
 func isBuzzWorkItemNote(event nostr.Event) bool {
 	return hasRootEventTag(event.Tags) && len(tagsNamed(event.Tags, "a")) > 0
+}
+
+func isCIActivity(event nostr.Event) bool {
+	return event.Kind == nostr.KindTextNote && tagHasValue(event.Tags, "t", "ci") && len(tagsNamed(event.Tags, "a")) > 0
+}
+
+func validateCIActivity(event nostr.Event) error {
+	if !utf8.ValidString(event.Content) || len(event.Content) > maxPullRequestContent {
+		return fmt.Errorf("CI activity content must not exceed %d UTF-8 bytes", maxPullRequestContent)
+	}
+	if _, err := validateRequiredRepositoryTag(event.Tags, "CI activity"); err != nil {
+		return err
+	}
+	if err := validateCommitSingleton(event.Tags, "c", true); err != nil {
+		return err
+	}
+	if err := validateSingleton(event.Tags, "status", 64, true); err != nil {
+		return err
+	}
+	for _, singleton := range []struct {
+		name string
+		max  int
+	}{{"external-run-id", 256}, {"external-url", 2048}} {
+		if err := validateSingleton(event.Tags, singleton.name, singleton.max, false); err != nil {
+			return err
+		}
+	}
+	roots := tagsNamed(event.Tags, "e")
+	if len(roots) > 1 {
+		return fmt.Errorf("CI activity must not contain more than one PR root e tag")
+	}
+	if len(roots) == 1 {
+		if len(roots[0]) < 2 {
+			return fmt.Errorf("CI activity e tag must contain an event ID")
+		}
+		if _, err := nostr.IDFromHex(roots[0][1]); err != nil {
+			return fmt.Errorf("CI activity e tag must contain a valid event ID")
+		}
+	}
+	return nil
 }
 
 func isNIP22WorkItemComment(event nostr.Event) bool {

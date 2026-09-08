@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -149,29 +150,38 @@ func (policy *GitForgePolicy) markInactive(ctx context.Context, coordinate proje
 
 // Start repairs any post-save crash gap, then runs one bounded reconciler.
 func (policy *GitForgePolicy) Start() error {
+	workerMode := strings.ToLower(strings.TrimSpace(os.Getenv("FORGE_WORKER_MODE")))
+	if workerMode == "" {
+		workerMode = "embedded"
+	}
+	if workerMode != "embedded" && workerMode != "disabled" && workerMode != "only" {
+		return fmt.Errorf("FORGE_WORKER_MODE must be embedded, disabled, or only")
+	}
 	if err := policy.rebuildIntents(policy.ctx); err != nil {
 		return err
 	}
 	if err := policy.rebuildForgeOutbox(policy.ctx); err != nil {
 		return err
 	}
-	policy.wg.Add(1)
-	go func() {
-		defer policy.wg.Done()
-		ticker := time.NewTicker(policy.Config.GitReconcileInterval())
-		defer ticker.Stop()
-		for {
-			if err := policy.ReconcileOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
-				log.Printf("Git repository reconciliation failed: %v", err)
+	if workerMode != "only" {
+		policy.wg.Add(1)
+		go func() {
+			defer policy.wg.Done()
+			ticker := time.NewTicker(policy.Config.GitReconcileInterval())
+			defer ticker.Stop()
+			for {
+				if err := policy.ReconcileOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+					log.Printf("Git repository reconciliation failed: %v", err)
+				}
+				select {
+				case <-policy.ctx.Done():
+					return
+				case <-ticker.C:
+				}
 			}
-			select {
-			case <-policy.ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	if policy.Config.GitHub.Enabled {
+		}()
+	}
+	if policy.Config.GitHub.Enabled && workerMode != "disabled" {
 		policy.wg.Add(1)
 		go func() {
 			defer policy.wg.Done()
@@ -183,6 +193,9 @@ func (policy *GitForgePolicy) Start() error {
 				}
 				if err := policy.ProcessGitHubWebhookOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
 					log.Printf("GitHub webhook processing failed: %v", err)
+				}
+				if err := policy.ProcessForgeCIOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+					log.Printf("Forge CI reconciliation failed: %v", err)
 				}
 				select {
 				case <-policy.ctx.Done():

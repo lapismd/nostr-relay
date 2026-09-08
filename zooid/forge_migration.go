@@ -288,6 +288,9 @@ func (policy *GitForgePolicy) activateForgeMigration(ctx context.Context, reposi
 	integration.GitBackend = forge.BackendWalGit
 	integration.CollaborationBackend = forge.BackendRelay
 	integration.MirrorBackend = ""
+	integration.CIBackend = ""
+	integration.CIConnectionID, integration.CIExternalRepositoryID = "", ""
+	integration.CIExternalRepository, integration.CIWorkflow = "", ""
 	integration.HealthState, integration.HealthDetail = "ready", ""
 	if migration.KeepGitHubCollaboration {
 		integration.CollaborationBackend = forge.BackendGitHub
@@ -300,9 +303,11 @@ func (policy *GitForgePolicy) activateForgeMigration(ctx context.Context, reposi
 	}
 	_, err = tx.ExecContext(queryCtx, policy.Events.Schema.Render(`
 		UPDATE {{.Name}}__repository_integrations
-		SET announcement_id = $3, configuration_source = 'explicit', git_backend = 'walgit',
-		    collaboration_backend = $4, mirror_backend = $5, connection_id = $6,
-		    external_repository_id = $7, external_repository = $8,
+			SET announcement_id = $3, configuration_source = 'explicit', git_backend = 'walgit',
+			    collaboration_backend = $4, mirror_backend = $5, connection_id = $6,
+			    external_repository_id = $7, external_repository = $8,
+			    ci_backend = '', ci_connection_id = '', ci_external_repository_id = '',
+			    ci_external_repository = '', ci_workflow = '',
 		    generation = generation + 1, health_state = 'ready', health_detail = '', updated_at = NOW()
 		WHERE owner = $1 AND repo = $2`), repository.Coordinate.Owner.Hex(), repository.Coordinate.ID,
 		expectedAnnouncementID, integration.CollaborationBackend, integration.MirrorBackend,

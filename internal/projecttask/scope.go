@@ -158,11 +158,15 @@ func (state *resolutionState) resolve(ctx context.Context, event nostr.Event, de
 		mergeResolution(&result, rootScope)
 		return result, nil
 
-	case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft,
-		nostr.KindTextNote:
-		if event.Kind == nostr.KindTextNote && !isBuzzWorkItemNote(event) {
+	case nostr.KindTextNote:
+		if isCIActivity(event) {
+			return state.resolveCIActivity(ctx, event, depth)
+		}
+		if !isBuzzWorkItemNote(event) {
 			return result, nil
 		}
+		fallthrough
+	case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft:
 		result.relevant = true
 		root, err := state.readLowerRootWorkItem(ctx, event)
 		if err != nil {
@@ -227,6 +231,39 @@ func (state *resolutionState) resolve(ctx context.Context, event nostr.Event, de
 	case nostr.KindDeletion:
 		return state.resolveDeletion(ctx, event, depth)
 	}
+	return result, nil
+}
+
+func (state *resolutionState) resolveCIActivity(ctx context.Context, event nostr.Event, depth int) (resolutionResult, error) {
+	result := resolutionResult{relevant: true, channels: make(map[string]struct{})}
+	coordinates := tagsNamed(event.Tags, "a")
+	if len(coordinates) != 1 {
+		return result, fmt.Errorf("%w: CI activity repository is missing or ambiguous", ErrScopeUnresolved)
+	}
+	repository, err := state.resolveRepositoryTag(ctx, coordinates[0], depth)
+	if err != nil {
+		return result, err
+	}
+	mergeChannels(result.channels, repository.channels)
+	rootTag := event.Tags.Find("e")
+	if rootTag == nil {
+		return state.requireSingleScope(result)
+	}
+	root, err := state.readEventTag(ctx, rootTag, "CI pull request root")
+	if err != nil {
+		return result, err
+	}
+	if root.Kind != KindPullRequest || repositoryTagValue(root) != coordinates[0][1] {
+		return result, fmt.Errorf("%w: CI activity root must be a pull request in the same repository", ErrScopeUnresolved)
+	}
+	rootScope, err := state.resolve(ctx, root, depth+1)
+	if err != nil {
+		return result, err
+	}
+	if err := directScopeMustBeInherited(event, rootScope.channels); err != nil {
+		return result, err
+	}
+	mergeResolution(&result, rootScope)
 	return result, nil
 }
 

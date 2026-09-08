@@ -37,19 +37,23 @@ const (
 // repository coordinate. AnnouncementID is an optimistic-concurrency guard;
 // changing this row never mutates the signed announcement.
 type Integration struct {
-	Coordinate           projecttask.RepositoryCoordinate `json:"-"`
-	AnnouncementID       string                           `json:"announcement_id"`
-	ConfigurationSource  string                           `json:"configuration_source"`
-	GitBackend           string                           `json:"git_backend"`
-	CollaborationBackend string                           `json:"collaboration_backend"`
-	MirrorBackend        string                           `json:"mirror_backend,omitempty"`
-	CIBackend            string                           `json:"ci_backend,omitempty"`
-	ConnectionID         string                           `json:"connection_id,omitempty"`
-	ExternalRepositoryID string                           `json:"external_repository_id,omitempty"`
-	ExternalRepository   string                           `json:"external_repository,omitempty"`
-	Generation           int64                            `json:"generation"`
-	HealthState          string                           `json:"health_state"`
-	HealthDetail         string                           `json:"health_detail,omitempty"`
+	Coordinate             projecttask.RepositoryCoordinate `json:"-"`
+	AnnouncementID         string                           `json:"announcement_id"`
+	ConfigurationSource    string                           `json:"configuration_source"`
+	GitBackend             string                           `json:"git_backend"`
+	CollaborationBackend   string                           `json:"collaboration_backend"`
+	MirrorBackend          string                           `json:"mirror_backend,omitempty"`
+	CIBackend              string                           `json:"ci_backend,omitempty"`
+	ConnectionID           string                           `json:"connection_id,omitempty"`
+	ExternalRepositoryID   string                           `json:"external_repository_id,omitempty"`
+	ExternalRepository     string                           `json:"external_repository,omitempty"`
+	CIConnectionID         string                           `json:"ci_connection_id,omitempty"`
+	CIExternalRepositoryID string                           `json:"ci_external_repository_id,omitempty"`
+	CIExternalRepository   string                           `json:"ci_external_repository,omitempty"`
+	CIWorkflow             string                           `json:"ci_workflow,omitempty"`
+	Generation             int64                            `json:"generation"`
+	HealthState            string                           `json:"health_state"`
+	HealthDetail           string                           `json:"health_detail,omitempty"`
 }
 
 type Repository struct {
@@ -308,6 +312,7 @@ type CIRequest struct {
 	Commit      string
 	Workflow    string
 	Inputs      map[string]string
+	MirrorRef   string
 }
 
 type CIRun struct {
@@ -315,6 +320,7 @@ type CIRun struct {
 	Commit        string    `json:"commit"`
 	Status        string    `json:"status"`
 	URL           string    `json:"url,omitempty"`
+	MirrorRef     string    `json:"mirror_ref,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
@@ -323,6 +329,28 @@ type CIBackend interface {
 	Start(context.Context, CIRequest) (CIRun, error)
 	Status(context.Context, Repository, string) (CIRun, error)
 	Cancel(context.Context, Repository, string) error
+}
+
+type CIDiscoveryBackend interface {
+	Discover(context.Context, CIRequest) (CIRun, error)
+}
+
+type CICleanupBackend interface {
+	Cleanup(context.Context, Repository, string) error
+}
+
+type CIMirrorTarget struct {
+	CloneURL string
+	Username string
+	Password string
+}
+
+type CIMirrorTargetBackend interface {
+	MirrorTarget(context.Context, Repository) (CIMirrorTarget, error)
+}
+
+type CommitMirrorSource interface {
+	MirrorCommit(context.Context, Repository, string, CIMirrorTarget, string) error
 }
 
 type RepositoryIntegrationResolver interface {

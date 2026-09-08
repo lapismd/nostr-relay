@@ -170,6 +170,7 @@ type githubWebhookPayload struct {
 	PullRequest         githubWebhookPullRequest  `json:"pull_request"`
 	Comment             githubWebhookComment      `json:"comment"`
 	Review              githubWebhookReview       `json:"review"`
+	WorkflowRun         githubWebhookWorkflowRun  `json:"workflow_run"`
 }
 
 type githubWebhookRepository struct {
@@ -235,6 +236,16 @@ type githubWebhookReview struct {
 	User     githubWebhookUser `json:"user"`
 }
 
+type githubWebhookWorkflowRun struct {
+	ID         int64     `json:"id"`
+	HeadSHA    string    `json:"head_sha"`
+	HeadBranch string    `json:"head_branch"`
+	Status     string    `json:"status"`
+	Conclusion string    `json:"conclusion"`
+	HTMLURL    string    `json:"html_url"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery githubWebhookDelivery) error {
 	var payload githubWebhookPayload
 	if err := json.Unmarshal(delivery.Payload, &payload); err != nil {
@@ -271,6 +282,12 @@ func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery
 		return nil
 	case "push":
 		return policy.recordGitHubPush(ctx, delivery, payload)
+	case "workflow_run":
+		repository, found, err := policy.repositoryForGitHubCI(ctx, delivery.ConnectionID, delivery.ExternalRepositoryID)
+		if err != nil || !found {
+			return err
+		}
+		return policy.processGitHubWorkflowRun(ctx, repository, payload.WorkflowRun)
 	}
 	repository, found, err := policy.repositoryForGitHub(ctx, delivery.ConnectionID, delivery.ExternalRepositoryID)
 	if err != nil || !found {
@@ -323,8 +340,6 @@ func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery
 		if delivery.Action == "created" {
 			return policy.publishExternalReview(ctx, repository, delivery, strconv.FormatInt(payload.PullRequest.ID, 10), githubWebhookReview{}, payload.Comment)
 		}
-	case "workflow_run":
-		return policy.processGitHubWorkflowRun(ctx, repository, delivery.Payload)
 	}
 	return nil
 }
@@ -393,6 +408,29 @@ func (policy *GitForgePolicy) repositoryForGitHub(ctx context.Context, connectio
 	return resolved.Repository, found, err
 }
 
+func (policy *GitForgePolicy) repositoryForGitHubCI(ctx context.Context, connectionID, repositoryID string) (forge.Repository, bool, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	var ownerHex, repo string
+	err := GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT owner, repo FROM {{.Name}}__repository_integrations
+		WHERE ci_connection_id = $1 AND ci_external_repository_id = $2
+		  AND ci_backend = 'github' AND health_state <> 'inactive'
+		ORDER BY generation DESC LIMIT 1`), connectionID, repositoryID).Scan(&ownerHex, &repo)
+	if err == sql.ErrNoRows {
+		return forge.Repository{}, false, nil
+	}
+	if err != nil {
+		return forge.Repository{}, false, err
+	}
+	owner, err := nostr.PubKeyFromHex(ownerHex)
+	if err != nil {
+		return forge.Repository{}, false, err
+	}
+	resolved, found, err := policy.ResolveIntegration(ctx, projecttask.RepositoryCoordinate{Owner: owner, ID: repo})
+	return resolved.Repository, found, err
+}
+
 func (policy *GitForgePolicy) disableGitHubConnection(ctx context.Context, id, reason string) error {
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()
@@ -409,7 +447,7 @@ func (policy *GitForgePolicy) disableGitHubConnection(ctx context.Context, id, r
 	if _, err := tx.ExecContext(queryCtx, policy.Events.Schema.Render(`
 		UPDATE {{.Name}}__repository_integrations
 		SET health_state = 'disabled', health_detail = $2, updated_at = NOW()
-		WHERE connection_id = $1`), id, sanitizeGitErrorString(reason)); err != nil {
+		WHERE connection_id = $1 OR ci_connection_id = $1`), id, sanitizeGitErrorString(reason)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -421,14 +459,30 @@ func (policy *GitForgePolicy) disableGitHubRepository(ctx context.Context, conne
 	_, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
 		UPDATE {{.Name}}__repository_integrations
 		SET health_state = 'disabled', health_detail = $3, updated_at = NOW()
-		WHERE connection_id = $1 AND external_repository_id = $2`),
+		WHERE (connection_id = $1 AND external_repository_id = $2)
+		   OR (ci_connection_id = $1 AND ci_external_repository_id = $2)`),
 		connectionID, strconv.FormatInt(repositoryID, 10), sanitizeGitErrorString(reason))
 	return err
 }
 
 func (policy *GitForgePolicy) enableGitHubRepository(ctx context.Context, connectionID string, repository githubWebhookRepository) error {
 	attached, found, err := policy.repositoryForGitHub(ctx, connectionID, strconv.FormatInt(repository.ID, 10))
-	if err != nil || !found {
+	if err != nil {
+		return err
+	}
+	if !found {
+		attached, found, err = policy.repositoryForGitHubCI(ctx, connectionID, strconv.FormatInt(repository.ID, 10))
+		if err != nil || !found {
+			return err
+		}
+		queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+		defer cancel()
+		_, err = GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+			UPDATE {{.Name}}__repository_integrations
+			SET ci_external_repository = $3, health_state = 'ready', health_detail = '', updated_at = NOW()
+			WHERE owner = $1 AND repo = $2 AND ci_connection_id = $4 AND ci_external_repository_id = $5`),
+			attached.Coordinate.Owner.Hex(), attached.Coordinate.ID, repository.FullName,
+			connectionID, strconv.FormatInt(repository.ID, 10))
 		return err
 	}
 	state, detail := "degraded", "signed clone/web URL is stale or does not match the attached GitHub repository"
@@ -436,7 +490,17 @@ func (policy *GitForgePolicy) enableGitHubRepository(ctx context.Context, connec
 	if githubAnnouncementMatches(attached.Announcement, metadata) {
 		state, detail = "ready", ""
 	}
-	return policy.updateIntegrationHealth(ctx, attached.Coordinate, state, detail, repository.FullName)
+	if err := policy.updateIntegrationHealth(ctx, attached.Coordinate, state, detail, repository.FullName); err != nil {
+		return err
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	_, err = GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		UPDATE {{.Name}}__repository_integrations SET ci_external_repository = $3, updated_at = NOW()
+		WHERE owner = $1 AND repo = $2 AND ci_connection_id = $4 AND ci_external_repository_id = $5`),
+		attached.Coordinate.Owner.Hex(), attached.Coordinate.ID, repository.FullName,
+		connectionID, strconv.FormatInt(repository.ID, 10))
+	return err
 }
 
 func (policy *GitForgePolicy) renameGitHubRepository(ctx context.Context, connectionID string, repository githubWebhookRepository) error {
@@ -808,8 +872,50 @@ func (policy *GitForgePolicy) publishBridgeNote(ctx context.Context, repository 
 	return nil
 }
 
-// Implemented by the CI milestone; accepting workflow deliveries before a run
-// is known is harmless and leaves them as processed observations.
-func (policy *GitForgePolicy) processGitHubWorkflowRun(context.Context, forge.Repository, json.RawMessage) error {
-	return nil
+func (policy *GitForgePolicy) processGitHubWorkflowRun(ctx context.Context, repository forge.Repository, webhook githubWebhookWorkflowRun) error {
+	if webhook.ID <= 0 || !fullForgeObjectID(webhook.HeadSHA) || !strings.HasPrefix(webhook.HeadBranch, "lapis-ci/") {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	var operationID string
+	err := GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT operation_id FROM {{.Name}}__forge_ci_runs
+		WHERE provider = 'github' AND connection_id = $1 AND owner = $2 AND repo = $3
+		  AND (provider_run_id = $4 OR (provider_run_id = '' AND mirror_ref = $5))
+		ORDER BY updated_at DESC LIMIT 1`), repository.Integration.CIConnectionID,
+		repository.Coordinate.Owner.Hex(), repository.Coordinate.ID,
+		strconv.FormatInt(webhook.ID, 10), "refs/heads/"+webhook.HeadBranch).Scan(&operationID)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	run, found, err := policy.loadForgeCIRun(ctx, operationID)
+	if err != nil || !found {
+		return err
+	}
+	if !strings.EqualFold(run.Commit, webhook.HeadSHA) {
+		return policy.failForgeCIRun(ctx, run, &forge.Error{Status: http.StatusBadGateway, Code: "github_ci_head_mismatch"})
+	}
+	status := strings.ToLower(webhook.Status)
+	if status == "completed" && webhook.Conclusion != "" {
+		status = strings.ToLower(webhook.Conclusion)
+	}
+	run.ProviderRunID = strconv.FormatInt(webhook.ID, 10)
+	run.ProviderURL = webhook.HTMLURL
+	run.Status = status
+	run.ProviderUpdatedAt = webhook.UpdatedAt
+	if err := policy.updateForgeCIRun(ctx, run); err != nil {
+		return err
+	}
+	if !terminalCIStatus(run.Status) {
+		return nil
+	}
+	resolved, found, err := policy.ResolveIntegration(ctx, run.Coordinate)
+	if err != nil || !found || resolved.CI == nil {
+		return err
+	}
+	return policy.finishForgeCIRun(ctx, resolved, run, webhook.UpdatedAt)
 }

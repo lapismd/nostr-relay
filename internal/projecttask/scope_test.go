@@ -3,6 +3,7 @@ package projecttask
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fiatjaf.com/nostr"
@@ -201,6 +202,31 @@ func TestScopeResolverFailsClosedForMissingRepository(t *testing.T) {
 	_, err := resolver.Resolve(context.Background(), issue)
 	require.ErrorIs(t, err, ErrScopeUnresolved)
 	require.ErrorContains(t, err, "was not found")
+}
+
+func TestScopeResolverAppliesRepositoryAndOptionalPROriginToCIActivity(t *testing.T) {
+	owner := pubkey(t, "d")
+	author := pubkey(t, "e")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	repository := nostr.Event{Kind: nostr.KindRepositoryAnnouncement, PubKey: owner, Tags: nostr.Tags{{"d", "notes"}, {TagBuzzChannel, "repo"}}}
+	root := validPullRequestEvent(t, id(t, "e"), author, owner, "notes", strings.Repeat("a", 40))
+	root.Tags = append(root.Tags, nostr.Tag{"h", "origin"})
+	resolver := ScopeResolver{Reader: memoryEventReader{
+		byID:      map[nostr.ID]nostr.Event{root.ID: root},
+		byAddress: map[string]nostr.Event{coordinate.String(): repository},
+	}}
+	repositoryRun := nostr.Event{Kind: nostr.KindTextNote, Tags: nostr.Tags{
+		{"t", "ci"}, {"a", coordinate.String()}, {"c", strings.Repeat("a", 40)}, {"status", "success"},
+	}}
+	scope, err := resolver.Resolve(context.Background(), repositoryRun)
+	require.NoError(t, err)
+	require.Equal(t, []string{"repo"}, scope.Channels)
+
+	prRun := repositoryRun
+	prRun.Tags = append(prRun.Tags.CloneDeep(), nostr.Tag{"e", root.ID.Hex(), "", "root"})
+	scope, err = resolver.Resolve(context.Background(), prRun)
+	require.NoError(t, err)
+	require.Equal(t, []string{"origin", "repo"}, scope.Channels)
 }
 
 func TestScopeResolverRequiresSubtaskInSameRepository(t *testing.T) {

@@ -237,6 +237,8 @@ func (policy *GitForgePolicy) serveRepositoryForgeAPI(w http.ResponseWriter, r *
 		policy.enqueueRepositoryCommand(w, r, actor, idempotencyKey, resolved, "create_issue", "issue", body)
 	case r.Method == http.MethodPost && action == "pull-requests":
 		policy.enqueueRepositoryCommand(w, r, actor, idempotencyKey, resolved, "create_pull_request", "pull_request", body)
+	case r.Method == http.MethodPost && action == "ci":
+		policy.enqueueForgeCI(w, r, actor, idempotencyKey, resolved, body)
 	case r.Method == http.MethodPost && action == "import":
 		if !policy.Config.CanManage(actor) {
 			writeGitError(w, http.StatusForbidden, "relay_admin_required")
@@ -631,6 +633,15 @@ func (policy *GitForgePolicy) serveForgeOperationAPI(w http.ResponseWriter, r *h
 		writeForgeJSON(w, http.StatusAccepted, publicForgeOperation(operation))
 		return
 	}
+	if r.Method == http.MethodPost && action == "cancel" && operation.Command == "ci_start" {
+		if err := policy.cancelForgeCI(r.Context(), operation); err != nil {
+			writeGitBackendFailure(w, err)
+			return
+		}
+		operation, _, _ = policy.loadForgeOperation(r.Context(), operation.ID)
+		writeForgeJSON(w, http.StatusAccepted, publicForgeOperation(operation))
+		return
+	}
 	http.NotFound(w, r)
 }
 
@@ -652,6 +663,7 @@ func publicForgeOperation(operation forgeOperation) map[string]any {
 func (policy *GitForgePolicy) serveRepositoryHealth(w http.ResponseWriter, r *http.Request, resolved forge.ResolvedRepository) {
 	state, detail := resolved.Repository.Integration.HealthState, resolved.Repository.Integration.HealthDetail
 	providerRepository := ""
+	ciRepository := ""
 	if resolved.Repository.Integration.GitBackend == forge.BackendGitHub {
 		if policy.GitHub == nil {
 			state, detail = "disabled", "GitHub adapter is disabled"
@@ -670,9 +682,21 @@ func (policy *GitForgePolicy) serveRepositoryHealth(w http.ResponseWriter, r *ht
 			}
 		}
 	}
+	if resolved.Repository.Integration.CIBackend == forge.BackendGitHub {
+		if policy.GitHub == nil {
+			state, detail = "disabled", "GitHub CI adapter is disabled"
+		} else {
+			metadata, err := policy.GitHub.RepositoryByID(r.Context(), resolved.Repository.Integration.CIConnectionID, mustRepositoryID(resolved.Repository.Integration.CIExternalRepositoryID))
+			if err != nil {
+				state, detail = "degraded", "GitHub CI repository is unavailable"
+			} else {
+				ciRepository = metadata.FullName
+			}
+		}
+	}
 	writeForgeJSON(w, http.StatusOK, map[string]any{
 		"repository": resolved.Repository.Coordinate.String(), "state": state,
-		"detail": detail, "provider_repository": providerRepository,
+		"detail": detail, "provider_repository": providerRepository, "ci_repository": ciRepository,
 		"generation": resolved.Repository.Integration.Generation,
 	})
 }
@@ -686,6 +710,9 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 		CIBackend              string `json:"ci_backend"`
 		ConnectionID           string `json:"connection_id"`
 		ExternalRepositoryID   string `json:"external_repository_id"`
+		CIConnectionID         string `json:"ci_connection_id"`
+		CIExternalRepositoryID string `json:"ci_external_repository_id"`
+		CIWorkflow             string `json:"ci_workflow"`
 	}
 	if !decodeStrictJSON(body, &request) || request.ExpectedAnnouncementID == "" || request.ExpectedAnnouncementID != repository.Announcement.ID.Hex() {
 		writeGitError(w, http.StatusConflict, "announcement_changed")
@@ -697,8 +724,11 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 	if request.MirrorBackend == forge.BackendNone {
 		request.MirrorBackend = ""
 	}
-	if request.CIBackend != "" && request.CIBackend != forge.BackendNone {
-		writeGitError(w, http.StatusConflict, "capability_not_enabled")
+	if request.CIBackend == forge.BackendNone {
+		request.CIBackend = ""
+	}
+	if request.CIBackend != "" && request.CIBackend != forge.BackendGitHub {
+		writeGitError(w, http.StatusBadRequest, "unknown_ci_backend")
 		return
 	}
 	if request.MirrorBackend != "" && request.MirrorBackend != forge.BackendGitHub {
@@ -709,8 +739,10 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 		Coordinate: repository.Coordinate, AnnouncementID: repository.Announcement.ID.Hex(),
 		ConfigurationSource: forge.ConfigurationExplicit,
 		GitBackend:          request.GitBackend, CollaborationBackend: request.CollaborationBackend,
-		MirrorBackend: request.MirrorBackend,
-		ConnectionID:  request.ConnectionID, ExternalRepositoryID: request.ExternalRepositoryID,
+		MirrorBackend: request.MirrorBackend, CIBackend: request.CIBackend,
+		ConnectionID: request.ConnectionID, ExternalRepositoryID: request.ExternalRepositoryID,
+		CIConnectionID: request.CIConnectionID, CIExternalRepositoryID: request.CIExternalRepositoryID,
+		CIWorkflow:  request.CIWorkflow,
 		HealthState: "ready",
 	}
 	githubNeeded := request.GitBackend == forge.BackendGitHub || request.CollaborationBackend == forge.BackendGitHub || request.MirrorBackend == forge.BackendGitHub
@@ -731,6 +763,28 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 			return
 		}
 		integration.ExternalRepository = providerMetadata.FullName
+	}
+	if request.CIBackend == forge.BackendGitHub {
+		if policy.GitHub == nil || !validGitHubWorkflow(request.CIWorkflow) {
+			writeGitError(w, http.StatusConflict, "github_ci_not_enabled")
+			return
+		}
+		ciRepositoryID, err := strconv.ParseInt(request.CIExternalRepositoryID, 10, 64)
+		if err != nil || ciRepositoryID <= 0 || request.CIConnectionID == "" {
+			writeGitError(w, http.StatusBadRequest, "invalid_github_ci_repository")
+			return
+		}
+		ciMetadata, err := policy.GitHub.RepositoryByID(r.Context(), request.CIConnectionID, ciRepositoryID)
+		if err != nil {
+			writeGitBackendFailure(w, err)
+			return
+		}
+		integration.CIExternalRepository = ciMetadata.FullName
+		if request.GitBackend == forge.BackendGitHub &&
+			(request.CIConnectionID != request.ConnectionID || request.CIExternalRepositoryID != request.ExternalRepositoryID) {
+			writeGitError(w, http.StatusConflict, "github_ci_repository_must_match_source")
+			return
+		}
 	}
 	switch request.GitBackend {
 	case forge.BackendGitHub:
@@ -762,6 +816,9 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 	if !githubNeeded {
 		integration.ConnectionID, integration.ExternalRepositoryID, integration.ExternalRepository = "", "", ""
 	}
+	if request.CIBackend == "" {
+		integration.CIConnectionID, integration.CIExternalRepositoryID, integration.CIExternalRepository, integration.CIWorkflow = "", "", "", ""
+	}
 	if err := policy.setExplicitIntegration(r.Context(), integration, request.ExpectedAnnouncementID); err != nil {
 		writeGitBackendFailure(w, err)
 		return
@@ -778,6 +835,19 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 		return
 	}
 	writeForgeJSON(w, http.StatusOK, map[string]any{"integration": resolved.Repository.Integration, "capabilities": resolved.Capabilities})
+}
+
+func validGitHubWorkflow(value string) bool {
+	if value == "" || len(value) > 255 || strings.ContainsAny(value, "\x00\r\n/") {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func githubAnnouncementMatches(event nostr.Event, repository githubforge.RepositoryMetadata) bool {

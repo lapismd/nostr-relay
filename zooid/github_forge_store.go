@@ -81,8 +81,9 @@ func (policy *GitForgePolicy) setExplicitIntegration(ctx context.Context, integr
 		  (owner, repo, announcement_id, configuration_source, git_backend,
 		   collaboration_backend, mirror_backend, ci_backend, connection_id,
 		   external_repository_id, external_repository, generation,
-		   health_state, health_detail, updated_at)
-		VALUES ($1, $2, $3, 'explicit', $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, NOW())
+		   health_state, health_detail, ci_connection_id, ci_external_repository_id,
+		   ci_external_repository, ci_workflow, updated_at)
+		VALUES ($1, $2, $3, 'explicit', $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14, $15, $16, NOW())
 		ON CONFLICT (owner, repo) DO UPDATE SET
 		  announcement_id = EXCLUDED.announcement_id,
 		  configuration_source = 'explicit', git_backend = EXCLUDED.git_backend,
@@ -91,16 +92,22 @@ func (policy *GitForgePolicy) setExplicitIntegration(ctx context.Context, integr
 		  connection_id = EXCLUDED.connection_id,
 		  external_repository_id = EXCLUDED.external_repository_id,
 		  external_repository = EXCLUDED.external_repository,
+		  ci_connection_id = EXCLUDED.ci_connection_id,
+		  ci_external_repository_id = EXCLUDED.ci_external_repository_id,
+		  ci_external_repository = EXCLUDED.ci_external_repository,
+		  ci_workflow = EXCLUDED.ci_workflow,
 		  generation = {{.Name}}__repository_integrations.generation + 1,
 		  health_state = EXCLUDED.health_state, health_detail = EXCLUDED.health_detail,
 		  updated_at = NOW()
-		WHERE {{.Name}}__repository_integrations.announcement_id = $13`),
+		WHERE {{.Name}}__repository_integrations.announcement_id = $17`),
 		integration.Coordinate.Owner.Hex(), integration.Coordinate.ID,
 		integration.AnnouncementID, integration.GitBackend,
 		integration.CollaborationBackend, integration.MirrorBackend,
 		integration.CIBackend, integration.ConnectionID,
 		integration.ExternalRepositoryID, integration.ExternalRepository,
-		integration.HealthState, integration.HealthDetail, expectedAnnouncementID)
+		integration.HealthState, integration.HealthDetail, integration.CIConnectionID,
+		integration.CIExternalRepositoryID, integration.CIExternalRepository,
+		integration.CIWorkflow, expectedAnnouncementID)
 	if err != nil {
 		return err
 	}

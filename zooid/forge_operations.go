@@ -371,6 +371,13 @@ func (policy *GitForgePolicy) ProcessForgeOutboxOnce(ctx context.Context) error 
 		}
 		return nil
 	}
+	if operation.Command == "ci_start" {
+		if err := policy.processForgeCIStart(ctx, resolved, operation); err != nil {
+			_ = policy.failForgeOperation(ctx, operation, err)
+			return err
+		}
+		return nil
+	}
 	result := operation.ProviderResult
 	if operation.Command == "initial_import" && result != nil {
 		return policy.finishForgeOperation(ctx, operation)

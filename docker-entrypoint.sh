@@ -38,6 +38,8 @@ GITHUB_CREDENTIAL_DIR="${GITHUB_CREDENTIAL_DIR:-/run/secrets}"
 GITHUB_WORKER_INTERVAL="${GITHUB_WORKER_INTERVAL:-2s}"
 GITHUB_RECONCILE_INTERVAL="${GITHUB_RECONCILE_INTERVAL:-5m}"
 GITHUB_MAX_WEBHOOK_BYTES="${GITHUB_MAX_WEBHOOK_BYTES:-4194304}"
+FORGE_WORKER_MODE="${FORGE_WORKER_MODE:-embedded}"
+LAPIS_PROCESS_BIN="${LAPIS_PROCESS_BIN:-/bin/lapis-relay}"
 
 # Create directories
 mkdir -p "$CONFIG_DIR" "$MEDIA_DIR"
@@ -178,5 +180,6 @@ EOF
 fi
 
 echo ""
-echo "Starting Lapis relay..."
-exec /bin/lapis-relay "$@"
+echo "Starting Lapis process..."
+export FORGE_WORKER_MODE
+exec "$LAPIS_PROCESS_BIN" "$@"

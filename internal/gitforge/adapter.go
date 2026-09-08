@@ -59,6 +59,14 @@ func (adapter *WalGitAdapter) ImportRepository(ctx context.Context, repository f
 	return backend.ImportRepository(ctx, repository, request)
 }
 
+func (adapter *WalGitAdapter) MirrorCommit(ctx context.Context, repository forge.Repository, commit string, target forge.CIMirrorTarget, mirrorRef string) error {
+	backend, ok := adapter.legacy.(*WalGitBackend)
+	if !ok {
+		return &forge.Error{Status: http.StatusNotImplemented, Code: "ci_mirror_unavailable"}
+	}
+	return backend.MirrorCommit(ctx, repository, commit, target, mirrorRef)
+}
+
 func (adapter *WalGitAdapter) ServeGitHTTP(w http.ResponseWriter, r *http.Request, repository forge.Repository, subpath, principal string) {
 	adapter.legacy.ProxyGitHTTP(w, r, legacyRepository(repository), subpath, principal)
 }
@@ -155,6 +163,7 @@ var (
 	_ forge.GitBackend            = (*WalGitAdapter)(nil)
 	_ forge.RepositoryProvisioner = (*WalGitAdapter)(nil)
 	_ forge.RepositoryImporter    = (*WalGitAdapter)(nil)
+	_ forge.CommitMirrorSource    = (*WalGitAdapter)(nil)
 	_ forge.SmartHTTPBackend      = (*WalGitAdapter)(nil)
 	_ forge.RepositoryAPIBackend  = (*WalGitAdapter)(nil)
 )

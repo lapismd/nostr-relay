@@ -31,6 +31,7 @@ services:
       GITHUB_WORKER_INTERVAL: ${LAPIS_GITHUB_WORKER_INTERVAL:-2s}
       GITHUB_RECONCILE_INTERVAL: ${LAPIS_GITHUB_RECONCILE_INTERVAL:-5m}
       GITHUB_MAX_WEBHOOK_BYTES: ${LAPIS_GITHUB_MAX_WEBHOOK_BYTES:-4194304}
+      FORGE_WORKER_MODE: ${LAPIS_FORGE_WORKER_MODE:-embedded}
       WALGIT_RELAY_TOKEN: ${LAPIS_WALGIT_RELAY_TOKEN:?set a random local relay-to-WalGit token}
       WALGIT_WEBHOOK_SECRET: ${LAPIS_WALGIT_WEBHOOK_SECRET:?set a random local WalGit webhook secret}
     ports:
@@ -53,6 +54,54 @@ services:
       timeout: 3s
       retries: 30
       start_period: 20s
+    restart: unless-stopped
+
+  forge-worker:
+    profiles: ["external-forge-worker"]
+    image: lapis-forge-worker:local
+    build:
+      context: .
+      target: forge-worker
+    environment:
+      DATABASE_URL: postgres://lapis_relay:dev@postgres:5432/lapis_relay?sslmode=disable
+      RELAY_HOST: ${LAPIS_RELAY_HOST:-registry.localhost:8281}
+      RELAY_SCHEMA: lapis_registry
+      RELAY_SECRET: ${LAPIS_RELAY_SECRET:?set an ephemeral local relay secret}
+      RELAY_PUBKEY: ${LAPIS_RELAY_OWNER_PUBKEY:?set the matching local relay owner pubkey}
+      ADMIN_PUBKEYS: ${LAPIS_RELAY_ADMIN_PUBKEYS:?set a TOML-formatted local admin pubkey list}
+      POLICY_OPEN: "true"
+      POLICY_ANONYMOUS_READ: "true"
+      POLICY_PUBLIC_JOIN: "true"
+      GROUPS_AUTO_JOIN: "true"
+      GROUPS_ADMIN_CREATE_ONLY: "true"
+      GROUPS_PRIVATE_ADMIN_ONLY: "true"
+      GROUPS_PRIVATE_RELAY_ADMIN_ACCESS: "false"
+      BLOSSOM_ENABLED: "true"
+      REGISTRY_POLICY_ENABLED: ${LAPIS_REGISTRY_POLICY_ENABLED:-false}
+      REGISTRY_RELEASE_GROUP_ID: ${LAPIS_REGISTRY_RELEASE_GROUP_ID:-}
+      REGISTRY_CURATOR_ROLE: ${LAPIS_REGISTRY_CURATOR_ROLE:-registry-curator}
+      GIT_ENABLED: ${LAPIS_GIT_ENABLED:-true}
+      GIT_PUBLIC_URL: ${LAPIS_GIT_PUBLIC_URL:-http://localhost:8281}
+      GIT_BACKEND_URL: http://walgit:8080
+      GIT_RECONCILE_INTERVAL: ${LAPIS_GIT_RECONCILE_INTERVAL:-2s}
+      GIT_MAX_DIFF_BYTES: ${LAPIS_GIT_MAX_DIFF_BYTES:-8388608}
+      GIT_MAX_DIFF_FILES: ${LAPIS_GIT_MAX_DIFF_FILES:-2000}
+      GITHUB_ENABLED: ${LAPIS_GITHUB_ENABLED:-false}
+      GITHUB_CREDENTIAL_DIR: /run/secrets
+      GITHUB_WORKER_INTERVAL: ${LAPIS_GITHUB_WORKER_INTERVAL:-2s}
+      GITHUB_RECONCILE_INTERVAL: ${LAPIS_GITHUB_RECONCILE_INTERVAL:-5m}
+      GITHUB_MAX_WEBHOOK_BYTES: ${LAPIS_GITHUB_MAX_WEBHOOK_BYTES:-4194304}
+      FORGE_WORKER_MODE: only
+      WALGIT_RELAY_TOKEN: ${LAPIS_WALGIT_RELAY_TOKEN:?set a random local relay-to-WalGit token}
+      WALGIT_WEBHOOK_SECRET: ${LAPIS_WALGIT_WEBHOOK_SECRET:?set a random local WalGit webhook secret}
+    volumes:
+      - relay-config:/app/config
+      - relay-media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      walgit:
+        condition: service_healthy
     restart: unless-stopped
 
   walgit:
