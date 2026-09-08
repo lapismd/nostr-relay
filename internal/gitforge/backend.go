@@ -11,8 +11,9 @@ import (
 // Git semantics stay in the sidecar; the relay supplies identity and policy.
 type Backend interface {
 	EnsureRepository(context.Context, projecttask.RepositoryCoordinate) error
-	ProxyGitHTTP(http.ResponseWriter, *http.Request, Repository)
-	ProxyRepositoryAPI(http.ResponseWriter, *http.Request, Repository, string)
+	ProxyGitHTTP(http.ResponseWriter, *http.Request, Repository, string, string)
+	ProxyRepositoryAPI(http.ResponseWriter, *http.Request, Repository, string, string)
+	Resolve(context.Context, Repository, string, string) (string, error)
 	Compare(context.Context, Repository, CompareRequest) (CompareResult, error)
 }
 
@@ -22,6 +23,7 @@ type CompareRequest struct {
 	UseMergeBase  bool
 	MaxFiles      int
 	MaxPatchBytes int64
+	Principal     string
 }
 
 type CompareFile struct {
@@ -39,4 +41,15 @@ type CompareResult struct {
 	MergeBase string        `json:"merge_base,omitempty"`
 	Files     []CompareFile `json:"files"`
 	Patch     string        `json:"patch"`
+}
+
+// BackendError is safe to return across the relay/sidecar boundary. It never
+// includes response bodies or service credentials.
+type BackendError struct {
+	Status int
+	Code   string
+}
+
+func (err *BackendError) Error() string {
+	return err.Code
 }

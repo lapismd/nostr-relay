@@ -27,8 +27,12 @@ func (backend *fakeGitBackend) EnsureRepository(_ context.Context, coordinate pr
 	return backend.err
 }
 
-func (*fakeGitBackend) ProxyGitHTTP(http.ResponseWriter, *http.Request, gitforge.Repository) {}
-func (*fakeGitBackend) ProxyRepositoryAPI(http.ResponseWriter, *http.Request, gitforge.Repository, string) {
+func (*fakeGitBackend) ProxyGitHTTP(http.ResponseWriter, *http.Request, gitforge.Repository, string, string) {
+}
+func (*fakeGitBackend) ProxyRepositoryAPI(http.ResponseWriter, *http.Request, gitforge.Repository, string, string) {
+}
+func (*fakeGitBackend) Resolve(context.Context, gitforge.Repository, string, string) (string, error) {
+	return "", nil
 }
 func (*fakeGitBackend) Compare(context.Context, gitforge.Repository, gitforge.CompareRequest) (gitforge.CompareResult, error) {
 	return gitforge.CompareResult{}, nil
@@ -37,6 +41,7 @@ func (*fakeGitBackend) Compare(context.Context, gitforge.Repository, gitforge.Co
 func createGitForgeTestPolicy(t *testing.T, backend gitforge.Backend) (*GitForgePolicy, *EventStore) {
 	t.Helper()
 	store := createTestEventStore()
+	store.Config.Info.Pubkey = store.Config.secret.Public().Hex()
 	store.Config.Policy.Open = true
 	store.Config.Groups.Enabled = true
 	store.Config.Git = GitConfig{

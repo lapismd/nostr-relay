@@ -18,11 +18,12 @@ import (
 // GitForgePolicy owns the durable desired-state projection and the NIP-29
 // boundary for the optional Git sidecar. Signed Nostr events remain authority.
 type GitForgePolicy struct {
-	Events       *EventStore
-	Groups       *GroupStore
-	ProjectTasks *ProjectTaskPolicy
-	Config       *Config
-	Backend      gitforge.Backend
+	Events        *EventStore
+	Groups        *GroupStore
+	ProjectTasks  *ProjectTaskPolicy
+	Config        *Config
+	Backend       gitforge.Backend
+	WebhookSecret string
 
 	ctx    context.Context
 	cancel context.CancelFunc

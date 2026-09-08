@@ -27,7 +27,7 @@ func authenticatedPubkey(ctx context.Context) (nostr.PubKey, bool) {
 func enableBuzzCompatibility(instance *Instance) {
 	instance.Relay.Info.AddSupportedNIP("98")
 	base := instance.Relay.Router()
-	handler := buzzcompat.New(buzzcompat.Backend{
+	backend := buzzcompat.Backend{
 		WithAuthenticatedPubkey: withAuthenticatedPubkey,
 		AuthorizeQuery:          instance.OnRequest,
 		Query:                   instance.QueryStored,
@@ -45,6 +45,13 @@ func enableBuzzCompatibility(instance *Instance) {
 			instance.Relay.BroadcastEvent(event)
 		},
 		NIP11: instance.Relay.HandleNIP11,
-	})
+	}
+	if instance.GitForge != nil {
+		backend.GitHTTP = instance.GitForge.ServeGitHTTP
+		backend.RepositoryAPI = instance.GitForge.ServeRepositoryAPI
+		backend.PullRequestAPI = instance.GitForge.ServePullRequestAPI
+		backend.WalGitEvents = instance.GitForge.ServeWalGitEvents
+	}
+	handler := buzzcompat.New(backend)
 	instance.Relay.SetRouter(handler.Wrap(base))
 }

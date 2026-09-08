@@ -2,9 +2,11 @@ package zooid
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/fasthttp/websocket"
 	"github.com/gosimple/slug"
+	"zooid/internal/gitforge"
 	"zooid/internal/khatru"
 )
 
@@ -31,6 +34,7 @@ type Instance struct {
 	Groups       *GroupStore
 	Registry     *RegistryPolicy
 	ProjectTasks *ProjectTaskPolicy
+	GitForge     *GitForgePolicy
 }
 
 func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
@@ -144,6 +148,31 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	instance.Management.WarmCaches()
 	instance.Groups.WarmCaches()
 
+	if config.Git.Enabled {
+		serviceToken := strings.TrimSpace(os.Getenv("WALGIT_RELAY_TOKEN"))
+		webhookSecret := strings.TrimSpace(os.Getenv("WALGIT_WEBHOOK_SECRET"))
+		if serviceToken == "" {
+			instance.Events.Close()
+			return nil, fmt.Errorf("WALGIT_RELAY_TOKEN is required when Git hosting is enabled")
+		}
+		if webhookSecret == "" {
+			instance.Events.Close()
+			return nil, fmt.Errorf("WALGIT_WEBHOOK_SECRET is required when Git hosting is enabled")
+		}
+		backend, err := gitforge.NewWalGitBackend(config.Git.BackendURL, serviceToken)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		instance.GitForge = NewGitForgePolicy(ctx, config, events, groups, instance.ProjectTasks, backend)
+		instance.GitForge.WebhookSecret = webhookSecret
+		if err := instance.GitForge.Start(); err != nil {
+			instance.GitForge.Close()
+			instance.Events.Close()
+			return nil, fmt.Errorf("start Git repository reconciliation: %w", err)
+		}
+	}
+
 	// Enable extra functionality
 
 	if config.Blossom.Enabled {
@@ -188,6 +217,9 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 }
 
 func (instance *Instance) Cleanup() {
+	if instance.GitForge != nil {
+		instance.GitForge.Close()
+	}
 	instance.Events.Close()
 }
 
@@ -500,6 +532,11 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 			return true, reason
 		}
 	}
+	if instance.GitForge != nil {
+		if _, reason := instance.GitForge.CheckWrite(event); reason != "" {
+			return true, reason
+		}
+	}
 
 	if instance.Management.EventIsBanned(event.ID) {
 		return true, "restricted: this event has been banned from this relay"
@@ -512,6 +549,11 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 	if instance.ProjectTasks != nil {
 		if err := instance.ProjectTasks.Remember(instance.Ctx, event); err != nil {
 			log.Printf("Failed to persist project/task scope for event %s: %v", event.ID.Hex(), err)
+		}
+	}
+	if instance.GitForge != nil {
+		if err := instance.GitForge.Remember(instance.Ctx, event); err != nil {
+			log.Printf("Failed to persist Git repository intent for event %s: %v", event.ID.Hex(), err)
 		}
 	}
 

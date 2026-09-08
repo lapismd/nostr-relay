@@ -42,6 +42,10 @@ type Backend struct {
 	Publish                 func(context.Context, nostr.Event) (bool, error)
 	Broadcast               func(nostr.Event)
 	NIP11                   http.HandlerFunc
+	GitHTTP                 http.HandlerFunc
+	RepositoryAPI           http.HandlerFunc
+	PullRequestAPI          http.HandlerFunc
+	WalGitEvents            http.HandlerFunc
 }
 
 type CountResult struct {
@@ -94,6 +98,18 @@ func (h *Handler) Wrap(next http.Handler) *http.ServeMux {
 	mux.HandleFunc("/events", h.handleEvents)
 	mux.HandleFunc("/count", h.handleCount)
 	mux.HandleFunc("/info", h.handleInfo)
+	if h.backend.GitHTTP != nil {
+		mux.HandleFunc("/git/", h.backend.GitHTTP)
+	}
+	if h.backend.RepositoryAPI != nil {
+		mux.HandleFunc("/api/git/", h.backend.RepositoryAPI)
+	}
+	if h.backend.PullRequestAPI != nil {
+		mux.HandleFunc("/api/pull-requests/", h.backend.PullRequestAPI)
+	}
+	if h.backend.WalGitEvents != nil {
+		mux.HandleFunc("/internal/walgit/events", h.backend.WalGitEvents)
+	}
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
 		h.serveBlossomUpload(next, w, r, "/upload")
 	})
