@@ -123,8 +123,14 @@ func (policy *ProjectTaskPolicy) CanAnonymousRead(ctx context.Context, event nos
 // also amortizes ancestry lookups for normal reads.
 func (policy *ProjectTaskPolicy) Remember(ctx context.Context, event nostr.Event) error {
 	scope, err := policy.Resolver.Resolve(ctx, event)
-	if err != nil || !scope.Relevant || len(scope.Channels) == 0 {
-		return err
+	if err != nil {
+		if scope.Relevant {
+			return err
+		}
+		return nil
+	}
+	if !scope.Relevant || len(scope.Channels) == 0 {
+		return nil
 	}
 	return policy.storeScopes(ctx, event.ID, scope.Channels)
 }

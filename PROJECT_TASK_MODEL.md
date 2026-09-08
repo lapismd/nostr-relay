@@ -1,9 +1,9 @@
-# Project and task event model
+# Project, task, and pull-request event model
 
 This relay stores ordinary signed Nostr events. Project/task support is a local
 policy and indexing extension around NIP-34, NIP-22, NIP-29, NIP-09, and Buzz's
 NIP-MP project event. The relay does not create, clone, serve, or modify Git
-repositories.
+repositories. Pull requests are event graphs, not relay-hosted Git operations.
 
 ## Coordinates
 
@@ -41,12 +41,17 @@ GitHub, GitLab, or relay-hosted Git repository is created.
 | Repository or task anchor | `kind:30617` |
 | Buzz project | `kind:30621` (NIP-MP) |
 | Task/issue | `kind:1621`, `a` points to `30617` |
-| Status | `kind:1630` through `1633`, root `e` points to task |
+| Pull request | `kind:1618`, `a` points to `30617`; required repository-owner `p`, `subject`, full `c`, and one or more `clone` locators |
+| Pull-request update | `kind:1619`; required matching `a`, root `E/P`, new full `c`, and one or more `clone` locators |
+| Status | `kind:1630` through `1633`, root `e` points to a task or pull request |
 | Buzz assignment/unassignment | `kind:1`, root `e`, repository `a`, `p`, and `t:assignment` or `t:unassignment` |
 | Standard task comment | NIP-22 `kind:1111`, uppercase `E/K/P` for the task and lowercase `e/k/p` for the immediate parent |
 | Current Buzz Desktop task comment | `kind:1` with root `e` and repository `a` |
+| Buzz pull-request comment or review | `kind:1` with root `e`, repository `a`, and optional review or inline `t` labels |
+| Standard pull-request comment | NIP-22 `kind:1111`, with `K=1618` and consistent root/immediate-parent ancestry |
 | Subtask | `kind:1621` with matching custom `parent` and `e` tags plus the same repository `a` |
 | Project/repository deletion | NIP-09 `kind:5` with an `a` target |
+| Pull-request graph deletion | NIP-09 `kind:5` with an `e` target, signed by that event's signer |
 
 The relay accepts both comment encodings and never translates or synthesizes
 one from the other. A client that needs comments to appear in both unmodified
@@ -74,6 +79,24 @@ state using `internal/projecttask`:
 - all root `kind:1` notes and NIP-22 task comments remain visible as activity,
   including assignment notes.
 
+Pull requests use the reproducible `PullRequestState` projection. A root is
+Draft when any `t` value case-insensitively equals `draft`, otherwise Open.
+Trusted updates and statuses come only from the PR author or repository owner;
+the newest timestamp wins, with the lexicographically smallest event ID for an
+equal timestamp. Kinds `1630`, `1631`, `1632`, and `1633` mean Open, Merged,
+Closed, and Draft. A merged `1631` may carry a full `merge-commit` only when a
+matching `r` is present. Patch-oriented `q` and `applied-as-commits` tags remain
+ordinary preserved event data and do not trigger relay-side patch handling.
+
+Root `p` recipients and trusted `t:review-request` notes form the reviewer set,
+excluding the PR author. A decision has exactly one of `t:approval` or
+`t:changes-requested`, and is trusted only from a requested reviewer or the
+repository owner, never the author. Missing `c` means the initial tip. Only a
+decision for the current tip is effective; equal-timestamp decisions by one
+reviewer use the lexicographically largest ID. Older decisions remain
+historical. Valid `file`/`side`/`line` anchors are current or outdated by tip;
+invalid anchors remain visible comments with no usable anchor.
+
 Buzz Desktop currently trusts the issue author and repository owner for status,
 while the NIP-34 model also permits repository maintainers. The relay retains
 all raw events; the Lapis reducer follows NIP-34 and documents this Desktop
@@ -82,12 +105,18 @@ display divergence rather than rejecting maintainer-authored status events.
 ## Channel scope and authorization
 
 `buzz-channel` binds a project or repository to a NIP-29 group. The relay
-derives the same channel for repository-scoped issues, status events, notes,
-comments, and subtasks. It applies normal NIP-29 read/write policy to an
-internal event copy with a derived `h` tag, without modifying the signed event.
+derives the same channel for repository-scoped issues, PRs, status events,
+updates, notes, comments, subtasks, and tombstones. A PR root may additionally
+carry an opaque bounded `h` origin channel. Repository and origin channels are
+an intersection: a caller must pass normal NIP-29 policy for every channel,
+and all descendants inherit both. Each check uses an internal event copy with
+only the derived `h`; the signed event is never modified.
 
-Scope resolution fails closed when a required parent cannot be resolved, when
-the ancestry is ambiguous, or when project/repository bindings disagree.
+Anonymous reads require every resolved channel to exist and be public and
+non-hidden. Scope resolution fails closed when a required parent or group
+cannot be resolved, when ancestry is ambiguous, cyclic, or conflicting, or
+when repository/root bindings disagree. The durable sidecar stores one row per
+`(event_id, channel)`, retaining both scopes across restarts and deletions.
 Direct-user signing is the first supported authorization mode. A future managed
 owner mode is isolated behind the scope/actor policy interface; NIP-OA and
 `x-auth-tag` are not accepted as owner authority in this version.
@@ -95,17 +124,20 @@ owner mode is isolated behind the scope/actor policy interface; NIP-OA and
 ## Replacement and deletion
 
 Projects and repositories use normal parameterized-replaceable event rules.
-Project and repository tombstones must be signed by the addressed owner. The
-read projection suppresses a replaceable head when an authorized tombstone at
-the same or newer timestamp targets its address. Tombstones themselves remain
-queryable. This gives WebSocket and HTTP publication the same visible result
-even though the upstream WebSocket dispatcher may additionally remove stored
-target rows.
+Project and repository tombstones must be signed by the addressed owner. A PR
+root or descendant can be deleted only by that event's signer. The read
+projection suppresses an event when an authorized tombstone at the same or
+newer timestamp targets its address or ID. Tombstones remain queryable and an
+event-ID deletion does not cascade through the PR graph. This gives WebSocket
+and HTTP publication the same visible result even though the upstream
+WebSocket dispatcher may additionally remove stored target rows.
 
 ## Non-goals
 
 - Git smart-HTTP, repository storage, cloning, or mirroring
-- a project/task-specific REST API
+- a project/task/PR-specific REST API
 - relay-side comment conversion
 - relay-side task status or assignment events
 - managed-owner/NIP-OA authorization in the first implementation
+- `kind:1617` patches, `kind:30618` repository-state projections, Git ref
+  verification, CI state, merge execution, or automatic channel creation

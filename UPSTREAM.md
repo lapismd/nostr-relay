@@ -18,19 +18,21 @@ retain only the adapter registration and calls to the shared authenticated
 pubkey accessor. During an upstream update, preserve that narrow seam and avoid
 moving Buzz route behavior into the core relay handlers.
 
-Project/task compatibility follows the same rule. No project/task changes live
-under `internal/khatru`. The local patch map is:
+Project/task/PR compatibility follows the same rule. No project/task/PR changes
+live under `internal/khatru`. The local patch map is:
 
 - `internal/projecttask`: wire validation, Project Task Anchor templates,
-  deterministic task reduction, and storage-independent scope resolution.
-- `zooid/project_tasks.go`: the only relay/store adapter for derived NIP-29
-  scope, durable scope sidecars, and NIP-09 address projection.
+  deterministic task and pull-request reduction, and storage-independent
+  graph/scope resolution.
+- `zooid/project_tasks.go`: the only relay/store adapter for intersecting
+  derived NIP-29 scope, durable scope sidecars, and NIP-09 address/event
+  projection.
 - `zooid/instance.go`: callback wiring only for write checks, query/broadcast
   visibility, anonymous visibility, and post-save scope persistence.
-- `zooid/events.go` plus migrations `003` and `004`: the exact
-  `buzz-channel` index extension and durable derived-scope table.
-- `internal/buzzcompat`: remains generic HTTP transport. It contains no project
-  or task routes.
+- `zooid/events.go` plus migrations `003`, `004`, and `005`: the exact
+  `buzz-channel` index extension and durable many-channel derived-scope table.
+- `internal/buzzcompat`: remains generic HTTP transport. It contains no project,
+  task, or pull-request routes.
 
 The audited Buzz contract and refresh checklist live in
 `docs/BUZZ_PROJECT_COMPATIBILITY.md`. Update its pinned Buzz commit and contract

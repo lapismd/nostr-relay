@@ -25,6 +25,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"zooid/internal/projecttask"
 )
 
 // Pre-built image name and sync.Once for building it exactly once
@@ -768,6 +769,252 @@ func TestIntegration_BuzzProjectTasksAcrossWebSocketHTTPAndRestart(t *testing.T)
 	})
 	if len(tombstones) != 1 || tombstones[0].ID != tombstone.ID {
 		t.Fatalf("scoped tombstone unavailable after restart: %#v", tombstones)
+	}
+}
+
+func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	relay := setupRelay(ctx, t, true)
+	defer relay.Cleanup(ctx)
+	admin := newNostrClient(ctx, t, relay.URI, adminSecret)
+
+	for _, group := range []string{"pr-repository-private", "pr-origin-private"} {
+		create := &nostr.Event{
+			Kind: nostr.Kind(KindCreateGroup), CreatedAt: nostr.Now(),
+			Tags:    nostr.Tags{{"h", group}},
+			Content: `{"name":"Pull request scope","private":true,"closed":true,"hidden":true}`,
+		}
+		if result := admin.sendEvent(ctx, t, create); result != "ok" {
+			t.Fatalf("create %s: %s", group, result)
+		}
+	}
+
+	originOnlySecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000004")
+	neitherSecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000005")
+	members := map[string][]nostr.PubKey{
+		"pr-repository-private": {writerPubkey, nonAdminPubkey},
+		"pr-origin-private":     {writerPubkey, originOnlySecret.Public()},
+	}
+	for group, pubkeys := range members {
+		for _, pubkey := range pubkeys {
+			putUser := &nostr.Event{
+				Kind: nostr.Kind(KindPutUser), CreatedAt: nostr.Now(),
+				Tags: nostr.Tags{{"h", group}, {"p", pubkey.Hex()}},
+			}
+			if result := admin.sendEvent(ctx, t, putUser); result != "ok" {
+				t.Fatalf("add %s to %s: %s", pubkey.Hex(), group, result)
+			}
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	coordinate := fmt.Sprintf("30617:%s:review-repo", adminPubkey.Hex())
+	repository := nostr.Event{
+		Kind: nostr.KindRepositoryAnnouncement, CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"d", "review-repo"}, {"name", "Review repository"},
+			{"clone", "https://example.invalid/review.git"},
+			{"buzz-channel", "pr-repository-private"},
+		},
+	}
+	repository.Sign(adminSecret)
+	postIntegrationEvent(t, relay.URI, adminSecret, repository)
+
+	initialCommit := strings.Repeat("a", 40)
+	currentCommit := strings.Repeat("b", 40)
+	untrustedCommit := strings.Repeat("c", 40)
+	root := &nostr.Event{
+		Kind: nostr.Kind(projecttask.KindPullRequest), CreatedAt: nostr.Now(), Content: "Review the relay integration.",
+		Tags: nostr.Tags{
+			{"a", coordinate}, {"p", adminPubkey.Hex()}, {"p", writerPubkey.Hex()},
+			{"subject", "Buzz-compatible PR"}, {"c", initialCommit},
+			{"clone", "https://example.invalid/review.git"},
+			{"branch-name", "review/buzz"}, {"target-branch", "main"},
+			{"h", "pr-origin-private"}, {"x-integration", "preserved"},
+		},
+	}
+	if result := admin.sendEvent(ctx, t, root); result != "ok" {
+		t.Fatalf("publish PR root over WebSocket: %s", result)
+	}
+
+	untrustedUpdate := &nostr.Event{
+		Kind: nostr.Kind(projecttask.KindPullRequestUpdate), CreatedAt: nostr.Now(), Content: "member update",
+		Tags: nostr.Tags{
+			{"a", coordinate}, {"p", adminPubkey.Hex()}, {"E", root.ID.Hex()}, {"P", adminPubkey.Hex()},
+			{"c", untrustedCommit}, {"clone", "https://member.example.invalid/review.git"},
+		},
+	}
+	writer := newNostrClient(ctx, t, relay.URI, writerSecret)
+	if result := writer.sendEvent(ctx, t, untrustedUpdate); result != "ok" {
+		t.Fatalf("store authorized-member PR update: %s", result)
+	}
+
+	trustedUpdate := nostr.Event{
+		Kind: nostr.Kind(projecttask.KindPullRequestUpdate), CreatedAt: nostr.Now(), Content: "owner update",
+		Tags: nostr.Tags{
+			{"a", coordinate}, {"p", adminPubkey.Hex()}, {"E", root.ID.Hex()}, {"P", adminPubkey.Hex()},
+			{"c", currentCommit}, {"clone", "https://owner.example.invalid/review.git"},
+			{"merge-base", strings.Repeat("d", 40)},
+		},
+	}
+	trustedUpdate.Sign(adminSecret)
+	postIntegrationEvent(t, relay.URI, adminSecret, trustedUpdate)
+
+	reviewRequest := &nostr.Event{
+		Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Requested writer review",
+		Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate}, {"p", writerPubkey.Hex()}, {"t", "review-request"}},
+	}
+	if result := admin.sendEvent(ctx, t, reviewRequest); result != "ok" {
+		t.Fatalf("publish review request: %s", result)
+	}
+	reviewDecision := &nostr.Event{
+		Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Approved these changes",
+		Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate}, {"t", "approval"}, {"c", currentCommit}},
+	}
+	if result := writer.sendEvent(ctx, t, reviewDecision); result != "ok" {
+		t.Fatalf("publish review decision: %s", result)
+	}
+	nip22Comment := &nostr.Event{
+		Kind: nostr.KindComment, CreatedAt: nostr.Now(), Content: "Standards-based comment",
+		Tags: nostr.Tags{
+			{"E", root.ID.Hex()}, {"K", "1618"}, {"P", adminPubkey.Hex()},
+			{"e", root.ID.Hex()}, {"k", "1618"}, {"p", adminPubkey.Hex()},
+		},
+	}
+	if result := writer.sendEvent(ctx, t, nip22Comment); result != "ok" {
+		t.Fatalf("publish NIP-22 PR comment: %s", result)
+	}
+	mergeCommit := strings.Repeat("e", 40)
+	status := &nostr.Event{
+		Kind: nostr.KindStatusApplied, CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"e", root.ID.Hex(), "", "root"}, {"a", coordinate},
+			{"merge-commit", mergeCommit}, {"r", mergeCommit},
+		},
+	}
+	if result := admin.sendEvent(ctx, t, status); result != "ok" {
+		t.Fatalf("publish merged PR status: %s", result)
+	}
+
+	for name, secret := range map[string]nostr.SecretKey{
+		"repository only": nonAdminSecret, "origin only": originOnlySecret, "neither": neitherSecret,
+	} {
+		client := newNostrClient(ctx, t, relay.URI, secret)
+		events := client.subscribe(ctx, t, "denied-"+strings.ReplaceAll(name, " ", "-"), map[string]interface{}{
+			"kinds": []int{1618}, "#a": []string{coordinate}, "limit": 2000,
+		})
+		if len(events) != 0 {
+			t.Fatalf("%s user read a dual-private PR", name)
+		}
+		attempt := &nostr.Event{
+			Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "denied",
+			Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate}},
+		}
+		if result := client.sendEvent(ctx, t, attempt); !strings.HasPrefix(result, "rejected:") {
+			t.Fatalf("%s user wrote to a dual-private PR: %s", name, result)
+		}
+		client.close()
+	}
+	anonymous := newAnonymousNostrClient(ctx, t, relay.URI, neitherSecret)
+	if events := anonymous.subscribe(ctx, t, "anonymous-pr", map[string]interface{}{"kinds": []int{1618}, "#a": []string{coordinate}}); len(events) != 0 {
+		t.Fatal("anonymous user read a dual-private PR")
+	}
+	anonymous.close()
+
+	queryBundle := []struct {
+		name   string
+		filter map[string]interface{}
+		want   int
+	}{
+		{"roots", map[string]interface{}{"kinds": []int{1621, 1618}, "#a": []string{coordinate}, "limit": 2000}, 1},
+		{"updates", map[string]interface{}{"kinds": []int{1619}, "#a": []string{coordinate}, "limit": 2000}, 2},
+		{"kind1", map[string]interface{}{"kinds": []int{1}, "#a": []string{coordinate}, "limit": 2000}, 2},
+		{"statuses", map[string]interface{}{"kinds": []int{1630, 1631, 1632, 1633}, "#a": []string{coordinate}, "limit": 2000}, 1},
+	}
+	var related []nostr.Event
+	for _, query := range queryBundle {
+		events := writer.subscribe(ctx, t, "buzz-pr-"+query.name, query.filter)
+		if len(events) != query.want {
+			t.Fatalf("Buzz %s query returned %d events, want %d", query.name, len(events), query.want)
+		}
+		if query.name != "roots" {
+			related = append(related, events...)
+		}
+	}
+	httpRoot := queryIntegrationEvents(t, relay.URI, writerSecret, []map[string]interface{}{{
+		"kinds": []int{1618}, "#a": []string{coordinate}, "limit": 2000,
+	}})
+	if len(httpRoot) != 1 || httpRoot[0].ID != root.ID {
+		t.Fatalf("POST /query did not reproduce the Buzz PR root filter: %#v", httpRoot)
+	}
+	if tag := httpRoot[0].Tags.Find("h"); tag == nil || len(tag) < 2 || tag[1] != "pr-origin-private" || httpRoot[0].Tags.FindWithValue("h", "pr-repository-private") != nil {
+		t.Fatalf("stored signed PR h tags were mutated: %#v", httpRoot[0].Tags)
+	}
+	state, err := projecttask.ReducePullRequest(httpRoot[0], repository, related)
+	if err != nil {
+		t.Fatalf("reduce queried PR graph: %v", err)
+	}
+	if state.CurrentCommit != currentCommit || len(state.Updates) != 1 || state.Lifecycle != projecttask.PullRequestMerged {
+		t.Fatalf("untrusted stored update affected reduction: %#v", state)
+	}
+
+	httpTombstone := nostr.Event{
+		Kind: nostr.KindDeletion, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"e", reviewRequest.ID.Hex()}},
+	}
+	httpTombstone.Sign(adminSecret)
+	postIntegrationEvent(t, relay.URI, adminSecret, httpTombstone)
+	wsTombstone := &nostr.Event{
+		Kind: nostr.KindDeletion, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"e", nip22Comment.ID.Hex()}},
+	}
+	if result := writer.sendEvent(ctx, t, wsTombstone); result != "ok" {
+		t.Fatalf("delete NIP-22 comment over WebSocket: %s", result)
+	}
+	remainingComments := writer.subscribe(ctx, t, "deleted-pr-comments", map[string]interface{}{
+		"kinds": []int{1, 1111}, "#e": []string{root.ID.Hex()}, "limit": 2000,
+	})
+	if len(remainingComments) != 1 || remainingComments[0].ID != reviewDecision.ID {
+		t.Fatalf("transport tombstones did not hide only their targets: %#v", remainingComments)
+	}
+	admin.close()
+	writer.close()
+
+	if err := relay.Container.Stop(ctx, nil); err != nil {
+		t.Fatalf("stop relay: %v", err)
+	}
+	if err := relay.Container.Start(ctx); err != nil {
+		t.Fatalf("restart relay: %v", err)
+	}
+	host, err := relay.Container.Host(ctx)
+	if err != nil {
+		t.Fatalf("relay host after restart: %v", err)
+	}
+	mappedPort, err := relay.Container.MappedPort(ctx, "3334")
+	if err != nil {
+		t.Fatalf("relay port after restart: %v", err)
+	}
+	relay.URI = fmt.Sprintf("ws://%s:%s", host, mappedPort.Port())
+	time.Sleep(time.Second)
+
+	writer = newNostrClient(ctx, t, relay.URI, writerSecret)
+	defer writer.close()
+	if roots := writer.subscribe(ctx, t, "pr-after-restart", map[string]interface{}{"kinds": []int{1618}, "#a": []string{coordinate}}); len(roots) != 1 {
+		t.Fatalf("PR root did not survive descendant deletions and restart: %#v", roots)
+	}
+	remainingComments = writer.subscribe(ctx, t, "comments-after-restart", map[string]interface{}{
+		"kinds": []int{1, 1111}, "#e": []string{root.ID.Hex()},
+	})
+	if len(remainingComments) != 1 || remainingComments[0].ID != reviewDecision.ID {
+		t.Fatalf("deleted PR descendants reappeared after restart: %#v", remainingComments)
+	}
+	tombstones := writer.subscribe(ctx, t, "pr-tombstones-after-restart", map[string]interface{}{
+		"kinds": []int{5}, "#e": []string{reviewRequest.ID.Hex(), nip22Comment.ID.Hex()},
+	})
+	if len(tombstones) != 2 {
+		t.Fatalf("scoped PR tombstones unavailable after restart: %#v", tombstones)
 	}
 }
 
