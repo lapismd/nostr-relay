@@ -27,7 +27,7 @@ func BuildProjectTaskAnchor(project nostr.Event) (EventTemplate, RepositoryCoord
 
 	id := project.Tags.GetD()
 	coordinate := RepositoryCoordinate{Owner: project.PubKey, ID: id}
-	tags := nostr.Tags{{"d", id}}
+	tags := nostr.Tags{{"d", id}, {TagProjectTaskAnchor, "true"}}
 	content := ""
 	for _, tag := range project.Tags {
 		if len(tag) < 2 {

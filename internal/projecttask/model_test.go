@@ -286,6 +286,8 @@ func TestBuildProjectTaskAnchorIsLogicalOnly(t *testing.T) {
 	require.Equal(t, "Ship Notes v2", anchor.Content)
 	require.Equal(t, "notes-project", anchor.Tags.GetD())
 	require.Equal(t, "notes", anchor.Tags.Find(TagBuzzChannel)[1])
+	require.Equal(t, nostr.Tag{TagProjectTaskAnchor, "true"}, anchor.Tags.Find(TagProjectTaskAnchor))
+	require.True(t, IsProjectTaskAnchor(nostr.Event{Kind: anchor.Kind, Tags: anchor.Tags}))
 	require.Nil(t, anchor.Tags.Find("clone"))
 	require.Nil(t, anchor.Tags.Find("web"))
 	require.Nil(t, anchor.Tags.Find("synthetic"))
@@ -297,6 +299,30 @@ func TestBuildProjectTaskAnchorIsLogicalOnly(t *testing.T) {
 
 	_, err = AddRepository(projectWithCoordinate(project, coordinate), coordinate, "")
 	require.ErrorContains(t, err, "unique")
+}
+
+func TestRepositoryTaskAnchorMarkerValidation(t *testing.T) {
+	base := nostr.Event{
+		Kind:   nostr.KindRepositoryAnnouncement,
+		PubKey: pubkey(t, "6"),
+		Tags:   nostr.Tags{{"d", "notes"}, {TagBuzzChannel, "notes"}},
+	}
+	for _, tag := range []nostr.Tag{
+		{TagProjectTaskAnchor},
+		{TagProjectTaskAnchor, "false"},
+		{TagProjectTaskAnchor, "true", "extra"},
+	} {
+		event := base
+		event.Tags = append(base.Tags.CloneDeep(), tag)
+		recognized, err := ValidateEvent(event)
+		require.True(t, recognized)
+		require.ErrorContains(t, err, TagProjectTaskAnchor)
+	}
+
+	event := base
+	event.Tags = append(base.Tags.CloneDeep(), nostr.Tag{TagProjectTaskAnchor, "true"}, nostr.Tag{TagProjectTaskAnchor, "true"})
+	_, err := ValidateEvent(event)
+	require.ErrorContains(t, err, "singleton")
 }
 
 func projectWithCoordinate(project nostr.Event, coordinate RepositoryCoordinate) nostr.Event {

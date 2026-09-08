@@ -19,6 +19,9 @@ const (
 
 	TagBuzzChannel    = "buzz-channel"
 	TagBuzzVisibility = "buzz-visibility"
+	// TagProjectTaskAnchor marks a repository announcement as a logical
+	// project-level task namespace. It deliberately has no Git backing.
+	TagProjectTaskAnchor = "project-task-anchor"
 
 	maxProjectCoordinates = 64
 	maxPullRequestContent = 64 * 1024
@@ -132,7 +135,24 @@ func validateRepository(event nostr.Event) error {
 	if err := validateSingleton(event.Tags, "d", 1024, true); err != nil {
 		return err
 	}
-	return validateSingleton(event.Tags, TagBuzzChannel, 256, false)
+	if err := validateSingleton(event.Tags, TagBuzzChannel, 256, false); err != nil {
+		return err
+	}
+	anchors := tagsNamed(event.Tags, TagProjectTaskAnchor)
+	if len(anchors) > 1 {
+		return fmt.Errorf("%s tag must be a singleton", TagProjectTaskAnchor)
+	}
+	if len(anchors) == 1 && (len(anchors[0]) != 2 || anchors[0][1] != "true") {
+		return fmt.Errorf("%s tag must be exactly [\"%s\",\"true\"]", TagProjectTaskAnchor, TagProjectTaskAnchor)
+	}
+	return nil
+}
+
+// IsProjectTaskAnchor reports whether a valid repository announcement is the
+// explicit logical namespace used for project-level tasks.
+func IsProjectTaskAnchor(event nostr.Event) bool {
+	tag := event.Tags.Find(TagProjectTaskAnchor)
+	return tag != nil && len(tag) == 2 && tag[1] == "true"
 }
 
 func validateIssue(event nostr.Event) error {
