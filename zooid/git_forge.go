@@ -159,6 +159,9 @@ func (policy *GitForgePolicy) Close() {
 func (policy *GitForgePolicy) rebuildIntents(ctx context.Context) error {
 	active := make(map[string]struct{})
 	for event := range policy.Events.QueryEventsBefore(ctx, nostr.Filter{Kinds: []nostr.Kind{nostr.KindRepositoryAnnouncement}}, "", 0) {
+		if policy.ProjectTasks.IsTombstoned(ctx, event) {
+			continue
+		}
 		repository, err := gitforge.ClassifyRepository(event, policy.Config.Git.PublicURL)
 		if err != nil {
 			continue

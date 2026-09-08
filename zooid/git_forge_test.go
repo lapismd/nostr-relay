@@ -150,6 +150,8 @@ func TestGitForgeTombstoneMakesIntentInactiveWithoutDeletingStorage(t *testing.T
 	require.NoError(t, policy.Remember(context.Background(), event))
 	tombstone := nostr.Event{Kind: nostr.KindDeletion, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"a", projecttask.RepositoryCoordinate{Owner: event.PubKey, ID: "notes"}.String()}}}
 	require.NoError(t, tombstone.Sign(secret))
+	require.NoError(t, store.SaveEvent(tombstone))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), tombstone))
 	require.NoError(t, policy.Remember(context.Background(), tombstone))
 
 	state, found, err := policy.intentState(context.Background(), projecttask.RepositoryCoordinate{Owner: event.PubKey, ID: "notes"})
@@ -157,6 +159,15 @@ func TestGitForgeTombstoneMakesIntentInactiveWithoutDeletingStorage(t *testing.T
 	require.True(t, found)
 	require.Equal(t, "inactive", state)
 	require.Empty(t, backend.ensured)
+
+	// Startup rebuilds desired state from signed events. An HTTP-published
+	// tombstone leaves the target row present, so the visible NIP-09 projection
+	// must prevent that old announcement from becoming pending again.
+	require.NoError(t, policy.rebuildIntents(context.Background()))
+	state, found, err = policy.intentState(context.Background(), projecttask.RepositoryCoordinate{Owner: event.PubKey, ID: "notes"})
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "inactive", state)
 }
 
 func TestSanitizeGitErrorBoundsAndFlattens(t *testing.T) {
