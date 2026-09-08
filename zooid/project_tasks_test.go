@@ -2,6 +2,7 @@ package zooid
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"fiatjaf.com/nostr"
@@ -31,10 +32,10 @@ func TestProjectTaskPolicyPersistsDerivedScopeWithoutMutatingEvent(t *testing.T)
 	require.Nil(t, issue.Tags.Find("h"), "policy must not alter signed tags")
 	require.NoError(t, policy.Remember(context.Background(), issue))
 
-	channel, found, err := policy.loadScope(context.Background(), issue.ID)
+	channels, found, err := policy.loadScopes(context.Background(), issue.ID)
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, "private-project", channel)
+	require.Equal(t, []string{"private-project"}, channels)
 	require.False(t, policy.CanRead(context.Background(), member.Public(), issue))
 
 	set := group.getOrCreateMemberSet("private-project")
@@ -62,12 +63,141 @@ func TestProjectTaskPolicyTombstoneScopeSurvivesTargetDeletion(t *testing.T) {
 	require.NoError(t, policy.Events.DeleteEvent(repository.ID))
 	scope, err := policy.resolveStored(context.Background(), tombstone)
 	require.NoError(t, err)
-	require.Equal(t, "project", scope.Channel)
+	require.Equal(t, []string{"project"}, scope.Channels)
 
 	revival := signedEvent(owner, 30, nostr.KindRepositoryAnnouncement, nostr.Tags{
 		{"d", "notes"}, {projecttask.TagBuzzChannel, "project"},
 	})
 	require.False(t, policy.IsTombstoned(context.Background(), revival))
+}
+
+func TestProjectTaskPolicyRequiresEveryPullRequestScope(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "repo-private", true)
+	addProjectTaskTestGroup(groups, "origin-private", true)
+	owner := nostr.Generate()
+	author := nostr.Generate()
+	both := nostr.Generate()
+	repoOnly := nostr.Generate()
+	originOnly := nostr.Generate()
+	neither := nostr.Generate()
+	coordinate := projecttask.RepositoryCoordinate{Owner: owner.Public(), ID: "notes"}
+
+	repository := signedEvent(owner, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{
+		{"d", "notes"}, {projecttask.TagBuzzChannel, "repo-private"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(repository))
+	root := signedEvent(author, 20, projecttask.KindPullRequest, nostr.Tags{
+		{"a", coordinate.String()}, {"p", owner.Public().Hex()}, {"subject", "Review"},
+		{"c", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"clone", "https://example.com/notes.git"},
+		{"h", "origin-private"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(root))
+	for _, member := range []nostr.PubKey{author.Public(), both.Public(), repoOnly.Public()} {
+		addProjectTaskTestMember(groups, "repo-private", member)
+	}
+	for _, member := range []nostr.PubKey{author.Public(), both.Public(), originOnly.Public()} {
+		addProjectTaskTestMember(groups, "origin-private", member)
+	}
+
+	handled, reason := policy.CheckWrite(context.Background(), root)
+	require.True(t, handled)
+	require.Empty(t, reason)
+	require.Equal(t, "origin-private", root.Tags.Find("h")[1], "the signed h tag must remain unchanged")
+	require.NoError(t, policy.Remember(context.Background(), root))
+	channels, found, err := policy.loadScopes(context.Background(), root.ID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"origin-private", "repo-private"}, channels)
+
+	require.True(t, policy.CanRead(context.Background(), both.Public(), root))
+	require.False(t, policy.CanRead(context.Background(), repoOnly.Public(), root))
+	require.False(t, policy.CanRead(context.Background(), originOnly.Public(), root))
+	require.False(t, policy.CanRead(context.Background(), neither.Public(), root))
+	require.False(t, policy.CanAnonymousRead(context.Background(), root))
+
+	for name, signer := range map[string]nostr.SecretKey{
+		"both": both, "repo only": repoOnly, "origin only": originOnly, "neither": neither,
+	} {
+		t.Run(name+" write", func(t *testing.T) {
+			comment := signedEvent(signer, 30, nostr.KindTextNote, nostr.Tags{
+				{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()},
+			})
+			_, reason := policy.CheckWrite(context.Background(), comment)
+			if name == "both" {
+				require.Empty(t, reason)
+			} else {
+				require.NotEmpty(t, reason)
+			}
+		})
+	}
+}
+
+func TestProjectTaskPolicyAnonymousPullRequestReadRequiresEveryScopePublic(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "repo-public", false)
+	addProjectTaskTestGroup(groups, "origin-public", false)
+	owner := nostr.Generate()
+	author := nostr.Generate()
+	coordinate := projecttask.RepositoryCoordinate{Owner: owner.Public(), ID: "notes"}
+	repository := signedEvent(owner, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{{"d", "notes"}, {projecttask.TagBuzzChannel, "repo-public"}})
+	require.NoError(t, policy.Events.SaveEvent(repository))
+	root := signedEvent(author, 20, projecttask.KindPullRequest, nostr.Tags{
+		{"a", coordinate.String()}, {"p", owner.Public().Hex()}, {"subject", "Review"},
+		{"c", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"clone", "https://example.com/notes.git"},
+		{"h", "origin-public"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(root))
+	require.True(t, policy.CanAnonymousRead(context.Background(), root))
+
+	addProjectTaskTestGroup(groups, "origin-public", true)
+	require.False(t, policy.CanAnonymousRead(context.Background(), root))
+}
+
+func TestProjectTaskPolicyPullRequestTombstoneIsSignerOnlyAndVisible(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "repo", false)
+	owner := nostr.Generate()
+	author := nostr.Generate()
+	other := nostr.Generate()
+	coordinate := projecttask.RepositoryCoordinate{Owner: owner.Public(), ID: "notes"}
+	repository := signedEvent(owner, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{{"d", "notes"}, {projecttask.TagBuzzChannel, "repo"}})
+	require.NoError(t, policy.Events.SaveEvent(repository))
+	root := signedEvent(author, 20, projecttask.KindPullRequest, nostr.Tags{
+		{"a", coordinate.String()}, {"p", owner.Public().Hex()}, {"subject", "Review"},
+		{"c", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"clone", "https://example.com/notes.git"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(root))
+	groups.creatorCache.Store("repo", owner.Public())
+
+	unauthorized := signedEvent(other, 30, nostr.KindDeletion, nostr.Tags{{"e", root.ID.Hex()}})
+	handled, reason := policy.CheckWrite(context.Background(), unauthorized)
+	require.True(t, handled)
+	require.Contains(t, reason, "only an event signer")
+
+	tombstone := signedEvent(author, 30, nostr.KindDeletion, nostr.Tags{{"e", root.ID.Hex()}})
+	_, reason = policy.CheckWrite(context.Background(), tombstone)
+	require.Empty(t, reason)
+	require.NoError(t, policy.Events.SaveEvent(tombstone))
+	require.NoError(t, policy.Remember(context.Background(), tombstone))
+	require.True(t, policy.IsTombstoned(context.Background(), root))
+	require.False(t, policy.IsTombstoned(context.Background(), repository), "deleting the PR root must not cascade")
+	require.NoError(t, policy.Events.DeleteEvent(root.ID))
+	restarted := NewProjectTaskPolicy(policy.Events, groups)
+	scope, err := restarted.resolveStored(context.Background(), tombstone)
+	require.NoError(t, err)
+	require.Equal(t, []string{"repo"}, scope.Channels)
+}
+
+func TestProjectTaskPolicyDoesNotClaimUnrelatedEventDeletions(t *testing.T) {
+	policy, _ := createProjectTaskTestPolicy(t, "repo", false)
+	author := nostr.Generate()
+	note := signedEvent(author, 10, nostr.KindTextNote, nil)
+	require.NoError(t, policy.Events.SaveEvent(note))
+
+	for _, target := range []string{note.ID.Hex(), strings.Repeat("f", 64)} {
+		deletion := signedEvent(author, 20, nostr.KindDeletion, nostr.Tags{{"e", target}})
+		handled, reason := policy.CheckWrite(context.Background(), deletion)
+		require.False(t, handled)
+		require.Empty(t, reason)
+	}
 }
 
 func TestQueryStoredAppliesDerivedPrivateGroupACLAndTombstoneProjection(t *testing.T) {
@@ -127,6 +257,11 @@ func createProjectTaskTestPolicy(t *testing.T, channel string, private bool) (*P
 		Management:   management,
 		cachesWarmed: true,
 	}
+	addProjectTaskTestGroup(groups, channel, private)
+	return NewProjectTaskPolicy(store, groups), groups
+}
+
+func addProjectTaskTestGroup(groups *GroupStore, channel string, private bool) {
 	tags := nostr.Tags{{"d", channel}}
 	if private {
 		tags = append(tags, nostr.Tag{"private"}, nostr.Tag{"closed"}, nostr.Tag{"hidden"})
@@ -138,7 +273,14 @@ func createProjectTaskTestPolicy(t *testing.T, channel string, private bool) (*P
 		hidden:  private,
 		closed:  private,
 	})
-	return NewProjectTaskPolicy(store, groups), groups
+}
+
+func addProjectTaskTestMember(groups *GroupStore, channel string, member nostr.PubKey) {
+	set := groups.getOrCreateMemberSet(channel)
+	set.mu.Lock()
+	set.members[member] = struct{}{}
+	set.mu.Unlock()
+	groups.membershipFullyLoaded.Store(channel, struct{}{})
 }
 
 func signedEvent(secret nostr.SecretKey, createdAt nostr.Timestamp, kind nostr.Kind, tags nostr.Tags) nostr.Event {

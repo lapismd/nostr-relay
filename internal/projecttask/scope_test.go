@@ -54,8 +54,123 @@ func TestScopeResolverDerivesTaskAncestryWithoutAddingHTag(t *testing.T) {
 
 	scope, err := resolver.Resolve(context.Background(), comment)
 	require.NoError(t, err)
-	require.Equal(t, ResolvedScope{Relevant: true, Channel: "private-notes"}, scope)
+	require.Equal(t, ResolvedScope{Relevant: true, Channels: []string{"private-notes"}}, scope)
 	require.Nil(t, comment.Tags.Find("h"), "resolver must not mutate the signed event")
+}
+
+func TestScopeResolverIntersectsRepositoryAndPullRequestOriginForEveryDescendant(t *testing.T) {
+	owner := pubkey(t, "5")
+	author := pubkey(t, "6")
+	reviewer := pubkey(t, "7")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	repository := nostr.Event{
+		ID: id(t, "1"), Kind: nostr.KindRepositoryAnnouncement, PubKey: owner,
+		Tags: nostr.Tags{{"d", "notes"}, {TagBuzzChannel, "repo-channel"}},
+	}
+	root := validPullRequestEvent(t, id(t, "2"), author, owner, "notes", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	root.Tags = append(root.Tags, nostr.Tag{"h", "origin-channel"})
+	kind1 := nostr.Event{
+		ID: id(t, "3"), Kind: nostr.KindTextNote, PubKey: reviewer,
+		Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}},
+	}
+	nip22 := nostr.Event{
+		ID: id(t, "4"), Kind: nostr.KindComment, PubKey: reviewer,
+		Tags: nostr.Tags{
+			{"E", root.ID.Hex()}, {"K", "1618"}, {"P", author.Hex()},
+			{"e", root.ID.Hex()}, {"k", "1618"}, {"p", author.Hex()},
+		},
+	}
+	reader := memoryEventReader{
+		byID: map[nostr.ID]nostr.Event{
+			repository.ID: repository, root.ID: root, kind1.ID: kind1, nip22.ID: nip22,
+		},
+		byAddress: map[string]nostr.Event{coordinate.String(): repository},
+	}
+	resolver := ScopeResolver{Reader: reader}
+	update := nostr.Event{
+		Kind: KindPullRequestUpdate, PubKey: author,
+		Tags: nostr.Tags{{"a", coordinate.String()}, {"E", root.ID.Hex()}, {"P", author.Hex()}},
+	}
+	status := nostr.Event{
+		Kind: nostr.KindStatusOpen, PubKey: owner,
+		Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}},
+	}
+	tombstone := nostr.Event{
+		Kind: nostr.KindDeletion, PubKey: reviewer,
+		Tags: nostr.Tags{{"e", kind1.ID.Hex()}},
+	}
+
+	for name, event := range map[string]nostr.Event{
+		"root": root, "update": update, "status": status,
+		"kind1 comment": kind1, "NIP-22 comment": nip22, "tombstone": tombstone,
+	} {
+		t.Run(name, func(t *testing.T) {
+			scope, err := resolver.Resolve(context.Background(), event)
+			require.NoError(t, err)
+			require.Equal(t, ResolvedScope{Relevant: true, Channels: []string{"origin-channel", "repo-channel"}}, scope)
+		})
+	}
+	require.Nil(t, root.Tags.Find("derived-h"), "resolution never rewrites the signed event")
+}
+
+func TestScopeResolverRejectsPullRequestRootAndRepositoryMismatches(t *testing.T) {
+	owner := pubkey(t, "8")
+	author := pubkey(t, "9")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	repository := nostr.Event{Kind: nostr.KindRepositoryAnnouncement, PubKey: owner, Tags: nostr.Tags{{"d", "notes"}, {TagBuzzChannel, "repo"}}}
+	root := validPullRequestEvent(t, id(t, "5"), author, owner, "notes", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	reader := memoryEventReader{
+		byID:      map[nostr.ID]nostr.Event{root.ID: root},
+		byAddress: map[string]nostr.Event{coordinate.String(): repository},
+	}
+	resolver := ScopeResolver{Reader: reader}
+
+	wrongAuthor := nostr.Event{Kind: KindPullRequestUpdate, Tags: nostr.Tags{
+		{"a", coordinate.String()}, {"E", root.ID.Hex()}, {"P", owner.Hex()},
+	}}
+	_, err := resolver.Resolve(context.Background(), wrongAuthor)
+	require.ErrorContains(t, err, "root author")
+
+	otherCoordinate := RepositoryCoordinate{Owner: owner, ID: "other"}
+	wrongRepository := wrongAuthor
+	wrongRepository.Tags = nostr.Tags{{"a", otherCoordinate.String()}, {"E", root.ID.Hex()}, {"P", author.Hex()}}
+	_, err = resolver.Resolve(context.Background(), wrongRepository)
+	require.ErrorContains(t, err, "does not match")
+
+	conflictingDescendant := nostr.Event{Kind: nostr.KindStatusOpen, Tags: nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"h", "other-origin"},
+	}}
+	_, err = resolver.Resolve(context.Background(), conflictingDescendant)
+	require.ErrorContains(t, err, "conflicts")
+}
+
+func TestScopeResolverValidatesNestedNIP22Ancestry(t *testing.T) {
+	owner := pubkey(t, "a")
+	author := pubkey(t, "b")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	repository := nostr.Event{Kind: nostr.KindRepositoryAnnouncement, PubKey: owner, Tags: nostr.Tags{{"d", "notes"}, {TagBuzzChannel, "repo"}}}
+	root := validPullRequestEvent(t, id(t, "6"), author, owner, "notes", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	parent := nostr.Event{ID: id(t, "7"), Kind: nostr.KindComment, PubKey: owner, Tags: nostr.Tags{
+		{"E", root.ID.Hex()}, {"K", "1618"}, {"P", author.Hex()},
+		{"e", root.ID.Hex()}, {"k", "1618"}, {"p", author.Hex()},
+	}}
+	child := nostr.Event{ID: id(t, "8"), Kind: nostr.KindComment, PubKey: owner, Tags: nostr.Tags{
+		{"E", root.ID.Hex()}, {"K", "1618"}, {"P", author.Hex()},
+		{"e", parent.ID.Hex()}, {"k", "1111"}, {"p", owner.Hex()},
+	}}
+	reader := memoryEventReader{
+		byID:      map[nostr.ID]nostr.Event{root.ID: root, parent.ID: parent},
+		byAddress: map[string]nostr.Event{coordinate.String(): repository},
+	}
+	resolver := ScopeResolver{Reader: reader}
+	scope, err := resolver.Resolve(context.Background(), child)
+	require.NoError(t, err)
+	require.Equal(t, []string{"repo"}, scope.Channels)
+
+	conflict := child
+	conflict.Tags = replaceNamedTag(child.Tags, "P", nostr.Tag{"P", owner.Hex()})
+	_, err = resolver.Resolve(context.Background(), conflict)
+	require.ErrorContains(t, err, "root author")
 }
 
 func TestScopeResolverRejectsConflictingBindings(t *testing.T) {

@@ -2,9 +2,8 @@ package zooid
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
+	"slices"
 
 	"fiatjaf.com/nostr"
 	"zooid/internal/projecttask"
@@ -50,26 +49,41 @@ func (policy *ProjectTaskPolicy) EventByAddress(
 	return nostr.Event{}, false, nil
 }
 
-// CheckWrite validates the event shape, resolves its derived channel, and
-// applies ordinary NIP-29 write policy to an internal copy.
+// CheckWrite validates the event shape, resolves its derived channel
+// intersection, and applies ordinary NIP-29 write policy to one internal copy
+// per channel.
 func (policy *ProjectTaskPolicy) CheckWrite(ctx context.Context, event nostr.Event) (bool, string) {
 	recognized, err := projecttask.ValidateEvent(event)
 	if err != nil {
 		return true, "invalid: " + err.Error()
 	}
+	var scope projecttask.ResolvedScope
+	if !recognized && event.Kind == nostr.KindDeletion && event.Tags.Find("e") != nil {
+		scope, err = policy.Resolver.Resolve(ctx, event)
+		if err != nil {
+			if scope.Relevant {
+				return true, "invalid: " + err.Error()
+			}
+			return false, ""
+		}
+		if !scope.Relevant {
+			return false, ""
+		}
+		recognized = true
+	}
 	if !recognized {
 		return false, ""
 	}
-	scope, err := policy.Resolver.Resolve(ctx, event)
+	if scope.Relevant == false {
+		scope, err = policy.Resolver.Resolve(ctx, event)
+	}
 	if err != nil {
 		return true, "invalid: " + err.Error()
 	}
-	if scope.Channel == "" {
-		return true, ""
-	}
-	derived := withDerivedGroup(event, scope.Channel)
-	if reason := policy.Groups.CheckWrite(derived); reason != "" {
-		return true, reason
+	for _, channel := range scope.Channels {
+		if reason := policy.Groups.CheckWrite(withOnlyDerivedGroup(event, channel)); reason != "" {
+			return true, reason
+		}
 	}
 	return true, ""
 }
@@ -79,107 +93,147 @@ func (policy *ProjectTaskPolicy) CanRead(ctx context.Context, pubkey nostr.PubKe
 	if err != nil {
 		return false
 	}
-	if !scope.Relevant || scope.Channel == "" {
+	if !scope.Relevant {
 		return true
 	}
-	return policy.Groups.CanRead(pubkey, withDerivedGroup(event, scope.Channel))
+	for _, channel := range scope.Channels {
+		if !policy.Groups.CanRead(pubkey, withOnlyDerivedGroup(event, channel)) {
+			return false
+		}
+	}
+	return true
 }
 
 func (policy *ProjectTaskPolicy) CanAnonymousRead(ctx context.Context, event nostr.Event) bool {
 	scope, err := policy.resolveStored(ctx, event)
-	if err != nil || !scope.Relevant || scope.Channel == "" {
+	if err != nil || !scope.Relevant || len(scope.Channels) == 0 {
 		return false
 	}
-	metadata, found := policy.Groups.GetMetadata(scope.Channel)
-	return found && !HasTag(metadata.Tags, "private") && !HasTag(metadata.Tags, "hidden")
+	for _, channel := range scope.Channels {
+		metadata, found := policy.Groups.GetMetadata(channel)
+		if !found || HasTag(metadata.Tags, "private") || HasTag(metadata.Tags, "hidden") {
+			return false
+		}
+	}
+	return true
 }
 
-// Remember persists a derived scope before the upstream WebSocket deletion
-// path removes an addressed target. This keeps tombstones readable after a
-// restart and also amortizes ancestry lookups for normal reads.
+// Remember persists derived scopes before the upstream WebSocket deletion
+// path removes a target. This keeps tombstones readable after a restart and
+// also amortizes ancestry lookups for normal reads.
 func (policy *ProjectTaskPolicy) Remember(ctx context.Context, event nostr.Event) error {
 	scope, err := policy.Resolver.Resolve(ctx, event)
-	if err != nil || !scope.Relevant || scope.Channel == "" {
+	if err != nil || !scope.Relevant || len(scope.Channels) == 0 {
 		return err
 	}
-	return policy.storeScope(ctx, event.ID, scope.Channel)
+	return policy.storeScopes(ctx, event.ID, scope.Channels)
 }
 
 func (policy *ProjectTaskPolicy) resolveStored(ctx context.Context, event nostr.Event) (projecttask.ResolvedScope, error) {
 	if event.ID != nostr.ZeroID {
-		channel, found, err := policy.loadScope(ctx, event.ID)
+		channels, found, err := policy.loadScopes(ctx, event.ID)
 		if err != nil {
 			return projecttask.ResolvedScope{}, err
 		}
 		if found {
-			return projecttask.ResolvedScope{Relevant: true, Channel: channel}, nil
+			return projecttask.ResolvedScope{Relevant: true, Channels: channels}, nil
 		}
 	}
 	scope, err := policy.Resolver.Resolve(ctx, event)
-	if err == nil && scope.Relevant && scope.Channel != "" && event.ID != nostr.ZeroID {
-		_ = policy.storeScope(ctx, event.ID, scope.Channel)
+	if err == nil && scope.Relevant && len(scope.Channels) > 0 && event.ID != nostr.ZeroID {
+		_ = policy.storeScopes(ctx, event.ID, scope.Channels)
 	}
 	return scope, err
 }
 
-func (policy *ProjectTaskPolicy) loadScope(ctx context.Context, id nostr.ID) (string, bool, error) {
+func (policy *ProjectTaskPolicy) loadScopes(ctx context.Context, id nostr.ID) ([]string, bool, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()
-	var channel string
-	err := GetDb().QueryRowContext(queryCtx,
-		"SELECT channel FROM "+policy.Events.Schema.Prefix("project_task_scopes")+" WHERE event_id = $1",
-		id.Hex()).Scan(&channel)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
+	rows, err := GetDb().QueryContext(queryCtx,
+		"SELECT channel FROM "+policy.Events.Schema.Prefix("project_task_scopes")+" WHERE event_id = $1 ORDER BY channel",
+		id.Hex())
 	if err != nil {
-		return "", false, err
+		return nil, false, err
 	}
-	return channel, true, nil
+	defer rows.Close()
+	channels := make([]string, 0, 2)
+	for rows.Next() {
+		var channel string
+		if err := rows.Scan(&channel); err != nil {
+			return nil, false, err
+		}
+		channels = append(channels, channel)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return channels, len(channels) > 0, nil
 }
 
-func (policy *ProjectTaskPolicy) storeScope(ctx context.Context, id nostr.ID, channel string) error {
+func (policy *ProjectTaskPolicy) storeScopes(ctx context.Context, id nostr.ID, channels []string) error {
+	channels = append([]string(nil), channels...)
+	slices.Sort(channels)
+	channels = slices.Compact(channels)
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()
-	_, err := sb.Insert(policy.Events.Schema.Prefix("project_task_scopes")).
-		Columns("event_id", "channel").
-		Values(id.Hex(), channel).
-		Suffix("ON CONFLICT(event_id) DO UPDATE SET channel = EXCLUDED.channel").
-		RunWith(GetDb()).
-		ExecContext(queryCtx)
-	return err
+	for _, channel := range channels {
+		if channel == "" {
+			continue
+		}
+		_, err := sb.Insert(policy.Events.Schema.Prefix("project_task_scopes")).
+			Columns("event_id", "channel").
+			Values(id.Hex(), channel).
+			Suffix("ON CONFLICT(event_id, channel) DO NOTHING").
+			RunWith(GetDb()).
+			ExecContext(queryCtx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// IsTombstoned implements visible NIP-09 address deletion for both WebSocket
-// and HTTP publication. The upstream WebSocket path may additionally remove
-// the stored row; this projection covers the generic HTTP path.
+// IsTombstoned implements visible NIP-09 deletion for project/repository
+// addresses and PR-graph event IDs through both WebSocket and HTTP.
 func (policy *ProjectTaskPolicy) IsTombstoned(ctx context.Context, event nostr.Event) bool {
-	if event.Kind != projecttask.KindProject && event.Kind != nostr.KindRepositoryAnnouncement {
-		return false
+	filters := make([]nostr.Filter, 0, 2)
+	if event.Kind == projecttask.KindProject || event.Kind == nostr.KindRepositoryAnnouncement {
+		id := event.Tags.GetD()
+		if id != "" {
+			address := fmt.Sprintf("%d:%s:%s", event.Kind, event.PubKey.Hex(), id)
+			filters = append(filters, nostr.Filter{
+				Kinds: []nostr.Kind{nostr.KindDeletion},
+				Tags:  nostr.TagMap{"a": {address}},
+				Since: event.CreatedAt,
+			})
+		}
 	}
-	id := event.Tags.GetD()
-	if id == "" {
-		return false
+	scope, err := policy.resolveStored(ctx, event)
+	if err == nil && scope.Relevant && event.ID != nostr.ZeroID {
+		filters = append(filters, nostr.Filter{
+			Kinds: []nostr.Kind{nostr.KindDeletion},
+			Tags:  nostr.TagMap{"e": {event.ID.Hex()}},
+			Since: event.CreatedAt,
+		})
 	}
-	address := fmt.Sprintf("%d:%s:%s", event.Kind, event.PubKey.Hex(), id)
-	filter := nostr.Filter{
-		Kinds: []nostr.Kind{nostr.KindDeletion},
-		Tags:  nostr.TagMap{"a": {address}},
-		Since: event.CreatedAt,
-	}
-	for tombstone := range policy.Events.QueryEventsBefore(ctx, filter, "", 0) {
-		if tombstone.PubKey == event.PubKey && tombstone.CreatedAt >= event.CreatedAt {
-			return true
+	for _, filter := range filters {
+		for tombstone := range policy.Events.QueryEventsBefore(ctx, filter, "", 0) {
+			if tombstone.PubKey == event.PubKey && tombstone.CreatedAt >= event.CreatedAt {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func withDerivedGroup(event nostr.Event, channel string) nostr.Event {
+func withOnlyDerivedGroup(event nostr.Event, channel string) nostr.Event {
 	copy := event
-	copy.Tags = event.Tags.CloneDeep()
-	if copy.Tags.FindWithValue("h", channel) == nil {
-		copy.Tags = append(copy.Tags, nostr.Tag{"h", channel})
+	copy.Tags = make(nostr.Tags, 0, len(event.Tags)+1)
+	for _, tag := range event.Tags {
+		if len(tag) == 0 || tag[0] != "h" {
+			copy.Tags = append(copy.Tags, append(nostr.Tag(nil), tag...))
+		}
 	}
+	copy.Tags = append(copy.Tags, nostr.Tag{"h", channel})
 	return copy
 }

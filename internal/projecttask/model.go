@@ -77,7 +77,7 @@ func ValidateEvent(event nostr.Event) (bool, error) {
 			return true, validateBuzzWorkItemNote(event)
 		}
 	case nostr.KindDeletion:
-		if targetsProjectOrRepository(event) || hasEventDeletionTarget(event.Tags) {
+		if targetsProjectOrRepository(event) {
 			return true, validateTombstone(event)
 		}
 	}
@@ -360,10 +360,6 @@ func isBuzzWorkItemNote(event nostr.Event) bool {
 func isNIP22WorkItemComment(event nostr.Event) bool {
 	return tagHasValue(event.Tags, "K", kindNumber(nostr.KindIssue)) ||
 		tagHasValue(event.Tags, "K", kindNumber(KindPullRequest))
-}
-
-func hasEventDeletionTarget(tags nostr.Tags) bool {
-	return len(tagsNamed(tags, "e")) > 0
 }
 
 func validateCloneLocators(tags nostr.Tags) error {
