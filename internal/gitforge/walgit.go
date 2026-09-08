@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"zooid/internal/forge"
 	"zooid/internal/projecttask"
 )
 
@@ -95,6 +96,36 @@ func (backend *WalGitBackend) Resolve(ctx context.Context, repository Repository
 		return "", &BackendError{Status: http.StatusBadGateway, Code: "invalid_resolve_response"}
 	}
 	return strings.ToLower(result.SHA), nil
+}
+
+func (backend *WalGitBackend) repositoryResponse(ctx context.Context, repository Repository, subpath, principal string) (forge.Response, error) {
+	target := *backend.base
+	parts := strings.SplitN(subpath, "?", 2)
+	target.Path = "/" + repository.Coordinate.Owner.Hex() + "/" + url.PathEscape(repository.Coordinate.ID) + "/api"
+	if parts[0] != "" {
+		target.Path += "/" + strings.TrimLeft(parts[0], "/")
+	}
+	if len(parts) == 2 {
+		target.RawQuery = parts[1]
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return forge.Response{}, err
+	}
+	backend.authorize(request, principal)
+	response, err := backend.client.Do(request)
+	if err != nil {
+		return forge.Response{}, &BackendError{Status: http.StatusServiceUnavailable, Code: "walgit_unavailable"}
+	}
+	stripWalGitHeaders(response.Header)
+	response.Header.Del("Set-Cookie")
+	cache := response.Header.Get("Cache-Control")
+	if cache == "" {
+		response.Header.Set("Cache-Control", "private, no-store")
+	} else {
+		response.Header.Set("Cache-Control", privateCacheControl(cache))
+	}
+	return forge.Response{Status: response.StatusCode, Header: response.Header, Body: response.Body}, nil
 }
 
 func (backend *WalGitBackend) proxy(w http.ResponseWriter, r *http.Request, path, principal string, privateCache bool) {

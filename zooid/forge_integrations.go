@@ -113,3 +113,37 @@ func (policy *GitForgePolicy) updateLegacyIntegrationHealth(ctx context.Context,
 		coordinate.Owner.Hex(), coordinate.ID, state, detail)
 	return err
 }
+
+func forgeRepository(repository gitforge.Repository, integration forge.Integration) forge.Repository {
+	return forge.Repository{
+		Coordinate: repository.Coordinate, Announcement: repository.Announcement,
+		Channel: repository.Channel, Classification: string(repository.Class),
+		CloneURL: repository.CloneURL, Integration: integration,
+	}
+}
+
+// ResolveIntegration composes the current signed announcement with its
+// operational attachment. It does not rewrite either source.
+func (policy *GitForgePolicy) ResolveIntegration(ctx context.Context, coordinate projecttask.RepositoryCoordinate) (forge.ResolvedRepository, bool, error) {
+	repository, found, err := policy.resolveRepository(ctx, coordinate)
+	if err != nil || !found {
+		return forge.ResolvedRepository{}, false, err
+	}
+	integration, found, err := policy.repositoryIntegration(ctx, coordinate)
+	if err != nil {
+		return forge.ResolvedRepository{}, false, err
+	}
+	if !found {
+		if err := policy.upsertLegacyIntegration(ctx, repository); err != nil {
+			return forge.ResolvedRepository{}, false, err
+		}
+		integration = legacyIntegration(repository)
+	}
+	resolved, err := policy.Registry.Resolve(ctx, forgeRepository(repository, integration))
+	if err != nil {
+		return forge.ResolvedRepository{}, false, err
+	}
+	return resolved, true, nil
+}
+
+var _ forge.RepositoryIntegrationResolver = (*GitForgePolicy)(nil)

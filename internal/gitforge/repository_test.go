@@ -34,6 +34,7 @@ func TestClassifyRepository(t *testing.T) {
 	classified, err = ClassifyRepository(external, "https://relay.example")
 	require.NoError(t, err)
 	require.Equal(t, RepositoryExternal, classified.Class)
+	require.Equal(t, "https://github.com/acme/notes.git", classified.CloneURL)
 
 	anchor := base
 	anchor.Tags = append(base.Tags.CloneDeep(), nostr.Tag{projecttask.TagProjectTaskAnchor, "true"})

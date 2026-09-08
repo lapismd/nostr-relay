@@ -138,6 +138,28 @@ func TestGitHTTPUsesReusableBuzzCredentialAndNIP29Membership(t *testing.T) {
 	require.Len(t, backend.gitCalls, 1)
 }
 
+func TestGitHTTPDirectsExternalRepositoriesToProviderGit(t *testing.T) {
+	backend := &recordingGitBackend{}
+	policy, store := createGitForgeTestPolicy(t, backend)
+	owner := nostr.Generate()
+	member := nostr.Generate()
+	repository := gitForgeRepositoryEvent(t, owner, "notes", nostr.Tag{"clone", "https://github.com/lapis/notes.git"})
+	repository.Tags[1] = nostr.Tag{projecttask.TagBuzzChannel, "repo-channel"}
+	require.NoError(t, repository.Sign(owner))
+	require.NoError(t, store.SaveEvent(repository))
+	require.NoError(t, policy.Remember(context.Background(), repository))
+	grantGitGroup(policy, "repo-channel", member.Public())
+	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
+
+	request := httptest.NewRequest(http.MethodGet, root+"/info/refs?service=git-upload-pack", nil)
+	signedGitRequest(t, request, member, http.MethodGet, root)
+	recorder := httptest.NewRecorder()
+	policy.ServeGitHTTP(recorder, request)
+	require.Equal(t, http.StatusConflict, recorder.Code)
+	require.JSONEq(t, `{"error":"provider_git_required"}`, recorder.Body.String())
+	require.Empty(t, backend.gitCalls)
+}
+
 func TestRepositoryAPIAuthorizesBeforeProxyAndRejectsAdminSurface(t *testing.T) {
 	backend := &recordingGitBackend{}
 	policy, store := createGitForgeTestPolicy(t, backend)

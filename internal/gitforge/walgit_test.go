@@ -11,6 +11,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"github.com/stretchr/testify/require"
+	"zooid/internal/forge"
 	"zooid/internal/projecttask"
 )
 
@@ -161,4 +162,42 @@ func TestNewWalGitBackendRequiresInternalURLAndToken(t *testing.T) {
 	require.Error(t, err)
 	_, err = NewWalGitBackend("http://walgit:8080", "")
 	require.ErrorContains(t, err, "WALGIT_RELAY_TOKEN")
+}
+
+func TestWalGitAdapterReportsOnlyLandedCapabilities(t *testing.T) {
+	legacy := &recordingLegacyBackend{}
+	adapter := NewWalGitAdapter(legacy)
+	repository := testRepository(t)
+	capabilities, err := adapter.Capabilities(context.Background(), forge.Repository{
+		Coordinate: repository.Coordinate, Classification: string(repository.Class),
+		CloneURL: "https://relay.example/git/owner/notes",
+	})
+	require.NoError(t, err)
+	require.Equal(t, forge.BackendWalGit, capabilities.GitBackend)
+	require.Equal(t, forge.CloneAuthNostr, capabilities.Clone.Auth)
+	require.True(t, capabilities.SmartHTTP.Read)
+	require.True(t, capabilities.SmartHTTP.Write)
+	require.True(t, capabilities.Browse)
+	require.True(t, capabilities.Compare)
+	require.True(t, capabilities.RefEvents)
+	require.True(t, capabilities.Provision)
+	require.False(t, capabilities.Import)
+	require.False(t, capabilities.Merge)
+	require.False(t, capabilities.CI)
+}
+
+type recordingLegacyBackend struct{}
+
+func (*recordingLegacyBackend) EnsureRepository(context.Context, projecttask.RepositoryCoordinate) error {
+	return nil
+}
+func (*recordingLegacyBackend) ProxyGitHTTP(http.ResponseWriter, *http.Request, Repository, string, string) {
+}
+func (*recordingLegacyBackend) ProxyRepositoryAPI(http.ResponseWriter, *http.Request, Repository, string, string) {
+}
+func (*recordingLegacyBackend) Resolve(context.Context, Repository, string, string) (string, error) {
+	return "", nil
+}
+func (*recordingLegacyBackend) Compare(context.Context, Repository, CompareRequest) (CompareResult, error) {
+	return CompareResult{}, nil
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"zooid/internal/forge"
 	"zooid/internal/gitforge"
 	"zooid/internal/projecttask"
 )
@@ -22,7 +23,7 @@ type GitForgePolicy struct {
 	Groups        *GroupStore
 	ProjectTasks  *ProjectTaskPolicy
 	Config        *Config
-	Backend       gitforge.Backend
+	Registry      *forge.Registry
 	WebhookSecret string
 
 	ctx    context.Context
@@ -31,9 +32,17 @@ type GitForgePolicy struct {
 }
 
 func NewGitForgePolicy(ctx context.Context, config *Config, events *EventStore, groups *GroupStore, projectTasks *ProjectTaskPolicy, backend gitforge.Backend) *GitForgePolicy {
+	registry := forge.NewRegistry()
+	if backend != nil {
+		_ = registry.RegisterGit(gitforge.NewWalGitAdapter(backend))
+	}
+	return NewGitForgePolicyWithRegistry(ctx, config, events, groups, projectTasks, registry)
+}
+
+func NewGitForgePolicyWithRegistry(ctx context.Context, config *Config, events *EventStore, groups *GroupStore, projectTasks *ProjectTaskPolicy, registry *forge.Registry) *GitForgePolicy {
 	workerCtx, cancel := context.WithCancel(ctx)
 	return &GitForgePolicy{
-		Events: events, Groups: groups, ProjectTasks: projectTasks, Config: config, Backend: backend,
+		Events: events, Groups: groups, ProjectTasks: projectTasks, Config: config, Registry: registry,
 		ctx: workerCtx, cancel: cancel,
 	}
 }
@@ -235,7 +244,18 @@ func (policy *GitForgePolicy) ReconcileOnce(ctx context.Context) error {
 	if err != nil || !found {
 		return err
 	}
-	err = policy.Backend.EnsureRepository(ctx, intent.Coordinate)
+	resolved, found, resolveErr := policy.ResolveIntegration(ctx, intent.Coordinate)
+	if resolveErr != nil || !found {
+		if resolveErr == nil {
+			resolveErr = &forge.Error{Status: 404, Code: "repository_not_found"}
+		}
+		return policy.finishIntent(ctx, intent, resolveErr)
+	}
+	provisioner, ok := resolved.Git.(forge.RepositoryProvisioner)
+	if !ok {
+		return policy.finishIntent(ctx, intent, &forge.Error{Status: 409, Code: "repository_provisioning_unsupported"})
+	}
+	err = provisioner.EnsureRepository(ctx, resolved.Repository)
 	return policy.finishIntent(ctx, intent, err)
 }
 

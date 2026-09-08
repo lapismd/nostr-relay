@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"zooid/internal/forge"
 	"zooid/internal/gitforge"
 	"zooid/internal/projecttask"
 )
@@ -50,16 +51,16 @@ func (policy *GitForgePolicy) ServeGitHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	repository, status, code := policy.resolvePublicRepository(r.Context(), ownerText, repositoryText)
+	resolved, status, code := policy.resolvePublicRepository(r.Context(), ownerText, repositoryText)
 	if status != 0 {
 		writeGitError(w, status, code)
 		return
 	}
-	if status, code := policy.authorizeRepository(authEvent.PubKey, repository, *write); status != 0 {
+	if status, code := policy.authorizeRepository(authEvent.PubKey, resolved.Repository, *write); status != 0 {
 		writeGitError(w, status, code)
 		return
 	}
-	if status, code := policy.requireReady(r.Context(), repository); status != 0 {
+	if status, code := policy.requireReady(r.Context(), resolved.Repository); status != 0 {
 		if status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "2")
 		}
@@ -67,7 +68,12 @@ func (policy *GitForgePolicy) ServeGitHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	policy.Backend.ProxyGitHTTP(w, r, repository, subpath, authEvent.PubKey.Hex())
+	backend, ok := resolved.Git.(forge.SmartHTTPBackend)
+	if !ok || (!resolved.Capabilities.SmartHTTP.Read && !*write) || (!resolved.Capabilities.SmartHTTP.Write && *write) {
+		writeGitError(w, http.StatusConflict, "provider_git_required")
+		return
+	}
+	backend.ServeGitHTTP(w, r, resolved.Repository, subpath, authEvent.PubKey.Hex())
 }
 
 // ServeRepositoryAPI authorizes and streams WalGit's read-only repository API
@@ -88,16 +94,16 @@ func (policy *GitForgePolicy) ServeRepositoryAPI(w http.ResponseWriter, r *http.
 		gitAuthRequired(w, r.Method)
 		return
 	}
-	repository, status, code := policy.resolvePublicRepository(r.Context(), ownerText, repositoryText)
+	resolved, status, code := policy.resolvePublicRepository(r.Context(), ownerText, repositoryText)
 	if status != 0 {
 		writeGitError(w, status, code)
 		return
 	}
-	if status, code := policy.authorizeRepository(authEvent.PubKey, repository, false); status != 0 {
+	if status, code := policy.authorizeRepository(authEvent.PubKey, resolved.Repository, false); status != 0 {
 		writeGitError(w, status, code)
 		return
 	}
-	if status, code := policy.requireReady(r.Context(), repository); status != 0 {
+	if status, code := policy.requireReady(r.Context(), resolved.Repository); status != 0 {
 		if status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "2")
 		}
@@ -105,7 +111,12 @@ func (policy *GitForgePolicy) ServeRepositoryAPI(w http.ResponseWriter, r *http.
 		return
 	}
 
-	policy.Backend.ProxyRepositoryAPI(w, r, repository, subpath, authEvent.PubKey.Hex())
+	backend, ok := resolved.Git.(forge.RepositoryAPIBackend)
+	if !ok || !resolved.Capabilities.Browse {
+		writeGitError(w, http.StatusConflict, "repository_browse_unavailable")
+		return
+	}
+	backend.ServeRepositoryAPI(w, r, resolved.Repository, subpath, authEvent.PubKey.Hex())
 }
 
 type pullRequestDiffResponse struct {
@@ -117,7 +128,7 @@ type pullRequestDiffResponse struct {
 	Base         string                           `json:"base"`
 	Head         string                           `json:"head"`
 	MergeBase    string                           `json:"merge_base,omitempty"`
-	Files        []gitforge.CompareFile           `json:"files"`
+	Files        []forge.CompareFile              `json:"files"`
 	Patch        string                           `json:"patch"`
 }
 
@@ -164,7 +175,7 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		writeGitError(w, http.StatusUnprocessableEntity, "invalid_pull_request")
 		return
 	}
-	repository, found, err := policy.resolveRepository(r.Context(), coordinate)
+	resolved, found, err := policy.ResolveIntegration(r.Context(), coordinate)
 	if err != nil {
 		writeGitError(w, http.StatusServiceUnavailable, "event_store_unavailable")
 		return
@@ -173,15 +184,15 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		http.NotFound(w, r)
 		return
 	}
-	if repository.Class != gitforge.RepositoryHosted {
-		writeGitError(w, http.StatusConflict, "repository_not_hosted")
+	if resolved.Git == nil || !resolved.Capabilities.Compare {
+		writeGitError(w, http.StatusConflict, "repository_compare_unavailable")
 		return
 	}
-	if status, code := policy.authorizePullRequest(r.Context(), authEvent.PubKey, root, repository); status != 0 {
+	if status, code := policy.authorizePullRequest(r.Context(), authEvent.PubKey, root, resolved.Repository); status != 0 {
 		writeGitError(w, status, code)
 		return
 	}
-	if status, code := policy.requireReady(r.Context(), repository); status != 0 {
+	if status, code := policy.requireReady(r.Context(), resolved.Repository); status != 0 {
 		if status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "2")
 		}
@@ -190,7 +201,7 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 	}
 
 	related := policy.pullRequestRelatedEvents(r.Context(), root.ID)
-	state, err := projecttask.ReducePullRequest(root, repository.Announcement, related)
+	state, err := projecttask.ReducePullRequest(root, resolved.Repository.Announcement, related)
 	if err != nil || state.CurrentCommit == "" {
 		writeGitError(w, http.StatusUnprocessableEntity, "invalid_pull_request")
 		return
@@ -204,14 +215,14 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		if target == "" {
 			target = "HEAD"
 		}
-		base, err = policy.Backend.Resolve(r.Context(), repository, target, authEvent.PubKey.Hex())
+		base, err = resolved.Git.Resolve(r.Context(), resolved.Repository, forge.RevisionRequest{Revision: target, Principal: authEvent.PubKey.Hex()})
 		if err != nil {
 			writeGitBackendFailure(w, err)
 			return
 		}
 		useMergeBase = true
 	}
-	comparison, err := policy.Backend.Compare(r.Context(), repository, gitforge.CompareRequest{
+	comparison, err := resolved.Git.Compare(r.Context(), resolved.Repository, forge.CompareRequest{
 		Base: base, Head: state.CurrentCommit, UseMergeBase: useMergeBase,
 		MaxFiles: policy.Config.Git.MaxDiffFiles, MaxPatchBytes: policy.Config.Git.MaxDiffBytes,
 		Principal: authEvent.PubKey.Hex(),
@@ -302,32 +313,33 @@ func (policy *GitForgePolicy) publicRequestURL(r *http.Request) (string, error) 
 	return base.String(), nil
 }
 
-func (policy *GitForgePolicy) resolvePublicRepository(ctx context.Context, ownerText, repositoryText string) (gitforge.Repository, int, string) {
+func (policy *GitForgePolicy) resolvePublicRepository(ctx context.Context, ownerText, repositoryText string) (forge.ResolvedRepository, int, string) {
 	owner, err := nostr.PubKeyFromHex(ownerText)
 	if err != nil {
-		return gitforge.Repository{}, http.StatusNotFound, "repository_not_found"
+		return forge.ResolvedRepository{}, http.StatusNotFound, "repository_not_found"
 	}
 	candidates := []string{repositoryText}
 	if strings.HasSuffix(repositoryText, ".git") {
 		candidates = append(candidates, strings.TrimSuffix(repositoryText, ".git"))
 	}
 	for _, identifier := range slices.Compact(candidates) {
-		repository, found, err := policy.resolveRepository(ctx, projecttask.RepositoryCoordinate{Owner: owner, ID: identifier})
+		repository, found, err := policy.ResolveIntegration(ctx, projecttask.RepositoryCoordinate{Owner: owner, ID: identifier})
 		if err != nil {
-			return gitforge.Repository{}, http.StatusServiceUnavailable, "event_store_unavailable"
+			var backendError *forge.Error
+			if errors.As(err, &backendError) {
+				return forge.ResolvedRepository{}, backendError.Status, backendError.Code
+			}
+			return forge.ResolvedRepository{}, http.StatusServiceUnavailable, "event_store_unavailable"
 		}
 		if !found {
 			continue
 		}
-		if repository.Class != gitforge.RepositoryHosted {
-			return gitforge.Repository{}, http.StatusConflict, "repository_not_hosted"
-		}
 		return repository, 0, ""
 	}
-	return gitforge.Repository{}, http.StatusNotFound, "repository_not_found"
+	return forge.ResolvedRepository{}, http.StatusNotFound, "repository_not_found"
 }
 
-func (policy *GitForgePolicy) authorizeRepository(pubkey nostr.PubKey, repository gitforge.Repository, write bool) (int, string) {
+func (policy *GitForgePolicy) authorizeRepository(pubkey nostr.PubKey, repository forge.Repository, write bool) (int, string) {
 	metadata, found := policy.Groups.GetMetadata(repository.Channel)
 	if !found {
 		return http.StatusNotFound, "repository_scope_not_found"
@@ -344,7 +356,7 @@ func (policy *GitForgePolicy) authorizeRepository(pubkey nostr.PubKey, repositor
 	return 0, ""
 }
 
-func (policy *GitForgePolicy) authorizePullRequest(ctx context.Context, pubkey nostr.PubKey, root nostr.Event, repository gitforge.Repository) (int, string) {
+func (policy *GitForgePolicy) authorizePullRequest(ctx context.Context, pubkey nostr.PubKey, root nostr.Event, repository forge.Repository) (int, string) {
 	scope, err := policy.ProjectTasks.resolveStored(ctx, root)
 	if err != nil || !scope.Relevant || len(scope.Channels) == 0 {
 		return http.StatusNotFound, "pull_request_scope_not_found"
@@ -368,13 +380,24 @@ func (policy *GitForgePolicy) authorizePullRequest(ctx context.Context, pubkey n
 	return 0, ""
 }
 
-func (policy *GitForgePolicy) requireReady(ctx context.Context, repository gitforge.Repository) (int, string) {
+func (policy *GitForgePolicy) requireReady(ctx context.Context, repository forge.Repository) (int, string) {
+	if repository.Integration.GitBackend != forge.BackendWalGit {
+		if repository.Integration.HealthState == "inactive" || repository.Integration.HealthState == "disabled" {
+			return http.StatusServiceUnavailable, "repository_backend_disabled"
+		}
+		return 0, ""
+	}
 	state, found, err := policy.intentState(ctx, repository.Coordinate)
 	if err != nil {
 		return http.StatusServiceUnavailable, "repository_state_unavailable"
 	}
 	if !found {
-		if err := policy.upsertIntent(ctx, repository); err != nil {
+		legacy := gitforge.Repository{
+			Coordinate: repository.Coordinate, Announcement: repository.Announcement,
+			Channel: repository.Channel, Class: gitforge.RepositoryClass(repository.Classification),
+			CloneURL: repository.CloneURL,
+		}
+		if err := policy.upsertIntent(ctx, legacy); err != nil {
 			return http.StatusServiceUnavailable, "repository_state_unavailable"
 		}
 		return http.StatusServiceUnavailable, "repository_provisioning"
@@ -490,6 +513,15 @@ func (policy *GitForgePolicy) pullRequestRelatedEvents(ctx context.Context, root
 }
 
 func writeGitBackendFailure(w http.ResponseWriter, err error) {
+	var forgeError *forge.Error
+	if errors.As(err, &forgeError) {
+		status := forgeError.Status
+		if status < 400 || status > 599 {
+			status = http.StatusBadGateway
+		}
+		writeGitError(w, status, forgeError.Code)
+		return
+	}
 	var backendError *gitforge.BackendError
 	if errors.As(err, &backendError) {
 		status := backendError.Status

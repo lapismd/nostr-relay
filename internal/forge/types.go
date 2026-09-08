@@ -192,6 +192,13 @@ type SmartHTTPBackend interface {
 	ServeGitHTTP(http.ResponseWriter, *http.Request, Repository, string, string)
 }
 
+// RepositoryAPIBackend preserves the normalized v1 streaming contract. It is
+// optional because a backend may expose Git objects without offering the
+// relay's browser route shape.
+type RepositoryAPIBackend interface {
+	ServeRepositoryAPI(http.ResponseWriter, *http.Request, Repository, string, string)
+}
+
 type CollaborationCommand struct {
 	OperationID       string
 	Kind              string

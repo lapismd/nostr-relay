@@ -65,9 +65,11 @@ func ClassifyRepository(event nostr.Event, publicURL string) (Repository, error)
 		repository.Class = RepositoryHosted
 	} else {
 		repository.Class = RepositoryExternal
+		repository.CloneURL = clones[0]
 		for _, clone := range clones {
 			if equivalentCloneURL(clone, canonical) {
 				repository.Class = RepositoryHosted
+				repository.CloneURL = canonical
 				break
 			}
 		}
