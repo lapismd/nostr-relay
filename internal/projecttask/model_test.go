@@ -323,6 +323,13 @@ func TestRepositoryTaskAnchorMarkerValidation(t *testing.T) {
 	event.Tags = append(base.Tags.CloneDeep(), nostr.Tag{TagProjectTaskAnchor, "true"}, nostr.Tag{TagProjectTaskAnchor, "true"})
 	_, err := ValidateEvent(event)
 	require.ErrorContains(t, err, "singleton")
+
+	for _, forbidden := range []nostr.Tag{{"clone", "https://example.com/notes.git"}, {"web", "https://example.com/notes"}} {
+		event = base
+		event.Tags = append(base.Tags.CloneDeep(), nostr.Tag{TagProjectTaskAnchor, "true"}, forbidden)
+		_, err = ValidateEvent(event)
+		require.ErrorContains(t, err, "must not contain clone or web")
+	}
 }
 
 func projectWithCoordinate(project nostr.Event, coordinate RepositoryCoordinate) nostr.Event {

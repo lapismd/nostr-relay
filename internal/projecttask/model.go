@@ -145,6 +145,9 @@ func validateRepository(event nostr.Event) error {
 	if len(anchors) == 1 && (len(anchors[0]) != 2 || anchors[0][1] != "true") {
 		return fmt.Errorf("%s tag must be exactly [\"%s\",\"true\"]", TagProjectTaskAnchor, TagProjectTaskAnchor)
 	}
+	if len(anchors) == 1 && (len(tagsNamed(event.Tags, "clone")) != 0 || len(tagsNamed(event.Tags, "web")) != 0) {
+		return fmt.Errorf("%s must not contain clone or web tags", TagProjectTaskAnchor)
+	}
 	return nil
 }
 
