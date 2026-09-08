@@ -27,6 +27,12 @@ BLOSSOM_PUBLIC_URL="${BLOSSOM_PUBLIC_URL:-https://$RELAY_HOST}"
 REGISTRY_POLICY_ENABLED="${REGISTRY_POLICY_ENABLED:-false}"
 REGISTRY_RELEASE_GROUP_ID="${REGISTRY_RELEASE_GROUP_ID:-}"
 REGISTRY_CURATOR_ROLE="${REGISTRY_CURATOR_ROLE:-registry-curator}"
+GIT_ENABLED="${GIT_ENABLED:-false}"
+GIT_PUBLIC_URL="${GIT_PUBLIC_URL:-}"
+GIT_BACKEND_URL="${GIT_BACKEND_URL:-}"
+GIT_RECONCILE_INTERVAL="${GIT_RECONCILE_INTERVAL:-5s}"
+GIT_MAX_DIFF_BYTES="${GIT_MAX_DIFF_BYTES:-8388608}"
+GIT_MAX_DIFF_FILES="${GIT_MAX_DIFF_FILES:-2000}"
 
 # Create directories
 mkdir -p "$CONFIG_DIR" "$MEDIA_DIR"
@@ -86,6 +92,14 @@ public_url = "$BLOSSOM_PUBLIC_URL"
 enabled = $REGISTRY_POLICY_ENABLED
 release_group_id = "$REGISTRY_RELEASE_GROUP_ID"
 curator_role = "$REGISTRY_CURATOR_ROLE"
+
+[git]
+enabled = $GIT_ENABLED
+public_url = "$GIT_PUBLIC_URL"
+backend_url = "$GIT_BACKEND_URL"
+reconcile_interval = "$GIT_RECONCILE_INTERVAL"
+max_diff_bytes = $GIT_MAX_DIFF_BYTES
+max_diff_files = $GIT_MAX_DIFF_FILES
 EOF
 
     # Add admin role if pubkeys provided
@@ -108,6 +122,25 @@ EOF
     echo "Config generated at: $CONFIG_FILE"
 else
     echo "Using existing config: $CONFIG_FILE"
+
+    # Compose volumes commonly retain an older auto-generated config across
+    # image upgrades. Add the optional section once without rewriting operator-
+    # managed files or persisting either WalGit runtime secret.
+    if [ "$GIT_ENABLED" = "true" ] \
+        && grep -q '^# Auto-generated Zooid configuration$' "$CONFIG_FILE" \
+        && ! grep -q '^\[git\]$' "$CONFIG_FILE"; then
+        cat >> "$CONFIG_FILE" << EOF
+
+[git]
+enabled = true
+public_url = "$GIT_PUBLIC_URL"
+backend_url = "$GIT_BACKEND_URL"
+reconcile_interval = "$GIT_RECONCILE_INTERVAL"
+max_diff_bytes = $GIT_MAX_DIFF_BYTES
+max_diff_files = $GIT_MAX_DIFF_FILES
+EOF
+        echo "Added Git configuration to existing auto-generated config"
+    fi
 fi
 
 echo ""

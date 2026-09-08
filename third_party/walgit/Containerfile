@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1.7
+
+# WalGit is kept as a process boundary and a short patch stack. Updating the
+# sidecar means changing UPSTREAM_VERSION, refreshing the archive checksum,
+# and replaying the patches; no WalGit source is copied into the Go fork.
+FROM docker.io/library/debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS source
+ARG WALGIT_COMMIT=e5295e6ee45f5267c661f8bbd27ed0a07e55e7db
+ARG WALGIT_ARCHIVE_SHA256=9bb48e21c5647950e158068e1999bcb85cbae08c2730a5c3771b05259ec9d1ef
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl patch \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl --fail --location --silent --show-error \
+      "https://github.com/tobi/walgit/archive/${WALGIT_COMMIT}.tar.gz" \
+      --output /tmp/walgit.tar.gz \
+    && echo "${WALGIT_ARCHIVE_SHA256}  /tmp/walgit.tar.gz" | sha256sum --check \
+    && tar --extract --gzip --file /tmp/walgit.tar.gz --strip-components=1 \
+    && rm /tmp/walgit.tar.gz
+COPY third_party/walgit/patches /patches
+RUN for patch_file in /patches/*.patch; do patch --batch --forward -p1 < "$patch_file"; done
+
+FROM docker.io/library/node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS web
+RUN corepack enable && corepack prepare pnpm@10 --activate
+WORKDIR /src/web
+COPY --from=source /src/web/package.json /src/web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY --from=source /src/web/ ./
+RUN pnpm run build && test -f dist/index.html && test -f dist/repos.js
+
+FROM docker.io/library/rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev pkg-config cmake perl python3 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY --from=source /src/Cargo.toml /src/Cargo.lock /src/rust-toolchain.toml ./
+COPY --from=source /src/crates ./crates
+COPY --from=web /src/web/dist ./web/dist
+ARG WALGIT_COMMIT=e5295e6ee45f5267c661f8bbd27ed0a07e55e7db
+ENV WALGIT_BUILD_SHA=${WALGIT_COMMIT}
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p walgit-cli \
+    && install -D target/release/walgit /out/bin/walgit \
+    && install -D target/release/walgit-server /out/bin/walgit-server
+
+FROM docker.io/library/debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ca-certificates tini curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && git --version
+RUN useradd --uid 1000 --create-home --shell /bin/sh walgit \
+    && mkdir -p /etc/walgit /var/lib/walgit \
+    && chown walgit:walgit /var/lib/walgit
+COPY --from=build /out/bin/walgit /out/bin/walgit-server /usr/local/bin/
+COPY third_party/walgit/walgit.toml /etc/walgit/walgit.toml
+ENV RUST_LOG=info,walgit=debug \
+    WALGIT_CONFIG=/etc/walgit/walgit.toml \
+    WALGIT__CACHE__DIR=/var/lib/walgit \
+    WALGIT__SERVER__LISTEN=0.0.0.0:8080
+USER walgit
+WORKDIR /home/walgit
+EXPOSE 8080
+VOLUME ["/var/lib/walgit"]
+HEALTHCHECK --interval=10s --timeout=5s --retries=30 CMD curl -fsS http://127.0.0.1:8080/readyz || exit 1
+ENTRYPOINT ["tini", "--", "walgit"]
+CMD ["serve"]

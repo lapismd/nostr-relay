@@ -1,0 +1,4 @@
+repository=https://github.com/tobi/walgit
+commit=e5295e6ee45f5267c661f8bbd27ed0a07e55e7db
+archive_sha256=9bb48e21c5647950e158068e1999bcb85cbae08c2730a5c3771b05259ec9d1ef
+patches=patches/0001-add-bounded-compare-api.patch

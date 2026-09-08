@@ -1,0 +1,37 @@
+[server]
+listen = "0.0.0.0:8080"
+roles = []
+auto_create_on_push = false
+accel_redirect = false
+
+[server.tls]
+mode = "off"
+
+[server.auth]
+mode = "token"
+anonymous_read = false
+tokens = [
+  { principal = "lapis-relay", token_env = "WALGIT_RELAY_TOKEN", write = true, admin = true },
+]
+trusted_forwarders = ["lapis-relay"]
+
+[store]
+backend = "s3"
+bucket = "lapis-walgit"
+prefix = ""
+
+[store.s3]
+endpoint = "http://rustfs:9000"
+region = "us-east-1"
+access_key_env = "AWS_ACCESS_KEY_ID"
+secret_key_env = "AWS_SECRET_ACCESS_KEY"
+force_path_style = true
+
+[cache]
+dir = "/var/lib/walgit"
+mode = "disk"
+disk_high_watermark = 0.9
+
+[events]
+webhook_url = "http://relay:3334/internal/walgit/events"
+sweep_interval = "5s"

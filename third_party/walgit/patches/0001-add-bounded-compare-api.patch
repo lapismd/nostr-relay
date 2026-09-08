@@ -1,0 +1,385 @@
+--- a/crates/walgit-server/src/error.rs
++++ b/crates/walgit-server/src/error.rs
+@@ -13,6 +13,7 @@
+     Unauthorized,
+     Forbidden,
+     Conflict(String),
++    UnprocessableEntity(String),
+     PayloadTooLarge,
+     UnsupportedMediaType(String),
+     ServiceUnavailable(String),
+@@ -27,6 +28,7 @@
+             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+             ApiError::Forbidden => StatusCode::FORBIDDEN,
+             ApiError::Conflict(_) => StatusCode::CONFLICT,
++            ApiError::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
+             ApiError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+             ApiError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+@@ -44,6 +46,7 @@
+             ApiError::Unauthorized => "unauthorized".to_string(),
+             ApiError::Forbidden => "forbidden".to_string(),
+             ApiError::Conflict(m) => format!("conflict: {m}"),
++            ApiError::UnprocessableEntity(m) => format!("unprocessable entity: {m}"),
+             ApiError::PayloadTooLarge => "payload too large".to_string(),
+             ApiError::UnsupportedMediaType(m) => format!("unsupported media type: {m}"),
+             ApiError::ServiceUnavailable(m) => format!("service unavailable: {m}"),
+--- a/crates/walgit-server/src/web/api.rs
++++ b/crates/walgit-server/src/web/api.rs
+@@ -170,6 +170,46 @@
+     commit: Commit,
+     stats: Vec<Stat>,
+     patch: String,
++}
++#[derive(Serialize)]
++struct CompareFile {
++    path: String,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    old_path: Option<String>,
++    status: String,
++    additions: i64,
++    deletions: i64,
++    #[serde(skip_serializing_if = "std::ops::Not::not")]
++    binary: bool,
++}
++#[derive(Serialize)]
++struct CompareResult {
++    base: String,
++    head: String,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    merge_base: Option<String>,
++    files: Vec<CompareFile>,
++    patch: String,
++}
++#[derive(serde::Deserialize)]
++struct CompareQuery {
++    base: String,
++    head: String,
++    #[serde(default = "direct_compare_mode")]
++    mode: String,
++    #[serde(default = "default_compare_files")]
++    max_files: usize,
++    #[serde(default = "default_compare_patch_bytes")]
++    max_patch_bytes: usize,
++}
++fn direct_compare_mode() -> String {
++    "direct".into()
++}
++fn default_compare_files() -> usize {
++    2_000
++}
++fn default_compare_patch_bytes() -> usize {
++    8 * 1024 * 1024
+ }
+ #[derive(serde::Deserialize, Default)]
+ struct CommitQuery {
+@@ -211,7 +251,8 @@
+             .route(&format!("{base}/tree/{{*rest}}"), get(tree))
+             .route(&format!("{base}/blob/{{*rest}}"), get(blob))
+             .route(&format!("{base}/commits"), get(commits))
+-            .route(&format!("{base}/commit/{{sha}}"), get(commit_detail));
++            .route(&format!("{base}/commit/{{sha}}"), get(commit_detail))
++            .route(&format!("{base}/compare"), get(compare));
+     }
+     r.with_state(state)
+ }
+@@ -1373,10 +1414,248 @@
+                 patch,
+             });
+             Ok(finish(&st2, &r, immutable, &key, &sha, body))
++        },
++    )
++    .await
++}
++
++// ---- arbitrary comparison ----------------------------------------------------
++
++/// Compare two immutable commits for PR review. This lives beside commit
++/// detail so there is still one Git object engine and one materialization
++/// policy. The initial endpoint requires a disk-cache host; remote-pack
++/// comparison can be added without changing this wire contract.
++async fn compare(
++    State(st): State<Arc<AppState>>,
++    headers: HeaderMap,
++    Path((owner, repo_name)): Path<(String, String)>,
++    Query(q): Query<CompareQuery>,
++) -> Result<Response, ApiError> {
++    if !is_full_sha(&q.base) || !is_full_sha(&q.head) || q.base.len() != q.head.len() {
++        return Err(ApiError::BadRequest(
++            "base and head must be full same-format object IDs".into(),
++        ));
++    }
++    if q.mode != "direct" && q.mode != "merge-base" {
++        return Err(ApiError::BadRequest(
++            "mode must be direct or merge-base".into(),
++        ));
++    }
++    if q.max_files == 0 || q.max_files > 20_000 {
++        return Err(ApiError::BadRequest("max_files must be 1..=20000".into()));
++    }
++    if q.max_patch_bytes == 0 || q.max_patch_bytes > 64 * 1024 * 1024 {
++        return Err(ApiError::BadRequest(
++            "max_patch_bytes must be 1..=67108864".into(),
++        ));
++    }
++    run(
++        &st,
++        &headers,
++        &owner,
++        &repo_name,
++        Need::Objects,
++        None,
++        move |r| async move {
++            if r.remote().is_some() {
++                return Err(ApiError::ServiceUnavailable(
++                    "compare requires cache.mode=disk on this host".into(),
++                ));
++            }
++            // Full IDs are still peeled as commits: a blob or tree ID is not
++            // a valid comparison endpoint input.
++            for oid in [&q.base, &q.head] {
++                git(
++                    &r.local,
++                    vec![
++                        "rev-parse".into(),
++                        "--verify".into(),
++                        "--quiet".into(),
++                        "--end-of-options".into(),
++                        format!("{oid}^{{commit}}"),
++                    ],
++                )
++                .await?;
++            }
++            let requested_base = q.base.clone();
++            let (base, merge_base) = if q.mode == "merge-base" {
++                let output = git(
++                    &r.local,
++                    vec![
++                        "merge-base".into(),
++                        "--all".into(),
++                        q.base.clone(),
++                        q.head.clone(),
++                    ],
++                )
++                .await
++                .map_err(|_| ApiError::UnprocessableEntity("unrelated histories".into()))?;
++                let mut bases: Vec<String> = String::from_utf8_lossy(&output)
++                    .lines()
++                    .map(str::trim)
++                    .filter(|line| is_full_sha(line))
++                    .map(str::to_string)
++                    .collect();
++                bases.sort();
++                let base = bases
++                    .into_iter()
++                    .next()
++                    .ok_or_else(|| ApiError::UnprocessableEntity("unrelated histories".into()))?;
++                (base.clone(), Some(base))
++            } else {
++                (requested_base, None)
++            };
++            let range = [base.clone(), q.head.clone()];
++            let names = compare_git(&r.local, "--name-status", &range).await?;
++            let names = parse_compare_names(&names);
++            if names.len() > q.max_files {
++                return Err(ApiError::PayloadTooLarge);
++            }
++            let stats = compare_git(&r.local, "--numstat", &range).await?;
++            let stats = parse_compare_stats(&stats);
++            let files = names
++                .into_iter()
++                .map(|(status, old_path, path)| {
++                    let (additions, deletions, binary) =
++                        stats.get(&path).copied().unwrap_or((0, 0, false));
++                    CompareFile {
++                        path,
++                        old_path,
++                        status,
++                        additions,
++                        deletions,
++                        binary,
++                    }
++                })
++                .collect();
++            let patch = git(
++                &r.local,
++                vec![
++                    "diff".into(),
++                    "--binary".into(),
++                    "--full-index".into(),
++                    "-M".into(),
++                    "--no-color".into(),
++                    "--no-ext-diff".into(),
++                    base.clone(),
++                    q.head.clone(),
++                    "--".into(),
++                ],
++            )
++            .await?;
++            if patch.len() > q.max_patch_bytes {
++                return Err(ApiError::PayloadTooLarge);
++            }
++            let result = CompareResult {
++                base,
++                head: q.head,
++                merge_base,
++                files,
++                patch: String::from_utf8_lossy(&patch).into_owned(),
++            };
++            Ok(Rendered::json(json_bytes(&result), IMMUTABLE, None))
+         },
+     )
+     .await
+ }
++
++async fn compare_git(
++    local: &walgit_git::LocalRepo,
++    format: &str,
++    range: &[String; 2],
++) -> Result<Vec<u8>, ApiError> {
++    git(
++        local,
++        vec![
++            "diff".into(),
++            format.into(),
++            "-z".into(),
++            "-M".into(),
++            "--no-color".into(),
++            "--no-ext-diff".into(),
++            range[0].clone(),
++            range[1].clone(),
++            "--".into(),
++        ],
++    )
++    .await
++}
++
++fn parse_compare_names(bytes: &[u8]) -> Vec<(String, Option<String>, String)> {
++    let mut fields = bytes
++        .split(|byte| *byte == 0)
++        .filter(|field| !field.is_empty());
++    let mut files = Vec::new();
++    while let Some(raw_status) = fields.next() {
++        let kind = String::from_utf8_lossy(raw_status)
++            .chars()
++            .next()
++            .unwrap_or('X');
++        let status = match kind {
++            'A' => "added",
++            'D' => "deleted",
++            'M' => "modified",
++            'R' => "renamed",
++            'C' => "copied",
++            'T' => "type_changed",
++            'U' => "unmerged",
++            _ => "unknown",
++        }
++        .to_string();
++        let Some(first) = fields.next() else { break };
++        let first = String::from_utf8_lossy(first).into_owned();
++        if kind == 'R' || kind == 'C' {
++            let Some(second) = fields.next() else { break };
++            files.push((
++                status,
++                Some(first),
++                String::from_utf8_lossy(second).into_owned(),
++            ));
++        } else {
++            files.push((status, None, first));
++        }
++    }
++    files
++}
++
++fn parse_compare_stats(bytes: &[u8]) -> std::collections::HashMap<String, (i64, i64, bool)> {
++    let mut fields = bytes
++        .split(|byte| *byte == 0)
++        .filter(|field| !field.is_empty());
++    let mut stats = std::collections::HashMap::new();
++    while let Some(record) = fields.next() {
++        let columns: Vec<&[u8]> = record.splitn(3, |byte| *byte == b'\t').collect();
++        if columns.len() != 3 {
++            continue;
++        }
++        let binary = columns[0] == b"-" || columns[1] == b"-";
++        let additions = if binary {
++            0
++        } else {
++            String::from_utf8_lossy(columns[0]).parse().unwrap_or(0)
++        };
++        let deletions = if binary {
++            0
++        } else {
++            String::from_utf8_lossy(columns[1]).parse().unwrap_or(0)
++        };
++        // Rename numstat uses an empty path followed by old and new NUL fields.
++        let path = if columns[2].is_empty() {
++            let _old = fields.next();
++            fields.next()
++        } else {
++            Some(columns[2])
++        };
++        if let Some(path) = path {
++            stats.insert(
++                String::from_utf8_lossy(path).into_owned(),
++                (additions, deletions, binary),
++            );
++        }
++    }
++    stats
++}
++
+ fn parse_stats(bytes: &[u8]) -> Vec<Stat> {
+     String::from_utf8_lossy(bytes)
+         .lines()
+@@ -1436,4 +1715,19 @@
+         assert_eq!(super::normalize_rename("old.rs => new.rs"), "new.rs");
+         assert_eq!(super::normalize_rename("plain.rs"), "plain.rs");
+     }
++
++    #[test]
++    fn compare_parsers_keep_renames_and_binary_state() {
++        let names = super::parse_compare_names(b"R100\0old.txt\0new.txt\0M\0bin.dat\0");
++        assert_eq!(
++            names,
++            vec![
++                ("renamed".into(), Some("old.txt".into()), "new.txt".into()),
++                ("modified".into(), None, "bin.dat".into())
++            ]
++        );
++        let stats = super::parse_compare_stats(b"2\t1\t\0old.txt\0new.txt\0-\t-\tbin.dat\0");
++        assert_eq!(stats.get("new.txt"), Some(&(2, 1, false)));
++        assert_eq!(stats.get("bin.dat"), Some(&(0, 0, true)));
++    }
+ }
+--- a/crates/walgit-server/tests/web_api.rs
++++ b/crates/walgit-server/tests/web_api.rs
+@@ -377,6 +377,28 @@
+         .trim()
+         .to_string();
+     conformance(&server, &src, &head, &feature, &v1_peeled).await?;
++
++    let feature_base = git_in(&src, &["rev-parse", "feature/x^"])?
++        .trim()
++        .to_string();
++    let comparison = json(
++        &server,
++        &format!(
++            "/o/r/api/compare?base={feature_base}&head={feature}&mode=direct&max_files=10&max_patch_bytes=1048576"
++        ),
++    )
++    .await?;
++    assert_eq!(comparison["base"], feature_base);
++    assert_eq!(comparison["head"], feature);
++    assert!(comparison["patch"].as_str().unwrap().contains("src/app.rs"));
++    let rename = comparison["files"]
++        .as_array()
++        .unwrap()
++        .iter()
++        .find(|file| file["path"] == "src/app.rs")
++        .expect("renamed file");
++    assert_eq!(rename["status"], "renamed");
++    assert_eq!(rename["old_path"], "src/main.rs");
+ 
+     // unknown repo
+     assert_eq!(get(&server, "/o/nope/api/refs").await?.0, 404);
