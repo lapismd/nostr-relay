@@ -171,8 +171,11 @@ func validateNIP22TaskComment(event nostr.Event) error {
 	if !hasHexTag(event.Tags, "E") {
 		return fmt.Errorf("NIP-22 task comment must contain a valid E tag")
 	}
-	if event.Tags.Find("k") == nil {
-		return fmt.Errorf("NIP-22 task comment must contain a k tag")
+	if !hasPubkeyTag(event.Tags, "P") {
+		return fmt.Errorf("NIP-22 task comment must contain a valid P tag")
+	}
+	if !hasHexTag(event.Tags, "e") || event.Tags.Find("k") == nil || !hasPubkeyTag(event.Tags, "p") {
+		return fmt.Errorf("NIP-22 task comment must contain valid immediate-parent e, k, and p tags")
 	}
 	return nil
 }
@@ -271,6 +274,17 @@ func hasHexTag(tags nostr.Tags, name string) bool {
 	return false
 }
 
+func hasPubkeyTag(tags nostr.Tags, name string) bool {
+	for _, tag := range tags {
+		if len(tag) >= 2 && tag[0] == name {
+			if _, err := nostr.PubKeyFromHex(tag[1]); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func tagHasValue(tags nostr.Tags, name, value string) bool {
 	return tags.FindWithValue(name, value) != nil
 }
@@ -291,8 +305,8 @@ func parseAddress(value string) (nostr.Kind, nostr.PubKey, string, bool) {
 	if len(parts) != 3 || parts[2] == "" {
 		return 0, owner, "", false
 	}
-	var kind uint16
-	if _, err := fmt.Sscanf(parts[0], "%d", &kind); err != nil {
+	kind, err := strconv.ParseUint(parts[0], 10, 16)
+	if err != nil {
 		return 0, owner, "", false
 	}
 	parsedOwner, err := nostr.PubKeyFromHex(parts[1])

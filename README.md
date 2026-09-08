@@ -41,6 +41,20 @@ The adapter lives in `internal/buzzcompat`; `zooid/buzz_compat.go` is its only
 integration point with the upstream-derived relay. Keep Buzz-specific behavior
 behind that boundary when updating the fork.
 
+## Projects and tasks
+
+The relay accepts Buzz NIP-MP projects (`kind:30621`) and repository-scoped
+NIP-34 tasks without hosting Git repositories. Project Task Anchors are optional
+`kind:30617` logical namespaces with no `clone` or `web` tag. Project/task group
+scope is derived from `buzz-channel` and enforced through the normal NIP-29
+policy without adding an `h` tag to signed events.
+
+See [PROJECT_TASK_MODEL.md](PROJECT_TASK_MODEL.md) for event shapes, status and
+assignment reduction, dual comment compatibility, deletion behavior, and
+non-goals. The current Buzz Desktop HTTP/event audit and upstream refresh
+checklist are in
+[docs/BUZZ_PROJECT_COMPATIBILITY.md](docs/BUZZ_PROJECT_COMPATIBILITY.md).
+
 ## Lapis container
 
 Build the local image:

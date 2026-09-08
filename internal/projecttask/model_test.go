@@ -86,6 +86,11 @@ func TestValidateEventOnlyClaimsTaskShapedNotesAndComments(t *testing.T) {
 	recognized, err = ValidateEvent(taskComment)
 	require.True(t, recognized)
 	require.NoError(t, err)
+
+	missingParentAuthor := taskComment
+	missingParentAuthor.Tags = taskComment.Tags[:5].CloneDeep()
+	_, err = ValidateEvent(missingParentAuthor)
+	require.ErrorContains(t, err, "e, k, and p")
 }
 
 func TestValidateTombstoneRequiresDirectAddressOwner(t *testing.T) {

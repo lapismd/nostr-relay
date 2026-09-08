@@ -3,11 +3,16 @@
 package zooid
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -587,6 +592,270 @@ func TestIntegration_AdminCanCreateGroup(t *testing.T) {
 	}
 
 	t.Logf("Group created successfully with correct metadata and %d member(s)", pTagCount)
+}
+
+func TestIntegration_BuzzProjectTasksAcrossWebSocketHTTPAndRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	relay := setupRelay(ctx, t, true)
+	defer relay.Cleanup(ctx)
+
+	admin := newNostrClient(ctx, t, relay.URI, adminSecret)
+	group := &nostr.Event{
+		Kind:      nostr.Kind(KindCreateGroup),
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"h", "project-private"}},
+		Content:   `{"name":"Private project","private":true,"closed":true,"hidden":true}`,
+	}
+	if result := admin.sendEvent(ctx, t, group); result != "ok" {
+		t.Fatalf("create project group: %s", result)
+	}
+
+	coordinate := fmt.Sprintf("30617:%s:notes", adminPubkey.Hex())
+	repository := nostr.Event{
+		Kind:      nostr.KindRepositoryAnnouncement,
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"d", "notes"},
+			{"name", "Notes"},
+			{"clone", "https://example.invalid/notes.git"},
+			{"buzz-channel", "project-private"},
+		},
+	}
+	repository.Sign(adminSecret)
+	postIntegrationEvent(t, relay.URI, adminSecret, repository)
+
+	project := &nostr.Event{
+		Kind:      nostr.Kind(30621),
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"d", "notes-project"},
+			{"name", "Notes Project"},
+			{"buzz-channel", "project-private"},
+			{"buzz-visibility", "listed"},
+			{"a", coordinate},
+		},
+	}
+	if result := admin.sendEvent(ctx, t, project); result != "ok" {
+		t.Fatalf("publish project over WebSocket: %s", result)
+	}
+	httpProjects := queryIntegrationEvents(t, relay.URI, adminSecret, []map[string]interface{}{{
+		"kinds":         []int{30621},
+		"#buzz-channel": []string{"project-private"},
+	}})
+	if len(httpProjects) != 1 || httpProjects[0].ID != project.ID {
+		t.Fatalf("POST /query project discovery returned %#v", httpProjects)
+	}
+
+	task := &nostr.Event{
+		Kind:      nostr.KindIssue,
+		CreatedAt: nostr.Now(),
+		Content:   "Coordinate the v2 beta release.",
+		Tags: nostr.Tags{
+			{"a", coordinate},
+			{"p", adminPubkey.Hex()},
+			{"subject", "Prepare v2 beta release"},
+		},
+	}
+	if result := admin.sendEvent(ctx, t, task); result != "ok" {
+		t.Fatalf("publish task over WebSocket: %s", result)
+	}
+
+	status := &nostr.Event{
+		Kind:      nostr.KindStatusApplied,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"e", task.ID.Hex(), "", "root"}, {"a", coordinate}},
+	}
+	if result := admin.sendEvent(ctx, t, status); result != "ok" {
+		t.Fatalf("publish status over WebSocket: %s", result)
+	}
+	buzzComment := &nostr.Event{
+		Kind:      nostr.KindTextNote,
+		CreatedAt: nostr.Now(),
+		Content:   "Buzz comment",
+		Tags:      nostr.Tags{{"e", task.ID.Hex(), "", "root"}, {"a", coordinate}},
+	}
+	if result := admin.sendEvent(ctx, t, buzzComment); result != "ok" {
+		t.Fatalf("publish Buzz comment over WebSocket: %s", result)
+	}
+	nip22Comment := &nostr.Event{
+		Kind:      nostr.KindComment,
+		CreatedAt: nostr.Now(),
+		Content:   "NIP-22 comment",
+		Tags: nostr.Tags{
+			{"E", task.ID.Hex()}, {"K", "1621"}, {"P", adminPubkey.Hex()},
+			{"e", task.ID.Hex()}, {"k", "1621"}, {"p", adminPubkey.Hex()},
+		},
+	}
+	if result := admin.sendEvent(ctx, t, nip22Comment); result != "ok" {
+		t.Fatalf("publish NIP-22 comment over WebSocket: %s", result)
+	}
+
+	projects := admin.subscribe(ctx, t, "buzz-channel-projects", map[string]interface{}{
+		"kinds":         []int{30621},
+		"#buzz-channel": []string{"project-private"},
+	})
+	if len(projects) != 1 || projects[0].ID != project.ID {
+		t.Fatalf("exact #buzz-channel query returned %#v", projects)
+	}
+	comments := admin.subscribe(ctx, t, "dual-comments", map[string]interface{}{
+		"kinds": []int{1, 1111},
+		"#e":    []string{task.ID.Hex()},
+	})
+	if len(comments) != 2 {
+		t.Fatalf("dual comment query returned %d events", len(comments))
+	}
+
+	outsider := newNostrClient(ctx, t, relay.URI, nonAdminSecret)
+	privateTasks := outsider.subscribe(ctx, t, "private-tasks", map[string]interface{}{
+		"kinds": []int{1621},
+		"#a":    []string{coordinate},
+	})
+	if len(privateTasks) != 0 {
+		t.Fatalf("non-member read %d private tasks", len(privateTasks))
+	}
+	outsider.close()
+
+	projectAddress := fmt.Sprintf("30621:%s:notes-project", adminPubkey.Hex())
+	tombstone := nostr.Event{
+		Kind:      nostr.KindDeletion,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"a", projectAddress}},
+	}
+	tombstone.Sign(adminSecret)
+	postIntegrationEvent(t, relay.URI, adminSecret, tombstone)
+	deletedProjects := admin.subscribe(ctx, t, "http-deleted-project", map[string]interface{}{
+		"kinds": []int{30621},
+		"#d":    []string{"notes-project"},
+	})
+	if len(deletedProjects) != 0 {
+		t.Fatalf("HTTP tombstone did not hide the project")
+	}
+	admin.close()
+
+	if err := relay.Container.Stop(ctx, nil); err != nil {
+		t.Fatalf("stop relay: %v", err)
+	}
+	if err := relay.Container.Start(ctx); err != nil {
+		t.Fatalf("restart relay: %v", err)
+	}
+	host, err := relay.Container.Host(ctx)
+	if err != nil {
+		t.Fatalf("relay host after restart: %v", err)
+	}
+	mappedPort, err := relay.Container.MappedPort(ctx, "3334")
+	if err != nil {
+		t.Fatalf("relay port after restart: %v", err)
+	}
+	relay.URI = fmt.Sprintf("ws://%s:%s", host, mappedPort.Port())
+	time.Sleep(time.Second)
+
+	admin = newNostrClient(ctx, t, relay.URI, adminSecret)
+	defer admin.close()
+	deletedProjects = admin.subscribe(ctx, t, "deleted-after-restart", map[string]interface{}{
+		"kinds": []int{30621},
+		"#d":    []string{"notes-project"},
+	})
+	if len(deletedProjects) != 0 {
+		t.Fatal("HTTP-deleted project reappeared after restart")
+	}
+	tombstones := admin.subscribe(ctx, t, "tombstone-after-restart", map[string]interface{}{
+		"kinds": []int{5},
+		"#a":    []string{projectAddress},
+	})
+	if len(tombstones) != 1 || tombstones[0].ID != tombstone.ID {
+		t.Fatalf("scoped tombstone unavailable after restart: %#v", tombstones)
+	}
+}
+
+func postIntegrationEvent(t *testing.T, relayURI string, secret nostr.SecretKey, event nostr.Event) {
+	t.Helper()
+	body, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := strings.Replace(relayURI, "ws://", "http://", 1) + "/events"
+	request := integrationAuthenticatedRequest(t, secret, http.MethodPost, target, body)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(response.Body)
+		t.Fatalf("POST /events returned %s: %s", response.Status, responseBody)
+	}
+	var result struct {
+		Accepted bool   `json:"accepted"`
+		Message  string `json:"message"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted {
+		t.Fatalf("POST /events rejected event: %s", result.Message)
+	}
+}
+
+func queryIntegrationEvents(t *testing.T, relayURI string, secret nostr.SecretKey, filters []map[string]interface{}) []nostr.Event {
+	t.Helper()
+	body, err := json.Marshal(filters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := strings.Replace(relayURI, "ws://", "http://", 1) + "/query"
+	response, err := http.DefaultClient.Do(integrationAuthenticatedRequest(t, secret, http.MethodPost, target, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(response.Body)
+		t.Fatalf("POST /query returned %s: %s", response.Status, responseBody)
+	}
+	var events []nostr.Event
+	if err := json.NewDecoder(response.Body).Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+func integrationAuthenticatedRequest(t *testing.T, secret nostr.SecretKey, method, target string, body []byte) *http.Request {
+	t.Helper()
+	payload := sha256.Sum256(body)
+	requestURL, err := http.NewRequest(method, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedTarget := "http://localhost" + requestURL.URL.RequestURI()
+	auth := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      nostr.KindHTTPAuth,
+		Tags: nostr.Tags{
+			{"u", signedTarget},
+			{"method", method},
+			{"payload", hex.EncodeToString(payload[:])},
+			{"nonce", nostr.Generate().Hex()},
+		},
+	}
+	if err := auth.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	authJSON, err := json.Marshal(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(method, target, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(authJSON))
+	request.Header.Set("Content-Type", "application/json")
+	request.Host = "localhost"
+	return request
 }
 
 func TestIntegration_NonAdminCannotCreateGroup(t *testing.T) {
