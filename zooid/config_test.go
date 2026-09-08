@@ -215,3 +215,32 @@ func TestConfig_MemberRole(t *testing.T) {
 		t.Error("Any pubkey should have member role permissions")
 	}
 }
+
+func TestGitConfigDefaultsAndValidation(t *testing.T) {
+	configDir := t.TempDir()
+	path := filepath.Join(configDir, "git.toml")
+	contents := "[git]\nenabled = true\npublic_url = \"https://relay.example/prefix\"\nbackend_url = \"http://walgit:8080\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := decodeConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.validateGit(); err != nil {
+		t.Fatal(err)
+	}
+	if config.GitReconcileInterval().String() != "5s" || config.Git.MaxDiffBytes != 8<<20 || config.Git.MaxDiffFiles != 2000 {
+		t.Fatalf("unexpected Git defaults: %+v", config.Git)
+	}
+
+	config.Git.BackendURL = "walgit:8080"
+	if err := config.validateGit(); err == nil {
+		t.Fatal("expected invalid backend URL")
+	}
+	config.Git.BackendURL = "http://walgit:8080"
+	config.Git.ReconcileInterval = "0s"
+	if err := config.validateGit(); err == nil {
+		t.Fatal("expected invalid reconcile interval")
+	}
+}

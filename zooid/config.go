@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,15 @@ type Role struct {
 	Pubkeys   []string `toml:"pubkeys"`
 	CanInvite bool     `toml:"can_invite"`
 	CanManage bool     `toml:"can_manage"`
+}
+
+type GitConfig struct {
+	Enabled           bool   `toml:"enabled"`
+	PublicURL         string `toml:"public_url"`
+	BackendURL        string `toml:"backend_url"`
+	ReconcileInterval string `toml:"reconcile_interval"`
+	MaxDiffBytes      int64  `toml:"max_diff_bytes"`
+	MaxDiffFiles      int    `toml:"max_diff_files"`
 }
 
 type Config struct {
@@ -67,6 +77,8 @@ type Config struct {
 		CuratorRole    string `toml:"curator_role"`
 	} `toml:"registry"`
 
+	Git GitConfig `toml:"git"`
+
 	Roles map[string]Role `toml:"roles"`
 
 	// Private/parsed values
@@ -102,6 +114,9 @@ func LoadConfig(filename string) (*Config, error) {
 			return nil, fmt.Errorf("registry.curator_role is required when registry policy is enabled")
 		}
 	}
+	if err := config.validateGit(); err != nil {
+		return nil, fmt.Errorf("invalid git config in %s: %w", path, err)
+	}
 
 	secret, err := nostr.SecretKeyFromHex(config.Secret)
 	if err != nil {
@@ -121,8 +136,47 @@ func LoadConfig(filename string) (*Config, error) {
 func decodeConfigFile(path string) (Config, error) {
 	var config Config
 	config.Policy.AnonymousRead = true
+	config.Git.ReconcileInterval = "5s"
+	config.Git.MaxDiffBytes = 8 << 20
+	config.Git.MaxDiffFiles = 2000
 	_, err := toml.DecodeFile(path, &config)
 	return config, err
+}
+
+func (config *Config) validateGit() error {
+	if !config.Git.Enabled {
+		return nil
+	}
+	for name, raw := range map[string]string{
+		"public_url":  config.Git.PublicURL,
+		"backend_url": config.Git.BackendURL,
+	} {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("git.%s must be an absolute http(s) URL without credentials, query, or fragment", name)
+		}
+	}
+	interval, err := time.ParseDuration(config.Git.ReconcileInterval)
+	if err != nil || interval <= 0 {
+		return fmt.Errorf("git.reconcile_interval must be a positive duration")
+	}
+	if config.Git.MaxDiffBytes <= 0 {
+		return fmt.Errorf("git.max_diff_bytes must be positive")
+	}
+	if config.Git.MaxDiffFiles <= 0 {
+		return fmt.Errorf("git.max_diff_files must be positive")
+	}
+	return nil
+}
+
+func (config *Config) GitReconcileInterval() time.Duration {
+	interval, err := time.ParseDuration(config.Git.ReconcileInterval)
+	if err != nil || interval <= 0 {
+		return 5 * time.Second
+	}
+	return interval
 }
 
 func (config *Config) Save() error {
