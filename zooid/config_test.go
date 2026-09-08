@@ -244,3 +244,29 @@ func TestGitConfigDefaultsAndValidation(t *testing.T) {
 		t.Fatal("expected invalid reconcile interval")
 	}
 }
+
+func TestGitHubConfigSupportsGitHubOnlyAndValidatesSecretDirectory(t *testing.T) {
+	configDir := t.TempDir()
+	path := filepath.Join(configDir, "github.toml")
+	contents := "[git]\nenabled = true\npublic_url = \"https://relay.example\"\n\n[github]\nenabled = true\n"
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := decodeConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.validateGit(); err != nil {
+		t.Fatalf("GitHub-only forge must not require WalGit: %v", err)
+	}
+	if err := config.validateGitHub(); err != nil {
+		t.Fatal(err)
+	}
+	if config.GitHub.CredentialDir != "/run/secrets" || config.GitHubWorkerInterval().String() != "2s" || config.GitHubReconcileInterval().String() != "5m0s" {
+		t.Fatalf("unexpected GitHub defaults: %+v", config.GitHub)
+	}
+	config.GitHub.CredentialDir = "relative"
+	if err := config.validateGitHub(); err == nil {
+		t.Fatal("expected relative credential directory rejection")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"fiatjaf.com/nostr"
 	"zooid/internal/forge"
 	"zooid/internal/gitforge"
+	"zooid/internal/githubforge"
 	"zooid/internal/projecttask"
 )
 
@@ -25,6 +26,8 @@ type GitForgePolicy struct {
 	Config        *Config
 	Registry      *forge.Registry
 	WebhookSecret string
+	GitHub        githubAdministration
+	Credentials   githubforge.CredentialStore
 
 	ctx    context.Context
 	cancel context.CancelFunc

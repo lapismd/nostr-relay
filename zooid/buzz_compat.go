@@ -51,6 +51,8 @@ func enableBuzzCompatibility(instance *Instance) {
 		backend.RepositoryAPI = instance.GitForge.ServeRepositoryAPI
 		backend.PullRequestAPI = instance.GitForge.ServePullRequestAPI
 		backend.WalGitEvents = instance.GitForge.ServeWalGitEvents
+		backend.ForgeAPI = instance.GitForge.ServeForgeAPI
+		backend.GitHubWebhook = instance.GitForge.ServeGitHubWebhook
 	}
 	handler := buzzcompat.New(backend)
 	instance.Relay.SetRouter(handler.Wrap(base))

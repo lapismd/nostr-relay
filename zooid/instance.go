@@ -16,7 +16,9 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/fasthttp/websocket"
 	"github.com/gosimple/slug"
+	"zooid/internal/forge"
 	"zooid/internal/gitforge"
+	"zooid/internal/githubforge"
 	"zooid/internal/khatru"
 )
 
@@ -149,23 +151,44 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	instance.Groups.WarmCaches()
 
 	if config.Git.Enabled {
-		serviceToken := strings.TrimSpace(os.Getenv("WALGIT_RELAY_TOKEN"))
-		webhookSecret := strings.TrimSpace(os.Getenv("WALGIT_WEBHOOK_SECRET"))
-		if serviceToken == "" {
-			instance.Events.Close()
-			return nil, fmt.Errorf("WALGIT_RELAY_TOKEN is required when Git hosting is enabled")
+		forgeRegistry := forge.NewRegistry()
+		instance.GitForge = NewGitForgePolicyWithRegistry(ctx, config, events, groups, instance.ProjectTasks, forgeRegistry)
+		if strings.TrimSpace(config.Git.BackendURL) != "" {
+			serviceToken := strings.TrimSpace(os.Getenv("WALGIT_RELAY_TOKEN"))
+			webhookSecret := strings.TrimSpace(os.Getenv("WALGIT_WEBHOOK_SECRET"))
+			if serviceToken == "" {
+				instance.Events.Close()
+				return nil, fmt.Errorf("WALGIT_RELAY_TOKEN is required when the WalGit backend is enabled")
+			}
+			if webhookSecret == "" {
+				instance.Events.Close()
+				return nil, fmt.Errorf("WALGIT_WEBHOOK_SECRET is required when the WalGit backend is enabled")
+			}
+			backend, err := gitforge.NewWalGitBackend(config.Git.BackendURL, serviceToken)
+			if err != nil {
+				instance.Events.Close()
+				return nil, err
+			}
+			if err := forgeRegistry.RegisterGit(gitforge.NewWalGitAdapter(backend)); err != nil {
+				instance.Events.Close()
+				return nil, err
+			}
+			instance.GitForge.WebhookSecret = webhookSecret
 		}
-		if webhookSecret == "" {
-			instance.Events.Close()
-			return nil, fmt.Errorf("WALGIT_WEBHOOK_SECRET is required when Git hosting is enabled")
+		if config.GitHub.Enabled {
+			credentials := githubforge.RuntimeCredentials{SecretDir: config.GitHub.CredentialDir}
+			backend, err := githubforge.New(instance.GitForge, credentials, nil)
+			if err != nil {
+				instance.Events.Close()
+				return nil, err
+			}
+			if err := forgeRegistry.RegisterGit(backend); err != nil {
+				instance.Events.Close()
+				return nil, err
+			}
+			instance.GitForge.GitHub = backend
+			instance.GitForge.Credentials = credentials
 		}
-		backend, err := gitforge.NewWalGitBackend(config.Git.BackendURL, serviceToken)
-		if err != nil {
-			instance.Events.Close()
-			return nil, err
-		}
-		instance.GitForge = NewGitForgePolicy(ctx, config, events, groups, instance.ProjectTasks, backend)
-		instance.GitForge.WebhookSecret = webhookSecret
 		if err := instance.GitForge.Start(); err != nil {
 			instance.GitForge.Close()
 			instance.Events.Close()

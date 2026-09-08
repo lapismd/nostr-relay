@@ -1,7 +1,9 @@
 package gitforge
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +57,28 @@ func VerifyReadAuth(r *http.Request, expectedURL string, now time.Time) (nostr.E
 	signedURL, found := tagValueRequired(event.Tags, "u")
 	if !found || normalizeAuthURL(signedURL) != normalizeAuthURL(expectedURL) {
 		return event, errors.New("auth event URL does not match request")
+	}
+	return event, nil
+}
+
+// VerifyRequestAuth validates an exact NIP-98 application request. Mutating
+// requests bind the body digest; empty GET and HEAD requests do not require a
+// payload tag.
+func VerifyRequestAuth(r *http.Request, expectedURL string, body []byte, now time.Time) (nostr.Event, error) {
+	event, err := VerifyReadAuth(r, expectedURL, now)
+	if err != nil {
+		return event, err
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		if len(body) != 0 {
+			return event, errors.New("read auth request body must be empty")
+		}
+		return event, nil
+	}
+	payload, found := tagValueRequired(event.Tags, "payload")
+	digest := sha256.Sum256(body)
+	if !found || !strings.EqualFold(payload, hex.EncodeToString(digest[:])) {
+		return event, errors.New("auth event payload does not match request")
 	}
 	return event, nil
 }

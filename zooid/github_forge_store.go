@@ -1,0 +1,150 @@
+package zooid
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"zooid/internal/forge"
+	"zooid/internal/githubforge"
+	"zooid/internal/projecttask"
+)
+
+type githubAdministration interface {
+	ValidateConnection(context.Context, githubforge.Connection) (githubforge.Connection, error)
+	ListRepositories(context.Context, githubforge.Connection) ([]githubforge.RepositoryMetadata, error)
+	RepositoryByID(context.Context, string, int64) (githubforge.RepositoryMetadata, error)
+}
+
+func (policy *GitForgePolicy) LoadGitHubConnection(ctx context.Context, id string) (githubforge.Connection, bool, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	var connection githubforge.Connection
+	var installationID string
+	err := GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT id, host, app_id, installation_id, credential_ref,
+		       webhook_secret_ref, bridge_credential_ref, bridge_pubkey,
+		       account_id, account_login, status
+		FROM {{.Name}}__forge_connections
+		WHERE id = $1 AND provider = 'github'`), id).Scan(
+		&connection.ID, &connection.Host, &connection.AppID, &installationID,
+		&connection.CredentialRef, &connection.WebhookSecretRef,
+		&connection.BridgeCredentialRef, &connection.BridgePubkey,
+		&connection.AccountID, &connection.AccountLogin, &connection.Status)
+	if err == sql.ErrNoRows {
+		return githubforge.Connection{}, false, nil
+	}
+	if err != nil {
+		return githubforge.Connection{}, false, err
+	}
+	connection.InstallationID, err = strconv.ParseInt(installationID, 10, 64)
+	if err != nil || connection.InstallationID <= 0 {
+		return githubforge.Connection{}, false, fmt.Errorf("invalid stored GitHub installation")
+	}
+	return connection, true, nil
+}
+
+func (policy *GitForgePolicy) saveGitHubConnection(ctx context.Context, connection githubforge.Connection) error {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	_, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		INSERT INTO {{.Name}}__forge_connections
+		  (id, provider, host, app_id, credential_ref, installation_id,
+		   account_id, account_login, webhook_secret_ref,
+		   bridge_credential_ref, bridge_pubkey, status, last_error, updated_at)
+		VALUES ($1, 'github', 'github.com', $2, $3, $4, $5, $6, $7, $8, $9, $10, '', NOW())
+		ON CONFLICT (id) DO UPDATE SET
+		  app_id = EXCLUDED.app_id, credential_ref = EXCLUDED.credential_ref,
+		  installation_id = EXCLUDED.installation_id,
+		  account_id = EXCLUDED.account_id, account_login = EXCLUDED.account_login,
+		  webhook_secret_ref = EXCLUDED.webhook_secret_ref,
+		  bridge_credential_ref = EXCLUDED.bridge_credential_ref,
+		  bridge_pubkey = EXCLUDED.bridge_pubkey, status = EXCLUDED.status,
+		  last_error = '', updated_at = NOW()
+		WHERE {{.Name}}__forge_connections.provider = 'github'`),
+		connection.ID, connection.AppID, connection.CredentialRef,
+		strconv.FormatInt(connection.InstallationID, 10), connection.AccountID,
+		connection.AccountLogin, connection.WebhookSecretRef,
+		connection.BridgeCredentialRef, connection.BridgePubkey, connection.Status)
+	return err
+}
+
+func (policy *GitForgePolicy) setExplicitIntegration(ctx context.Context, integration forge.Integration, expectedAnnouncementID string) error {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	result, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		INSERT INTO {{.Name}}__repository_integrations
+		  (owner, repo, announcement_id, configuration_source, git_backend,
+		   collaboration_backend, mirror_backend, ci_backend, connection_id,
+		   external_repository_id, external_repository, generation,
+		   health_state, health_detail, updated_at)
+		VALUES ($1, $2, $3, 'explicit', $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, NOW())
+		ON CONFLICT (owner, repo) DO UPDATE SET
+		  announcement_id = EXCLUDED.announcement_id,
+		  configuration_source = 'explicit', git_backend = EXCLUDED.git_backend,
+		  collaboration_backend = EXCLUDED.collaboration_backend,
+		  mirror_backend = EXCLUDED.mirror_backend, ci_backend = EXCLUDED.ci_backend,
+		  connection_id = EXCLUDED.connection_id,
+		  external_repository_id = EXCLUDED.external_repository_id,
+		  external_repository = EXCLUDED.external_repository,
+		  generation = {{.Name}}__repository_integrations.generation + 1,
+		  health_state = EXCLUDED.health_state, health_detail = EXCLUDED.health_detail,
+		  updated_at = NOW()
+		WHERE {{.Name}}__repository_integrations.announcement_id = $13`),
+		integration.Coordinate.Owner.Hex(), integration.Coordinate.ID,
+		integration.AnnouncementID, integration.GitBackend,
+		integration.CollaborationBackend, integration.MirrorBackend,
+		integration.CIBackend, integration.ConnectionID,
+		integration.ExternalRepositoryID, integration.ExternalRepository,
+		integration.HealthState, integration.HealthDetail, expectedAnnouncementID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return &forge.Error{Status: 409, Code: "announcement_changed"}
+	}
+	return nil
+}
+
+func (policy *GitForgePolicy) updateIntegrationHealth(ctx context.Context, coordinate projecttask.RepositoryCoordinate, state, detail, externalRepository string) error {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	_, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		UPDATE {{.Name}}__repository_integrations
+		SET health_state = $3, health_detail = $4,
+		    external_repository = CASE WHEN $5 = '' THEN external_repository ELSE $5 END,
+		    updated_at = NOW()
+		WHERE owner = $1 AND repo = $2`), coordinate.Owner.Hex(), coordinate.ID, state, sanitizeGitErrorString(detail), externalRepository)
+	return err
+}
+
+func sanitizeGitErrorString(message string) string {
+	message = strings.Map(func(character rune) rune {
+		if character < 0x20 || character == 0x7f {
+			return ' '
+		}
+		return character
+	}, message)
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	return message
+}
+
+func newOperationID(prefix string) (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return prefix + "_" + hex.EncodeToString(value), nil
+}
+
+var _ githubforge.ConnectionLoader = (*GitForgePolicy)(nil)

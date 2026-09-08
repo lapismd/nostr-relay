@@ -1,8 +1,12 @@
 package gitforge
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +26,26 @@ func signedHTTPAuth(t *testing.T, secret nostr.SecretKey, at time.Time, method, 
 	raw, err := event.MarshalJSON()
 	require.NoError(t, err)
 	return "Nostr " + base64.StdEncoding.EncodeToString(raw)
+}
+
+func TestVerifyRequestAuthBindsMutationPayload(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	secret := nostr.Generate()
+	target := "https://relay.example/api/forge/connections/github"
+	body := []byte(`{"installation_id":42}`)
+	digest := sha256.Sum256(body)
+	event := nostr.Event{Kind: nostr.KindHTTPAuth, CreatedAt: nostr.Timestamp(now.Unix()), Tags: nostr.Tags{
+		{"u", target}, {"method", http.MethodPost}, {"payload", hex.EncodeToString(digest[:])},
+	}}
+	require.NoError(t, event.Sign(secret))
+	raw, err := event.MarshalJSON()
+	require.NoError(t, err)
+	request := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+	request.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(raw))
+	_, err = VerifyRequestAuth(request, target, body, now)
+	require.NoError(t, err)
+	_, err = VerifyRequestAuth(request, target, []byte("changed"), now)
+	require.ErrorContains(t, err, "payload")
 }
 
 func TestVerifyGitAuthMatchesBuzzCredentialReuse(t *testing.T) {

@@ -46,6 +46,8 @@ type Backend struct {
 	RepositoryAPI           http.HandlerFunc
 	PullRequestAPI          http.HandlerFunc
 	WalGitEvents            http.HandlerFunc
+	ForgeAPI                http.HandlerFunc
+	GitHubWebhook           http.HandlerFunc
 }
 
 type CountResult struct {
@@ -109,6 +111,12 @@ func (h *Handler) Wrap(next http.Handler) *http.ServeMux {
 	}
 	if h.backend.WalGitEvents != nil {
 		mux.HandleFunc("/internal/walgit/events", h.backend.WalGitEvents)
+	}
+	if h.backend.ForgeAPI != nil {
+		mux.HandleFunc("/api/forge/", h.backend.ForgeAPI)
+	}
+	if h.backend.GitHubWebhook != nil {
+		mux.HandleFunc("/webhooks/github", h.backend.GitHubWebhook)
 	}
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
 		h.serveBlossomUpload(next, w, r, "/upload")

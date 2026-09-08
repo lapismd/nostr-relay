@@ -31,6 +31,14 @@ type GitConfig struct {
 	MaxDiffFiles      int    `toml:"max_diff_files"`
 }
 
+type GitHubConfig struct {
+	Enabled           bool   `toml:"enabled"`
+	CredentialDir     string `toml:"credential_dir"`
+	WorkerInterval    string `toml:"worker_interval"`
+	ReconcileInterval string `toml:"reconcile_interval"`
+	MaxWebhookBytes   int64  `toml:"max_webhook_bytes"`
+}
+
 type Config struct {
 	Host   string `toml:"host"`
 	Schema string `toml:"schema"`
@@ -77,7 +85,8 @@ type Config struct {
 		CuratorRole    string `toml:"curator_role"`
 	} `toml:"registry"`
 
-	Git GitConfig `toml:"git"`
+	Git    GitConfig    `toml:"git"`
+	GitHub GitHubConfig `toml:"github"`
 
 	Roles map[string]Role `toml:"roles"`
 
@@ -117,6 +126,9 @@ func LoadConfig(filename string) (*Config, error) {
 	if err := config.validateGit(); err != nil {
 		return nil, fmt.Errorf("invalid git config in %s: %w", path, err)
 	}
+	if err := config.validateGitHub(); err != nil {
+		return nil, fmt.Errorf("invalid github config in %s: %w", path, err)
+	}
 
 	secret, err := nostr.SecretKeyFromHex(config.Secret)
 	if err != nil {
@@ -139,6 +151,10 @@ func decodeConfigFile(path string) (Config, error) {
 	config.Git.ReconcileInterval = "5s"
 	config.Git.MaxDiffBytes = 8 << 20
 	config.Git.MaxDiffFiles = 2000
+	config.GitHub.CredentialDir = "/run/secrets"
+	config.GitHub.WorkerInterval = "2s"
+	config.GitHub.ReconcileInterval = "5m"
+	config.GitHub.MaxWebhookBytes = 4 << 20
 	_, err := toml.DecodeFile(path, &config)
 	return config, err
 }
@@ -147,10 +163,13 @@ func (config *Config) validateGit() error {
 	if !config.Git.Enabled {
 		return nil
 	}
-	for name, raw := range map[string]string{
-		"public_url":  config.Git.PublicURL,
-		"backend_url": config.Git.BackendURL,
-	} {
+	values := map[string]string{"public_url": config.Git.PublicURL}
+	if strings.TrimSpace(config.Git.BackendURL) != "" {
+		values["backend_url"] = config.Git.BackendURL
+	} else if !config.GitHub.Enabled {
+		return fmt.Errorf("git.backend_url is required unless github is enabled")
+	}
+	for name, raw := range values {
 		parsed, err := url.Parse(strings.TrimSpace(raw))
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
 			(parsed.Scheme != "http" && parsed.Scheme != "https") ||
@@ -177,6 +196,47 @@ func (config *Config) GitReconcileInterval() time.Duration {
 		return 5 * time.Second
 	}
 	return interval
+}
+
+func (config *Config) validateGitHub() error {
+	if !config.GitHub.Enabled {
+		return nil
+	}
+	if !config.Git.Enabled {
+		return fmt.Errorf("github.enabled requires git.enabled")
+	}
+	if !filepath.IsAbs(config.GitHub.CredentialDir) {
+		return fmt.Errorf("github.credential_dir must be absolute")
+	}
+	for name, raw := range map[string]string{
+		"worker_interval":    config.GitHub.WorkerInterval,
+		"reconcile_interval": config.GitHub.ReconcileInterval,
+	} {
+		duration, err := time.ParseDuration(raw)
+		if err != nil || duration <= 0 {
+			return fmt.Errorf("github.%s must be a positive duration", name)
+		}
+	}
+	if config.GitHub.MaxWebhookBytes <= 0 || config.GitHub.MaxWebhookBytes > 64<<20 {
+		return fmt.Errorf("github.max_webhook_bytes must be 1..=67108864")
+	}
+	return nil
+}
+
+func (config *Config) GitHubWorkerInterval() time.Duration {
+	duration, err := time.ParseDuration(config.GitHub.WorkerInterval)
+	if err != nil || duration <= 0 {
+		return 2 * time.Second
+	}
+	return duration
+}
+
+func (config *Config) GitHubReconcileInterval() time.Duration {
+	duration, err := time.ParseDuration(config.GitHub.ReconcileInterval)
+	if err != nil || duration <= 0 {
+		return 5 * time.Minute
+	}
+	return duration
 }
 
 func (config *Config) Save() error {

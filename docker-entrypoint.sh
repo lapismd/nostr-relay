@@ -33,6 +33,11 @@ GIT_BACKEND_URL="${GIT_BACKEND_URL:-}"
 GIT_RECONCILE_INTERVAL="${GIT_RECONCILE_INTERVAL:-5s}"
 GIT_MAX_DIFF_BYTES="${GIT_MAX_DIFF_BYTES:-8388608}"
 GIT_MAX_DIFF_FILES="${GIT_MAX_DIFF_FILES:-2000}"
+GITHUB_ENABLED="${GITHUB_ENABLED:-false}"
+GITHUB_CREDENTIAL_DIR="${GITHUB_CREDENTIAL_DIR:-/run/secrets}"
+GITHUB_WORKER_INTERVAL="${GITHUB_WORKER_INTERVAL:-2s}"
+GITHUB_RECONCILE_INTERVAL="${GITHUB_RECONCILE_INTERVAL:-5m}"
+GITHUB_MAX_WEBHOOK_BYTES="${GITHUB_MAX_WEBHOOK_BYTES:-4194304}"
 
 # Create directories
 mkdir -p "$CONFIG_DIR" "$MEDIA_DIR"
@@ -100,6 +105,13 @@ backend_url = "$GIT_BACKEND_URL"
 reconcile_interval = "$GIT_RECONCILE_INTERVAL"
 max_diff_bytes = $GIT_MAX_DIFF_BYTES
 max_diff_files = $GIT_MAX_DIFF_FILES
+
+[github]
+enabled = $GITHUB_ENABLED
+credential_dir = "$GITHUB_CREDENTIAL_DIR"
+worker_interval = "$GITHUB_WORKER_INTERVAL"
+reconcile_interval = "$GITHUB_RECONCILE_INTERVAL"
+max_webhook_bytes = $GITHUB_MAX_WEBHOOK_BYTES
 EOF
 
     # Add admin role if pubkeys provided
@@ -138,9 +150,31 @@ backend_url = "$GIT_BACKEND_URL"
 reconcile_interval = "$GIT_RECONCILE_INTERVAL"
 max_diff_bytes = $GIT_MAX_DIFF_BYTES
 max_diff_files = $GIT_MAX_DIFF_FILES
+
+[github]
+enabled = $GITHUB_ENABLED
+credential_dir = "$GITHUB_CREDENTIAL_DIR"
+worker_interval = "$GITHUB_WORKER_INTERVAL"
+reconcile_interval = "$GITHUB_RECONCILE_INTERVAL"
+max_webhook_bytes = $GITHUB_MAX_WEBHOOK_BYTES
 EOF
         echo "Added Git configuration to existing auto-generated config"
     fi
+
+	if [ "$GITHUB_ENABLED" = "true" ] \
+		&& grep -q '^# Auto-generated Zooid configuration$' "$CONFIG_FILE" \
+		&& ! grep -q '^\[github\]$' "$CONFIG_FILE"; then
+		cat >> "$CONFIG_FILE" << EOF
+
+[github]
+enabled = true
+credential_dir = "$GITHUB_CREDENTIAL_DIR"
+worker_interval = "$GITHUB_WORKER_INTERVAL"
+reconcile_interval = "$GITHUB_RECONCILE_INTERVAL"
+max_webhook_bytes = $GITHUB_MAX_WEBHOOK_BYTES
+EOF
+		echo "Added GitHub configuration to existing auto-generated config"
+	fi
 fi
 
 echo ""

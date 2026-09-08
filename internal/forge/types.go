@@ -124,7 +124,8 @@ type RevisionRequest struct {
 
 type CommitsRequest struct {
 	Ref       string
-	Cursor    string
+	Path      string
+	Skip      int
 	Limit     int
 	Principal string
 }
