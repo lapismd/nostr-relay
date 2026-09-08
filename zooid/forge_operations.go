@@ -364,6 +364,13 @@ func (policy *GitForgePolicy) ProcessForgeOutboxOnce(ctx context.Context) error 
 		_ = policy.failForgeOperation(ctx, operation, err)
 		return err
 	}
+	if operation.Command == "migrate_to_walgit" {
+		if err := policy.processForgeMigration(ctx, resolved, operation); err != nil {
+			_ = policy.handleForgeMigrationFailure(ctx, operation, err)
+			return err
+		}
+		return nil
+	}
 	result := operation.ProviderResult
 	if operation.Command == "initial_import" && result != nil {
 		return policy.finishForgeOperation(ctx, operation)
@@ -401,22 +408,34 @@ func (policy *GitForgePolicy) ProcessForgeOutboxOnce(ctx context.Context) error 
 		return policy.finishForgeOperation(ctx, operation)
 	}
 	if result == nil {
-		if resolved.Collaboration == nil || resolved.Collaboration.Name() != operation.Provider {
-			err = &forge.Error{Status: http.StatusConflict, Code: "collaboration_backend_changed"}
-			_ = policy.failForgeOperation(ctx, operation, err)
-			return err
-		}
 		payload, prepareErr := policy.prepareForgeCommand(ctx, operation)
 		if prepareErr != nil {
 			_ = policy.failForgeOperation(ctx, operation, prepareErr)
 			return prepareErr
 		}
-		providerResult, executeErr := resolved.Collaboration.Execute(ctx, forge.CollaborationCommand{
-			OperationID: operation.ID, Kind: operation.Command, Actor: operation.Actor,
-			Repository: resolved.Repository, RootEventID: operation.RootEventID,
-			ExpectedHead: operation.ExpectedHead, CorrelationMarker: operation.CorrelationMarker,
-			Payload: payload,
-		})
+		var providerResult forge.CollaborationResult
+		var executeErr error
+		if resolved.Collaboration != nil && resolved.Collaboration.Name() == operation.Provider {
+			providerResult, executeErr = resolved.Collaboration.Execute(ctx, forge.CollaborationCommand{
+				OperationID: operation.ID, Kind: operation.Command, Actor: operation.Actor,
+				Repository: resolved.Repository, RootEventID: operation.RootEventID,
+				ExpectedHead: operation.ExpectedHead, CorrelationMarker: operation.CorrelationMarker,
+				Payload: payload,
+			})
+		} else if resolved.Mirror != nil && resolved.Mirror.Name() == operation.Provider && operation.SourceEventID != "" {
+			source, found, sourceErr := policy.eventByHexID(ctx, operation.SourceEventID)
+			if sourceErr != nil || !found {
+				executeErr = &forge.Error{Status: http.StatusConflict, Code: "source_event_not_found"}
+			} else {
+				providerResult, executeErr = resolved.Mirror.Project(ctx, forge.MirrorProjection{
+					OperationID: operation.ID, Kind: operation.Command, Repository: resolved.Repository,
+					Event: source, RootEventID: operation.RootEventID, ExpectedHead: operation.ExpectedHead,
+					CorrelationMarker: operation.CorrelationMarker, Payload: payload,
+				})
+			}
+		} else {
+			executeErr = &forge.Error{Status: http.StatusConflict, Code: "provider_backend_changed"}
+		}
 		if executeErr != nil {
 			_ = policy.failForgeOperation(ctx, operation, executeErr)
 			return executeErr

@@ -186,6 +186,14 @@ func TestWalGitAdapterReportsOnlyLandedCapabilities(t *testing.T) {
 	require.False(t, capabilities.CI)
 }
 
+func TestProductionWalGitAdapterReportsRepositoryImport(t *testing.T) {
+	backend, err := NewWalGitBackend("http://walgit:8080", "service-secret")
+	require.NoError(t, err)
+	capabilities, err := NewWalGitAdapter(backend).Capabilities(context.Background(), forge.Repository{})
+	require.NoError(t, err)
+	require.True(t, capabilities.Import)
+}
+
 type recordingLegacyBackend struct{}
 
 func (*recordingLegacyBackend) EnsureRepository(context.Context, projecttask.RepositoryCoordinate) error {

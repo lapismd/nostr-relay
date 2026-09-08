@@ -192,6 +192,10 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 				instance.Events.Close()
 				return nil, err
 			}
+			if err := forgeRegistry.RegisterMirror(backend); err != nil {
+				instance.Events.Close()
+				return nil, err
+			}
 			instance.GitForge.GitHub = backend
 			instance.GitForge.Credentials = credentials
 			instance.GitForge.EventSource = backend

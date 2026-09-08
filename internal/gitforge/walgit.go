@@ -30,8 +30,11 @@ func NewWalGitBackend(rawURL, token string) (*WalGitBackend, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("WALGIT_RELAY_TOKEN is required")
 	}
+	if strings.ContainsAny(token, "\x00\r\n") {
+		return nil, fmt.Errorf("invalid WalGit relay token")
+	}
 	return &WalGitBackend{
-		base: base, token: token,
+		base: base, token: strings.TrimSpace(token),
 		client: &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }

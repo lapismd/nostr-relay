@@ -203,7 +203,7 @@ func (policy *GitForgePolicy) listGitHubRepositories(w http.ResponseWriter, r *h
 
 func (policy *GitForgePolicy) serveRepositoryForgeAPI(w http.ResponseWriter, r *http.Request, actor nostr.PubKey, idempotencyKey string, body []byte) {
 	ownerText, repositoryText, action, ok := splitRepositoryPath(r.URL.Path, "/api/forge/repositories/")
-	if !ok || strings.Contains(action, "/") {
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -247,9 +247,83 @@ func (policy *GitForgePolicy) serveRepositoryForgeAPI(w http.ResponseWriter, r *
 			return
 		}
 		policy.enqueueInitialImport(w, r, actor, idempotencyKey, resolved)
+	case r.Method == http.MethodPost && action == "migration":
+		policy.startForgeMigration(w, r, actor, idempotencyKey, resolved, body)
+	case r.Method == http.MethodPost && action == "migration/activate":
+		policy.activateForgeMigrationHTTP(w, r, actor, resolved.Repository, body)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (policy *GitForgePolicy) startForgeMigration(w http.ResponseWriter, r *http.Request, actor nostr.PubKey, idempotencyKey string, resolved forge.ResolvedRepository, body []byte) {
+	if !policy.Config.CanManage(actor) {
+		writeGitError(w, http.StatusForbidden, "relay_admin_required")
+		return
+	}
+	var request struct {
+		ExpectedAnnouncementID    string `json:"expected_announcement_id"`
+		AcknowledgeProviderFreeze bool   `json:"acknowledge_provider_write_freeze"`
+		KeepGitHubCollaboration   bool   `json:"keep_github_collaboration"`
+		RetainGitHubMirror        bool   `json:"retain_github_mirror"`
+	}
+	if !decodeStrictJSON(body, &request) || !request.AcknowledgeProviderFreeze {
+		writeGitError(w, http.StatusBadRequest, "provider_write_freeze_required")
+		return
+	}
+	if request.ExpectedAnnouncementID != resolved.Repository.Announcement.ID.Hex() {
+		writeGitError(w, http.StatusConflict, "announcement_changed")
+		return
+	}
+	if resolved.Repository.Integration.GitBackend != forge.BackendGitHub || resolved.Git == nil {
+		writeGitError(w, http.StatusConflict, "github_source_required")
+		return
+	}
+	if _, ok := resolved.Git.(forge.RefSnapshotter); !ok {
+		writeGitError(w, http.StatusConflict, "source_snapshot_unsupported")
+		return
+	}
+	if _, ok := policy.Registry.GitBackend(forge.BackendWalGit).(forge.RepositoryImporter); !ok {
+		writeGitError(w, http.StatusConflict, "walgit_import_unavailable")
+		return
+	}
+	operation, err := policy.enqueueForgeMigration(r.Context(), actor, resolved.Repository, idempotencyKey, request.KeepGitHubCollaboration, request.RetainGitHubMirror)
+	if err != nil {
+		writeGitBackendFailure(w, err)
+		return
+	}
+	writeForgeJSON(w, http.StatusAccepted, publicForgeOperation(operation))
+}
+
+func (policy *GitForgePolicy) activateForgeMigrationHTTP(w http.ResponseWriter, r *http.Request, actor nostr.PubKey, repository forge.Repository, body []byte) {
+	if !policy.Config.CanManage(actor) {
+		writeGitError(w, http.StatusForbidden, "relay_admin_required")
+		return
+	}
+	var request struct {
+		ExpectedAnnouncementID string `json:"expected_announcement_id"`
+	}
+	if !decodeStrictJSON(body, &request) || request.ExpectedAnnouncementID == "" {
+		writeGitError(w, http.StatusBadRequest, "invalid_migration_activation")
+		return
+	}
+	integration, err := policy.activateForgeMigration(r.Context(), repository, request.ExpectedAnnouncementID)
+	if err != nil {
+		writeGitBackendFailure(w, err)
+		return
+	}
+	if integration.CollaborationBackend == forge.BackendGitHub || integration.MirrorBackend == forge.BackendGitHub {
+		if err := policy.rebuildRepositoryForgeOutbox(r.Context(), repository.Coordinate); err != nil {
+			writeGitBackendFailure(w, err)
+			return
+		}
+	}
+	resolved, _, err := policy.ResolveIntegration(r.Context(), repository.Coordinate)
+	if err != nil {
+		writeGitBackendFailure(w, err)
+		return
+	}
+	writeForgeJSON(w, http.StatusOK, map[string]any{"integration": resolved.Repository.Integration, "capabilities": resolved.Capabilities})
 }
 
 func (policy *GitForgePolicy) enqueueInitialImport(w http.ResponseWriter, r *http.Request, actor nostr.PubKey, idempotencyKey string, resolved forge.ResolvedRepository) {
@@ -620,19 +694,28 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 	if request.CollaborationBackend == "" {
 		request.CollaborationBackend = forge.BackendRelay
 	}
-	if request.MirrorBackend != "" || request.CIBackend != "" {
+	if request.MirrorBackend == forge.BackendNone {
+		request.MirrorBackend = ""
+	}
+	if request.CIBackend != "" && request.CIBackend != forge.BackendNone {
 		writeGitError(w, http.StatusConflict, "capability_not_enabled")
+		return
+	}
+	if request.MirrorBackend != "" && request.MirrorBackend != forge.BackendGitHub {
+		writeGitError(w, http.StatusBadRequest, "unknown_mirror_backend")
 		return
 	}
 	integration := forge.Integration{
 		Coordinate: repository.Coordinate, AnnouncementID: repository.Announcement.ID.Hex(),
 		ConfigurationSource: forge.ConfigurationExplicit,
 		GitBackend:          request.GitBackend, CollaborationBackend: request.CollaborationBackend,
-		ConnectionID: request.ConnectionID, ExternalRepositoryID: request.ExternalRepositoryID,
+		MirrorBackend: request.MirrorBackend,
+		ConnectionID:  request.ConnectionID, ExternalRepositoryID: request.ExternalRepositoryID,
 		HealthState: "ready",
 	}
-	switch request.GitBackend {
-	case forge.BackendGitHub:
+	githubNeeded := request.GitBackend == forge.BackendGitHub || request.CollaborationBackend == forge.BackendGitHub || request.MirrorBackend == forge.BackendGitHub
+	var providerMetadata githubforge.RepositoryMetadata
+	if githubNeeded {
 		if policy.GitHub == nil || request.CollaborationBackend != forge.BackendRelay && request.CollaborationBackend != forge.BackendGitHub {
 			writeGitError(w, http.StatusConflict, "github_collaboration_not_enabled")
 			return
@@ -642,30 +725,32 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 			writeGitError(w, http.StatusBadRequest, "invalid_github_repository")
 			return
 		}
-		metadata, err := policy.GitHub.RepositoryByID(r.Context(), request.ConnectionID, repositoryID)
+		providerMetadata, err = policy.GitHub.RepositoryByID(r.Context(), request.ConnectionID, repositoryID)
 		if err != nil {
 			writeGitBackendFailure(w, err)
 			return
 		}
-		if !githubAnnouncementMatches(repository.Announcement, metadata) {
+		integration.ExternalRepository = providerMetadata.FullName
+	}
+	switch request.GitBackend {
+	case forge.BackendGitHub:
+		if !githubAnnouncementMatches(repository.Announcement, providerMetadata) {
 			writeGitError(w, http.StatusConflict, "announcement_provider_mismatch")
 			return
 		}
-		integration.ExternalRepository = metadata.FullName
 	case forge.BackendWalGit:
-		if repository.Classification != string(gitforge.RepositoryHosted) || request.CollaborationBackend != forge.BackendRelay {
+		if repository.Classification != string(gitforge.RepositoryHosted) || request.CollaborationBackend != forge.BackendRelay && request.CollaborationBackend != forge.BackendGitHub {
 			writeGitError(w, http.StatusConflict, "invalid_walgit_integration")
 			return
 		}
-		integration.ConnectionID, integration.ExternalRepositoryID = "", ""
 	case forge.BackendUnmanaged:
-		if repository.CloneURL == "" || request.CollaborationBackend != forge.BackendRelay {
+		if repository.CloneURL == "" || request.CollaborationBackend != forge.BackendRelay || request.MirrorBackend != "" {
 			writeGitError(w, http.StatusConflict, "invalid_unmanaged_integration")
 			return
 		}
 		integration.ConnectionID, integration.ExternalRepositoryID = "", ""
 	case forge.BackendNone:
-		if repository.Classification != string(gitforge.RepositoryAnchor) || request.CollaborationBackend != forge.BackendRelay {
+		if repository.Classification != string(gitforge.RepositoryAnchor) || request.CollaborationBackend != forge.BackendRelay || request.MirrorBackend != "" {
 			writeGitError(w, http.StatusConflict, "invalid_anchor_integration")
 			return
 		}
@@ -674,11 +759,14 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 		writeGitError(w, http.StatusBadRequest, "unknown_git_backend")
 		return
 	}
+	if !githubNeeded {
+		integration.ConnectionID, integration.ExternalRepositoryID, integration.ExternalRepository = "", "", ""
+	}
 	if err := policy.setExplicitIntegration(r.Context(), integration, request.ExpectedAnnouncementID); err != nil {
 		writeGitBackendFailure(w, err)
 		return
 	}
-	if integration.CollaborationBackend == forge.BackendGitHub {
+	if integration.CollaborationBackend == forge.BackendGitHub || integration.MirrorBackend == forge.BackendGitHub {
 		if err := policy.rebuildRepositoryForgeOutbox(r.Context(), repository.Coordinate); err != nil {
 			writeGitBackendFailure(w, err)
 			return

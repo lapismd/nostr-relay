@@ -279,13 +279,16 @@ func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery
 		}
 		return err
 	}
-	if repository.Integration.CollaborationBackend != forge.BackendGitHub {
-		return nil
-	}
 	if marker := webhookCorrelationMarker(delivery.Payload); marker != "" {
 		if acknowledged, err := policy.acknowledgeCorrelatedWebhook(ctx, repository, delivery, payload, marker); err != nil || acknowledged {
 			return err
 		}
+	}
+	if repository.Integration.CollaborationBackend != forge.BackendGitHub {
+		if repository.Integration.MirrorBackend != forge.BackendGitHub {
+			return nil
+		}
+		return policy.processGitHubMirrorObservation(ctx, repository, delivery, payload)
 	}
 	switch delivery.EventType {
 	case "issues":
@@ -324,6 +327,47 @@ func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery
 		return policy.processGitHubWorkflowRun(ctx, repository, delivery.Payload)
 	}
 	return nil
+}
+
+func (policy *GitForgePolicy) processGitHubMirrorObservation(ctx context.Context, repository forge.Repository, delivery githubWebhookDelivery, payload githubWebhookPayload) error {
+	switch delivery.EventType {
+	case "issues":
+		return policy.publishMappedStateObservation(ctx, repository, delivery, "issue", strconv.FormatInt(payload.Issue.ID, 10), "GitHub state changed to "+issueState(payload.Issue), payload.Issue.User)
+	case "pull_request":
+		state := pullRequestWebhookState(delivery.Action, payload.PullRequest)
+		if delivery.Action == "synchronize" {
+			state = "head changed to " + payload.PullRequest.Head.SHA
+		}
+		if state == "" {
+			return nil
+		}
+		return policy.publishMappedStateObservation(ctx, repository, delivery, "pull_request", strconv.FormatInt(payload.PullRequest.ID, 10), "GitHub "+state, payload.PullRequest.User)
+	case "issue_comment":
+		if delivery.Action == "created" {
+			return policy.publishExternalComment(ctx, repository, delivery, strconv.FormatInt(payload.Issue.ID, 10), payload.Comment, false)
+		}
+	case "pull_request_review":
+		if delivery.Action == "submitted" || delivery.Action == "edited" {
+			return policy.publishExternalReview(ctx, repository, delivery, strconv.FormatInt(payload.PullRequest.ID, 10), payload.Review, githubWebhookComment{})
+		}
+	case "pull_request_review_comment":
+		if delivery.Action == "created" {
+			return policy.publishExternalReview(ctx, repository, delivery, strconv.FormatInt(payload.PullRequest.ID, 10), githubWebhookReview{}, payload.Comment)
+		}
+	}
+	return nil
+}
+
+func (policy *GitForgePolicy) publishMappedStateObservation(ctx context.Context, repository forge.Repository, delivery githubWebhookDelivery, objectType, externalID, content string, user githubWebhookUser) error {
+	mapping, found, err := policy.loadMappingByExternal(ctx, forge.BackendGitHub, delivery.ConnectionID, externalID, objectType)
+	if err != nil || !found {
+		return err
+	}
+	root, found, err := policy.eventByHexID(ctx, mapping.NostrRootID)
+	if err != nil || !found {
+		return missingMappedEvent(err, found)
+	}
+	return policy.publishExternalStateObservation(ctx, repository, root, delivery, content, user)
 }
 
 func (policy *GitForgePolicy) repositoryForGitHub(ctx context.Context, connectionID, repositoryID string) (forge.Repository, bool, error) {

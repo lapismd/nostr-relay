@@ -183,10 +183,20 @@ type RepositoryImporter interface {
 type ImportRequest struct {
 	SourceCloneURL string
 	ExpectedRefs   map[string]string
+	SourceUsername string `json:"-"`
+	SourcePassword string `json:"-"`
 }
 
 type ImportResult struct {
 	Refs map[string]string `json:"refs"`
+}
+
+type RefSnapshotter interface {
+	SnapshotRefs(context.Context, Repository) (map[string]string, error)
+}
+
+type AuthenticatedCloneSource interface {
+	CloneSource(context.Context, Repository) (url, username, password string, err error)
 }
 
 type SmartHTTPBackend interface {
@@ -235,10 +245,16 @@ type CollaborationBackend interface {
 }
 
 type MirrorProjection struct {
-	OperationID string
-	Kind        string
-	Repository  Repository
-	Event       nostr.Event
+	OperationID       string
+	Kind              string
+	Repository        Repository
+	Event             nostr.Event
+	RootEventID       string
+	ExternalNumber    int64
+	ObjectType        string
+	ExpectedHead      string
+	CorrelationMarker string
+	Payload           json.RawMessage
 }
 
 type MirrorBackend interface {

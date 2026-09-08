@@ -21,7 +21,8 @@ func NewWalGitAdapter(backend Backend) *WalGitAdapter {
 
 func (*WalGitAdapter) Name() string { return forge.BackendWalGit }
 
-func (*WalGitAdapter) Capabilities(_ context.Context, repository forge.Repository) (forge.Capabilities, error) {
+func (adapter *WalGitAdapter) Capabilities(_ context.Context, repository forge.Repository) (forge.Capabilities, error) {
+	_, importAvailable := adapter.legacy.(*WalGitBackend)
 	return forge.Capabilities{
 		GitBackend: forge.BackendWalGit,
 		Clone: forge.CloneDescriptor{
@@ -29,8 +30,8 @@ func (*WalGitAdapter) Capabilities(_ context.Context, repository forge.Repositor
 			Auth: forge.CloneAuthNostr,
 		},
 		SmartHTTP: forge.SmartHTTPCapabilities{Read: true, Write: true},
-		Browse:    true, Compare: true, RefEvents: true, Provision: true,
-		// Protected refs, import, provider collaboration, merge, mirroring,
+		Browse:    true, Compare: true, RefEvents: true, Provision: true, Import: importAvailable,
+		// Protected refs, provider collaboration, merge, mirroring,
 		// automatic PR revisions, and CI are not present in the baseline.
 		Limits: forge.Limits{MaximumChangedFiles: 20000, MaximumPatchBytes: 64 << 20},
 	}, nil
@@ -48,6 +49,14 @@ func (*WalGitAdapter) DefaultBranch(context.Context, forge.Repository, string) (
 
 func (adapter *WalGitAdapter) EnsureRepository(ctx context.Context, repository forge.Repository) error {
 	return adapter.legacy.EnsureRepository(ctx, repository.Coordinate)
+}
+
+func (adapter *WalGitAdapter) ImportRepository(ctx context.Context, repository forge.Repository, request forge.ImportRequest) (forge.ImportResult, error) {
+	backend, ok := adapter.legacy.(*WalGitBackend)
+	if !ok {
+		return forge.ImportResult{}, &forge.Error{Status: http.StatusNotImplemented, Code: "repository_import_unavailable"}
+	}
+	return backend.ImportRepository(ctx, repository, request)
 }
 
 func (adapter *WalGitAdapter) ServeGitHTTP(w http.ResponseWriter, r *http.Request, repository forge.Repository, subpath, principal string) {
@@ -145,6 +154,7 @@ func legacyRepository(repository forge.Repository) Repository {
 var (
 	_ forge.GitBackend            = (*WalGitAdapter)(nil)
 	_ forge.RepositoryProvisioner = (*WalGitAdapter)(nil)
+	_ forge.RepositoryImporter    = (*WalGitAdapter)(nil)
 	_ forge.SmartHTTPBackend      = (*WalGitAdapter)(nil)
 	_ forge.RepositoryAPIBackend  = (*WalGitAdapter)(nil)
 )

@@ -75,6 +75,12 @@ func (registry *Registry) RegisterCI(backend CIBackend) error {
 	return nil
 }
 
+func (registry *Registry) GitBackend(name string) GitBackend {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	return registry.git[name]
+}
+
 func (registry *Registry) Resolve(ctx context.Context, repository Repository) (ResolvedRepository, error) {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()

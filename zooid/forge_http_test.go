@@ -18,9 +18,14 @@ import (
 )
 
 type fakeGitHubProvider struct {
-	repository githubforge.RepositoryMetadata
-	commands   []forge.CollaborationCommand
-	result     forge.CollaborationResult
+	repository       githubforge.RepositoryMetadata
+	commands         []forge.CollaborationCommand
+	result           forge.CollaborationResult
+	refSnapshots     []map[string]string
+	refSnapshotCalls int
+	cloneURL         string
+	cloneUsername    string
+	clonePassword    string
 }
 
 func (provider *fakeGitHubProvider) ValidateConnection(_ context.Context, connection githubforge.Connection) (githubforge.Connection, error) {
@@ -41,7 +46,7 @@ func (*fakeGitHubProvider) Capabilities(_ context.Context, repository forge.Repo
 	return forge.Capabilities{
 		GitBackend: forge.BackendGitHub,
 		Clone:      forge.CloneDescriptor{Available: true, URL: "https://github.com/" + repository.Integration.ExternalRepository + ".git", Auth: forge.CloneAuthProvider, Provider: forge.BackendGitHub},
-		Browse: true, Compare: true, RefEvents: true,
+		Browse:     true, Compare: true, RefEvents: true,
 		Issues: true, PullRequests: true, Reviews: true, Merge: true,
 		Limits: forge.Limits{MaximumBlobBytes: 100 << 20, MaximumChangedFiles: 300, MaximumTreeEntries: 1000, MayTruncateCompare: true, MayTruncateTree: true},
 	}, nil
@@ -76,6 +81,29 @@ func (*fakeGitHubProvider) Commit(context.Context, forge.Repository, forge.Revis
 }
 func (*fakeGitHubProvider) Compare(context.Context, forge.Repository, forge.CompareRequest) (forge.CompareResult, error) {
 	return forge.CompareResult{}, nil
+}
+func (provider *fakeGitHubProvider) SnapshotRefs(context.Context, forge.Repository) (map[string]string, error) {
+	if len(provider.refSnapshots) == 0 {
+		return map[string]string{}, nil
+	}
+	index := provider.refSnapshotCalls
+	if index >= len(provider.refSnapshots) {
+		index = len(provider.refSnapshots) - 1
+	}
+	provider.refSnapshotCalls++
+	return provider.refSnapshots[index], nil
+}
+func (provider *fakeGitHubProvider) CloneSource(context.Context, forge.Repository) (string, string, string, error) {
+	return provider.cloneURL, provider.cloneUsername, provider.clonePassword, nil
+}
+func (provider *fakeGitHubProvider) Project(_ context.Context, projection forge.MirrorProjection) (forge.CollaborationResult, error) {
+	provider.commands = append(provider.commands, forge.CollaborationCommand{
+		OperationID: projection.OperationID, Kind: projection.Kind,
+		Actor: projection.Event.PubKey, Repository: projection.Repository,
+		RootEventID: projection.RootEventID, ExpectedHead: projection.ExpectedHead,
+		CorrelationMarker: projection.CorrelationMarker, Payload: projection.Payload,
+	})
+	return provider.result, nil
 }
 
 type fakeCredentialStore map[string][]byte

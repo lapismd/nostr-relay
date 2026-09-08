@@ -159,3 +159,54 @@ func TestGitHubWebhookRejectsInvalidSignatureBodyLimitAndDeliveryConflict(t *tes
 	policy.ServeGitHubWebhook(recorder, githubWebhookRequest(changed, "conflict", "installation", "webhook-secret"))
 	require.Equal(t, http.StatusConflict, recorder.Code)
 }
+
+func TestMirrorWebhookDoesNotImportRootsAndKeepsMappedLifecycleObservational(t *testing.T) {
+	policy, store, _, repository := configureWebhookTest(t)
+	backend := policy.GitHub.(*githubforge.Backend)
+	require.NoError(t, policy.Registry.RegisterMirror(backend))
+	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
+	integration, found, err := policy.repositoryIntegration(context.Background(), coordinate)
+	require.NoError(t, err)
+	require.True(t, found)
+	integration.CollaborationBackend = forge.BackendRelay
+	integration.MirrorBackend = forge.BackendGitHub
+	require.NoError(t, policy.setExplicitIntegration(context.Background(), integration, repository.ID.Hex()))
+
+	body, err := json.Marshal(map[string]any{
+		"action": "opened", "installation": map[string]any{"id": 99},
+		"repository": map[string]any{"id": 42},
+		"issue":      map[string]any{"id": 9001, "number": 17, "title": "Must not import", "state": "open", "user": map[string]any{"id": 71, "login": "octocat"}},
+	})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	policy.ServeGitHubWebhook(recorder, githubWebhookRequest(body, "mirror-unmapped", "issues", "webhook-secret"))
+	require.Equal(t, http.StatusAccepted, recorder.Code)
+	require.NoError(t, policy.ProcessGitHubWebhookOnce(context.Background()))
+	require.Empty(t, collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindIssue}, Tags: nostr.TagMap{"a": {coordinate.String()}}}))
+
+	root := nostr.Event{Kind: nostr.KindIssue, CreatedAt: nostr.Now(), Content: "Relay root", Tags: nostr.Tags{
+		{"a", coordinate.String()}, {"p", repository.PubKey.Hex()}, {"subject", "Relay root"},
+	}}
+	require.NoError(t, root.Sign(nostr.Generate()))
+	require.NoError(t, store.SaveEvent(root))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), root))
+	require.NoError(t, policy.saveForgeMapping(context.Background(), forgeObjectMapping{
+		Provider: forge.BackendGitHub, ConnectionID: "connection", Coordinate: coordinate,
+		ObjectType: "issue", NostrEventID: root.ID.Hex(), NostrRootID: root.ID.Hex(),
+		ExternalID: "9001", ExternalNumber: 17, Origin: "relay", Authority: "relay",
+	}))
+	closedBody, err := json.Marshal(map[string]any{
+		"action": "closed", "installation": map[string]any{"id": 99},
+		"repository": map[string]any{"id": 42},
+		"issue":      map[string]any{"id": 9001, "number": 17, "title": "Relay root", "state": "closed", "user": map[string]any{"id": 71, "login": "octocat"}},
+	})
+	require.NoError(t, err)
+	recorder = httptest.NewRecorder()
+	policy.ServeGitHubWebhook(recorder, githubWebhookRequest(closedBody, "mirror-mapped", "issues", "webhook-secret"))
+	require.Equal(t, http.StatusAccepted, recorder.Code)
+	require.NoError(t, policy.ProcessGitHubWebhookOnce(context.Background()))
+	notes := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindTextNote}, Tags: nostr.TagMap{"e": {root.ID.Hex()}, "t": {"external-state"}}})
+	require.Len(t, notes, 1)
+	statuses := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindStatusClosed}, Tags: nostr.TagMap{"e": {root.ID.Hex()}}})
+	require.Empty(t, statuses)
+}

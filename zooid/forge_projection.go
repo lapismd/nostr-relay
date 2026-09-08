@@ -86,7 +86,9 @@ func (policy *GitForgePolicy) rememberForgeProjection(ctx context.Context, event
 	if err != nil || !found {
 		return err
 	}
-	if resolved.Repository.Integration.CollaborationBackend != forge.BackendGitHub || resolved.Collaboration == nil {
+	githubCollaboration := resolved.Repository.Integration.CollaborationBackend == forge.BackendGitHub && resolved.Collaboration != nil
+	githubMirror := resolved.Repository.Integration.MirrorBackend == forge.BackendGitHub && resolved.Mirror != nil
+	if !githubCollaboration && !githubMirror {
 		return nil
 	}
 	encoded, _ := json.Marshal(payload)
@@ -121,11 +123,35 @@ func (policy *GitForgePolicy) rebuildForgeOutbox(ctx context.Context) error {
 }
 
 func (policy *GitForgePolicy) rebuildRepositoryForgeOutbox(ctx context.Context, coordinate projecttask.RepositoryCoordinate) error {
+	rootIDs := make([]string, 0)
 	for _, kind := range []nostr.Kind{nostr.KindIssue, projecttask.KindPullRequest} {
 		filter := nostr.Filter{Kinds: []nostr.Kind{kind}, Tags: nostr.TagMap{"a": {coordinate.String()}}, Limit: 2000}
 		for event := range policy.Events.QueryEventsBefore(ctx, filter, "", 2000) {
+			if policy.ProjectTasks.IsTombstoned(ctx, event) {
+				continue
+			}
 			if err := policy.rememberForgeProjection(ctx, event); err != nil {
 				return err
+			}
+			rootIDs = append(rootIDs, event.ID.Hex())
+		}
+	}
+	relatedKinds := []nostr.Kind{
+		nostr.KindTextNote, nostr.KindComment, nostr.KindStatusOpen,
+		nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft,
+	}
+	seen := make(map[nostr.ID]struct{})
+	for _, rootID := range rootIDs {
+		for _, tagName := range []string{"e", "E"} {
+			filter := nostr.Filter{Kinds: relatedKinds, Tags: nostr.TagMap{tagName: {rootID}}, Limit: 2000}
+			for event := range policy.Events.QueryEventsBefore(ctx, filter, "", 2000) {
+				if _, duplicate := seen[event.ID]; duplicate || policy.ProjectTasks.IsTombstoned(ctx, event) {
+					continue
+				}
+				seen[event.ID] = struct{}{}
+				if err := policy.rememberForgeProjection(ctx, event); err != nil {
+					return err
+				}
 			}
 		}
 	}
