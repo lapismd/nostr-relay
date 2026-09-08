@@ -41,21 +41,37 @@ The adapter lives in `internal/buzzcompat`; `zooid/buzz_compat.go` is its only
 integration point with the upstream-derived relay. Keep Buzz-specific behavior
 behind that boundary when updating the fork.
 
-## Projects, tasks, and pull requests
+## Projects, tasks, pull requests, and hosted Git
 
 The relay accepts Buzz NIP-MP projects (`kind:30621`) and repository-scoped
-NIP-34 tasks and pull requests without hosting Git repositories. Project Task
-Anchors are optional `kind:30617` logical namespaces with no `clone` or `web`
-tag. Project/task group scope is derived from `buzz-channel` and enforced
-through the normal NIP-29 policy without adding an `h` tag to signed events. A
-pull request may add an origin `h`; both repository and origin scopes are
-required for its full event graph.
+NIP-34 tasks and pull requests. The optional forge integration uses a private
+[WalGit](https://github.com/tobi/walgit) sidecar and S3-compatible object store
+for hosted repositories while Nostr remains the authority for collaboration.
+Project Task Anchors are explicit `kind:30617` logical namespaces with
+`project-task-anchor=true` and no Git backing. Clone-less unmarked repositories
+are provisioned lazily when Git hosting is enabled; external clone locators
+remain supported.
+
+Public Git smart HTTP, LFS and bundle requests pass through the relay at
+`/git/<owner>/<repo>.git`, where Buzz-compatible NIP-98 identity is mapped to
+the repository's NIP-29 group. Web clients without a local checkout can browse
+refs, trees, blobs and commits under `/api/git/...` and render reduced PR diffs
+at `/api/pull-requests/<event-id>/diff`. WalGit's internal/admin interface is
+never publicly proxied.
+
+Project/task group scope is derived from `buzz-channel` and enforced through
+the normal NIP-29 policy without adding an `h` tag to signed events. A pull
+request may add an origin `h`; both repository and origin scopes are required
+for its full event graph and diff.
 
 See [PROJECT_TASK_MODEL.md](PROJECT_TASK_MODEL.md) for event shapes, status and
 assignment/review reduction, dual comment compatibility, deletion behavior, and
 non-goals. The current Buzz Desktop HTTP/event audit and upstream refresh
 checklist are in
 [docs/BUZZ_PROJECT_COMPATIBILITY.md](docs/BUZZ_PROJECT_COMPATIBILITY.md).
+The authority, repository classification, proxy, recovery, and pinned-sidecar
+update contracts are in [PROJECT_FORGE_MODEL.md](PROJECT_FORGE_MODEL.md) and
+[WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md).
 
 ## Lapis container
 
@@ -65,10 +81,12 @@ Build the local image:
 docker build --tag lapis-relay:local .
 ```
 
-The image runs `/bin/lapis-relay`. `docker compose up --build` starts the relay
-and PostgreSQL after the required relay secret, owner pubkey, and TOML-formatted
-admin pubkey list are provided through the environment. Never commit those
-values.
+The image runs `/bin/lapis-relay`. `docker compose up --build` starts the relay,
+PostgreSQL, WalGit, RustFS, and the bucket initializer after the required relay,
+sidecar, webhook, and object-store credentials are supplied through the
+environment. Never commit those values. See
+[WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md) for the complete local variable
+list and the tagged recovery test.
 
 ## Upstream description
 

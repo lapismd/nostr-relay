@@ -4,10 +4,9 @@ Audit target: Buzz Desktop `v0.5.23`, commit
 `3c7f288c60d67df78577b237e27c3dfc8831aaa1`.
 This file is the refresh checklist when updating Buzz or the upstream relay.
 
-## HTTP endpoint audit
+## HTTP and Git endpoint audit
 
-Buzz does not expose or require project/task/PR-specific HTTP endpoints. Its
-relay surface is generic:
+Buzz's Nostr project/task/PR relay surface is generic:
 
 | Endpoint | Project/task/PR relevance in this relay |
 | --- | --- |
@@ -16,16 +15,30 @@ relay surface is generic:
 | `POST /count` | Generic count only. Buzz Desktop does not depend on a project-scoped count extension. |
 | `GET /info` | Generic capability/relay information; no project/task/PR payload. |
 
-Current Desktop project/task/PR code primarily uses the shared WebSocket relay
-client. Tauri HTTP commands in the project area concern Git hosting, repository
-transport, and local checkout operations. Those are outside this relay's scope:
-Lapis repositories use external `clone`/`web` URLs and Project Task Anchors have
-neither. The relay must not advertise or synthesize Buzz's `/git/<owner>/<repo>`
-transport.
+Current Desktop project/task/PR collaboration code primarily uses the shared
+WebSocket relay client. The pinned Git credential helper reacts to the Git
+server's `WWW-Authenticate: Nostr method=...` challenge, signs kind `27235` for
+the repository-root URL, and supplies `Authorization: Nostr <base64-event>`.
+Git reuses that credential across discovery and pack requests. The relay's Git
+authentication intentionally follows this profile rather than requiring a new
+one-shot NIP-98 event for each subrequest.
 
-Desktop-local/provider Tauri commands own Git snapshots, diffs, branches,
-cloning, merges, and managed-owner signing. They are not relay endpoints. This
-relay adds no PR REST route and does not advertise Git smart-HTTP.
+The pinned Desktop uses Tauri/local Git commands for snapshots, file content,
+diffs, branches, clone and merge. Those are not relay APIs and remain usable by
+the desktop application. They cannot serve a browser build, which has no local
+checkout or Git binary. Lapis therefore adds a hosted-Git data plane and a thin
+authenticated web read surface without changing Buzz's Nostr wire contract:
+
+| Endpoint | Compatibility role |
+| --- | --- |
+| `/git/<owner>/<repo>[.git]/...` | Buzz credential-helper-compatible smart HTTP, LFS and bundles. |
+| `/api/git/<owner>/<repo>/...` | Lapis web source browsing via WalGit refs/resolve/tree/blob/commit APIs. |
+| `/api/pull-requests/<event-id>/diff` | Lapis web PR diff after reducing the same Buzz-compatible event graph. |
+
+The last two routes require strict method-and-URL NIP-98 credentials. They are
+Lapis web capabilities, not endpoints required or emitted by the audited Buzz
+Desktop. WalGit remains private, and its admin/settings/policy interfaces are
+not proxied.
 
 ## Desktop event/query contract
 
@@ -41,9 +54,10 @@ The compatibility tests pin these observed behaviors:
 - state reduction orders assignment operations ascending by `created_at` then
   ascending event ID;
 - current Desktop comments are `kind:1` root notes, not NIP-22 `kind:1111`;
-- project creation eagerly publishes a `kind:30617` default repository with the
-  same signer, `d`, and `buzz-channel` as the `kind:30621` project and includes
-  its coordinate in the project;
+- project creation eagerly publishes a clone-less `kind:30617` default
+  repository with the same signer, `d`, and `buzz-channel` as the `kind:30621`
+  project and includes its coordinate in the project; with forge support this
+  is a lazily provisioned hosted repository;
 - project validation permits at most 64 raw `a` tags, requires two- or
   three-field `a` tags, rejects duplicate coordinates regardless of relay hint,
   and bounds singleton metadata (`d` 1024, `name` 256, `description` 2048,
@@ -74,6 +88,10 @@ WebSocket and `POST /query`, publishes over WebSocket and `POST /events`, checks
 repository-plus-origin scope intersection, deletes descendants through both
 transports, and repeats reads after restart.
 
+The separate `walgit_integration` Docker lane pushes and clones through real
+WalGit, covers the browser API and arbitrary comparison, and proves that a
+fresh sidecar with an empty cache reconstructs the repository from RustFS.
+
 The relay adds one deliberately narrow filter extension: exact
 `#buzz-channel`. Arbitrary multi-character tag filtering remains unsupported so
 upstream query behavior does not change accidentally.
@@ -86,13 +104,16 @@ When Buzz changes:
 2. Re-check `docs/nips/NIP-MP.md`, project and NIP-34 builders, project/work-item
    enumeration, issue and PR mutation/fetch/reducer code, reviews, deletion,
    and the shared relay client.
-3. Search project, task, and pull-request code for HTTP paths and Tauri
-   commands. Classify Git transport separately from Nostr event transport.
+3. Re-check `git-credential-nostr`, project Git TypeScript, and Tauri Git
+   commands. Classify the credential challenge/root-URL behavior, desktop-local
+   Git, browser data needs, and Nostr event transport separately.
 4. Update the event/query table and the contract fixtures before changing
    implementation.
-5. Run `go test ./internal/projecttask`, the Zooid project/task/PR integration
-   tests, `go test ./...`, and the local Docker image build.
+5. Run `go test ./internal/projecttask ./internal/gitforge`, the Zooid
+   project/task/PR integration tests, `go test ./...`, the tagged WalGit
+   recovery test, and both local Docker image builds.
 
 No changes for this feature belong under `internal/khatru`. The stable local
-seams are `internal/projecttask` for domain rules, Zooid for persistence and
-NIP-29 scope enforcement, and `internal/buzzcompat` for generic HTTP transport.
+seams are `internal/projecttask` for domain rules, `internal/gitforge` for the
+storage-independent sidecar contract, Zooid for persistence and NIP-29 scope
+enforcement, and `internal/buzzcompat` for HTTP route registration.

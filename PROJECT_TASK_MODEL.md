@@ -2,8 +2,9 @@
 
 This relay stores ordinary signed Nostr events. Project/task support is a local
 policy and indexing extension around NIP-34, NIP-22, NIP-29, NIP-09, and Buzz's
-NIP-MP project event. The relay does not create, clone, serve, or modify Git
-repositories. Pull requests are event graphs, not relay-hosted Git operations.
+NIP-MP project event. When the optional forge integration is enabled, WalGit
+stores Git data behind the relay's NIP-98/NIP-29 boundary. Pull requests remain
+Nostr event graphs; WalGit never becomes collaboration authority.
 
 ## Coordinates
 
@@ -28,17 +29,23 @@ its coordinate is deterministic:
 30617:<project-signer>:<project-d>
 ```
 
-The anchor has `d`, `name`, `description`, and `buzz-channel` tags as available.
-It deliberately has no `clone`, `web`, or custom synthetic marker. Creating the
-anchor is lazy in Lapis clients, but the relay accepts Buzz Desktop's eager
-default repository using the same shape. An anchor is only an event; no disk,
-GitHub, GitLab, or relay-hosted Git repository is created.
+The anchor has `d`, `name`, `description`, and `buzz-channel` tags as available,
+plus the exact marker `project-task-anchor=true`. It deliberately has no
+`clone` or `web`. Creating the anchor is lazy in Lapis clients. An anchor is
+only an event; no WalGit repository or external Git resource is created.
+
+The explicit marker removes the ambiguity between a logical anchor and a
+clone-less repository that a Buzz-compatible client expects the relay to host.
+An unmarked repository with no `clone` is hosted lazily when forge support is
+enabled. A repository with an external `clone` remains external unless one of
+its clone locators equals the relay's canonical Git URL.
 
 ## Wire events
 
 | Meaning | Event shape |
 | --- | --- |
-| Repository or task anchor | `kind:30617` |
+| External or WalGit-backed repository | `kind:30617`; class is derived from `clone` locators |
+| Project Task Anchor | `kind:30617`, `project-task-anchor=true`, no Git backing |
 | Buzz project | `kind:30621` (NIP-MP) |
 | Task/issue | `kind:1621`, `a` points to `30617` |
 | Pull request | `kind:1618`, `a` points to `30617`; required repository-owner `p`, `subject`, full `c`, and one or more `clone` locators |
@@ -134,10 +141,13 @@ WebSocket dispatcher may additionally remove stored target rows.
 
 ## Non-goals
 
-- Git smart-HTTP, repository storage, cloning, or mirroring
 - a project/task/PR-specific REST API
 - relay-side comment conversion
 - relay-side task status or assignment events
 - managed-owner/NIP-OA authorization in the first implementation
 - `kind:1617` patches, `kind:30618` repository-state projections, Git ref
-  verification, CI state, merge execution, or automatic channel creation
+  verification, CI state, merge execution, automatic PR revisions, external
+  repository import/mirroring, or automatic channel creation
+
+Git smart HTTP, browser reads, and PR diffs are documented separately in
+`PROJECT_FORGE_MODEL.md` and `WALGIT_INTEGRATION.md`.
