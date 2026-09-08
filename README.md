@@ -71,7 +71,9 @@ checklist are in
 [docs/BUZZ_PROJECT_COMPATIBILITY.md](docs/BUZZ_PROJECT_COMPATIBILITY.md).
 The authority, repository classification, proxy, recovery, and pinned-sidecar
 update contracts are in [PROJECT_FORGE_MODEL.md](PROJECT_FORGE_MODEL.md) and
-[WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md).
+[WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md). The work intentionally deferred
+from the original WalGit forge plan is tracked in
+[FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
 
 ## Lapis container
 
@@ -87,6 +89,34 @@ sidecar, webhook, and object-store credentials are supplied through the
 environment. Never commit those values. See
 [WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md) for the complete local variable
 list and the tagged recovery test.
+
+## Fresh deployment and data bootstrap
+
+A clean deployment does not load application fixtures or create a default
+project. Startup performs only infrastructure and relay-internal bootstrap:
+
+1. The entrypoint creates the host configuration when the config volume is
+   empty.
+2. The relay creates the PostgreSQL schema, indexes, and migration state.
+3. The relay signs its relay-level admin list and ensures the relay key, owner,
+   and configured role pubkeys are present in its internal membership events.
+4. Compose idempotently creates the empty `lapis-walgit` object-store bucket.
+   The Git reconciler then resumes repository intents derived from any existing
+   `kind:30617` events; on a new database there are none.
+
+Projects and collaboration data are populated by signed client events. With
+the default `groups.admin_create_only = true`, a configured relay admin first
+creates each NIP-29 group with `kind:9007`. The relay derives that group's
+metadata, creator membership, member snapshot, and admin snapshot. Authenticated
+clients then publish `kind:30621` projects, `kind:30617` repositories or task
+anchors, `kind:1621` tasks, `kind:1618/1619` pull requests, and their related
+events through WebSocket `EVENT` or NIP-98 `POST /events`.
+
+Publishing a hosted `kind:30617` records a durable provisioning intent; the
+background reconciler creates the empty WalGit repository asynchronously.
+Commits arrive later through Git smart HTTP at `/git/<owner>/<repo>.git`.
+Project Task Anchors never provision Git storage. Test fixtures and tagged
+integration setup are not run by the production entrypoint.
 
 ## Upstream description
 

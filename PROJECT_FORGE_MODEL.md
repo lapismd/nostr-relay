@@ -72,4 +72,6 @@ only full SHA-1/SHA-256 object IDs and enforce configured file/patch bounds.
 Protected-target policy compilation, merge coordination/execution, automatic
 `1619` publication, CI providers/results, external repository import, and
 `30618` publication remain deliberate follow-up slices. No GitHub or GitLab
-issue/PR synchronization is introduced.
+issue/PR synchronization is introduced. Their current foundations, missing
+behavior, acceptance boundaries, and permanent non-goals are tracked in
+[FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).

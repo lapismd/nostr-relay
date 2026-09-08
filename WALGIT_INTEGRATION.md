@@ -138,6 +138,10 @@ do not change the current-ref projection.
 These events are durable integration inputs only. This slice does not publish
 activity, PR revisions or CI events from them.
 
+The remaining ref-policy, import, activity, PR-revision, merge, and CI work is
+tracked with its original plan phases and acceptance boundaries in
+[FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
+
 ## Failure and recovery
 
 The signed repository event and desired-state projection survive a WalGit
