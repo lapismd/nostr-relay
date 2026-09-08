@@ -60,7 +60,10 @@ func (policy *GitForgePolicy) Remember(ctx context.Context, event nostr.Event) e
 		if err != nil {
 			return err
 		}
-		return policy.upsertIntent(ctx, repository)
+		if err := policy.upsertIntent(ctx, repository); err != nil {
+			return err
+		}
+		return policy.upsertLegacyIntegration(ctx, repository)
 	}
 	if event.Kind == nostr.KindDeletion {
 		for _, tag := range event.Tags {
@@ -69,6 +72,9 @@ func (policy *GitForgePolicy) Remember(ctx context.Context, event nostr.Event) e
 				continue
 			}
 			if err := policy.markInactive(ctx, coordinate, "deleted"); err != nil {
+				return err
+			}
+			if err := policy.markIntegrationInactive(ctx, coordinate); err != nil {
 				return err
 			}
 		}
@@ -171,6 +177,9 @@ func (policy *GitForgePolicy) rebuildIntents(ctx context.Context) error {
 		if err := policy.upsertIntent(ctx, repository); err != nil {
 			return err
 		}
+		if err := policy.upsertLegacyIntegration(ctx, repository); err != nil {
+			return err
+		}
 	}
 
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
@@ -204,6 +213,9 @@ func (policy *GitForgePolicy) rebuildIntents(ctx context.Context) error {
 			continue
 		}
 		if err := policy.markInactive(ctx, projecttask.RepositoryCoordinate{Owner: owner, ID: pair.repo}, "deleted"); err != nil {
+			return err
+		}
+		if err := policy.markIntegrationInactive(ctx, projecttask.RepositoryCoordinate{Owner: owner, ID: pair.repo}); err != nil {
 			return err
 		}
 	}
@@ -278,7 +290,10 @@ func (policy *GitForgePolicy) finishIntent(ctx context.Context, intent repositor
 			SET reconcile_state = 'ready', attempt_count = 0, last_error = '', updated_at = NOW()
 			WHERE owner = $1 AND repo = $2 AND generation = $3 AND desired_class = 'hosted'`),
 			intent.Coordinate.Owner.Hex(), intent.Coordinate.ID, intent.Generation)
-		return err
+		if err != nil {
+			return err
+		}
+		return policy.updateLegacyIntegrationHealth(ctx, intent.Coordinate, "ready", "")
 	}
 	attempts := intent.Attempts + 1
 	delaySeconds := math.Min(math.Pow(2, float64(min(attempts, 8))), 300)
@@ -289,7 +304,10 @@ func (policy *GitForgePolicy) finishIntent(ctx context.Context, intent repositor
 		    last_error = $6, updated_at = NOW()
 		WHERE owner = $1 AND repo = $2 AND generation = $3 AND desired_class = 'hosted'`),
 		intent.Coordinate.Owner.Hex(), intent.Coordinate.ID, intent.Generation, attempts, int(delaySeconds), sanitizeGitError(reconcileErr))
-	return err
+	if err != nil {
+		return err
+	}
+	return policy.updateLegacyIntegrationHealth(ctx, intent.Coordinate, "degraded", sanitizeGitError(reconcileErr))
 }
 
 func sanitizeGitError(err error) string {

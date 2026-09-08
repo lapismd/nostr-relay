@@ -79,9 +79,50 @@ func TestGitForgeReconcilesHostedRepositoryIdempotently(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, "ready", state)
 	require.Len(t, backend.ensured, 1)
+	integration, found, err := policy.repositoryIntegration(context.Background(), projecttask.RepositoryCoordinate{Owner: event.PubKey, ID: "notes"})
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "walgit", integration.GitBackend)
+	require.Equal(t, "relay", integration.CollaborationBackend)
+	require.Equal(t, "legacy-default", integration.ConfigurationSource)
+	require.Equal(t, "ready", integration.HealthState)
 
 	require.NoError(t, policy.ReconcileOnce(context.Background()))
 	require.Len(t, backend.ensured, 1)
+}
+
+func TestLegacyIntegrationTracksClassificationUntilExplicitlyConfigured(t *testing.T) {
+	backend := &fakeGitBackend{}
+	policy, store := createGitForgeTestPolicy(t, backend)
+	secret := nostr.Generate()
+	hosted := gitForgeRepositoryEvent(t, secret, "notes")
+	require.NoError(t, store.SaveEvent(hosted))
+	require.NoError(t, policy.Remember(context.Background(), hosted))
+
+	coordinate := projecttask.RepositoryCoordinate{Owner: hosted.PubKey, ID: "notes"}
+	integration, found, err := policy.repositoryIntegration(context.Background(), coordinate)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "walgit", integration.GitBackend)
+
+	_, err = GetDb().Exec(policy.Events.Schema.Render(`
+		UPDATE {{.Name}}__repository_integrations
+		SET configuration_source = 'explicit', git_backend = 'github',
+		    connection_id = 'connection', external_repository_id = '42'
+		WHERE owner = $1 AND repo = $2`), hosted.PubKey.Hex(), "notes")
+	require.NoError(t, err)
+
+	external := gitForgeRepositoryEvent(t, secret, "notes", nostr.Tag{"clone", "https://github.com/lapis/notes.git"})
+	external.CreatedAt = hosted.CreatedAt + 1
+	require.NoError(t, external.Sign(secret))
+	require.NoError(t, store.SaveEvent(external))
+	require.NoError(t, policy.Remember(context.Background(), external))
+	integration, found, err = policy.repositoryIntegration(context.Background(), coordinate)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "explicit", integration.ConfigurationSource)
+	require.Equal(t, "github", integration.GitBackend)
+	require.Equal(t, "42", integration.ExternalRepositoryID)
 }
 
 func TestGitForgeAcceptsFailureAndSchedulesRetry(t *testing.T) {
@@ -122,6 +163,15 @@ func TestGitForgeDoesNotProvisionExternalOrTaskAnchor(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, found)
 		require.Equal(t, "inactive", state)
+		integration, integrationFound, integrationErr := policy.repositoryIntegration(context.Background(), projecttask.RepositoryCoordinate{Owner: event.PubKey, ID: event.Tags.GetD()})
+		require.NoError(t, integrationErr)
+		require.True(t, integrationFound)
+		require.Equal(t, "ready", integration.HealthState)
+		if event.Tags.GetD() == "external" {
+			require.Equal(t, "unmanaged", integration.GitBackend)
+		} else {
+			require.Equal(t, "none", integration.GitBackend)
+		}
 	}
 }
 
@@ -158,6 +208,10 @@ func TestGitForgeTombstoneMakesIntentInactiveWithoutDeletingStorage(t *testing.T
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, "inactive", state)
+	integration, integrationFound, integrationErr := policy.repositoryIntegration(context.Background(), projecttask.RepositoryCoordinate{Owner: event.PubKey, ID: "notes"})
+	require.NoError(t, integrationErr)
+	require.True(t, integrationFound)
+	require.Equal(t, "inactive", integration.HealthState)
 	require.Empty(t, backend.ensured)
 
 	// Startup rebuilds desired state from signed events. An HTTP-published
