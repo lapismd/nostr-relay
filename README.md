@@ -44,20 +44,24 @@ behind that boundary when updating the fork.
 ## Projects, tasks, pull requests, and hosted Git
 
 The relay accepts Buzz NIP-MP projects (`kind:30621`) and repository-scoped
-NIP-34 tasks and pull requests. The optional forge integration uses a private
-[WalGit](https://github.com/tobi/walgit) sidecar and S3-compatible object store
-for hosted repositories while Nostr remains the authority for collaboration.
+NIP-34 tasks and pull requests. The capability-based forge integration can use
+a private [WalGit](https://github.com/tobi/walgit) sidecar or GitHub for Git
+reads, and can independently select relay or GitHub collaboration, optional
+one-way GitHub mirroring, and exact-commit GitHub Actions. Nostr remains the
+authority for relay-origin collaboration.
 Project Task Anchors are explicit `kind:30617` logical namespaces with
 `project-task-anchor=true` and no Git backing. Clone-less unmarked repositories
 are provisioned lazily when Git hosting is enabled; external clone locators
 remain supported.
 
-Public Git smart HTTP, LFS and bundle requests pass through the relay at
+WalGit public smart HTTP, LFS and bundle requests pass through the relay at
 `/git/<owner>/<repo>.git`, where Buzz-compatible NIP-98 identity is mapped to
 the repository's NIP-29 group. Web clients without a local checkout can browse
 refs, trees, blobs and commits under `/api/git/...` and render reduced PR diffs
-at `/api/pull-requests/<event-id>/diff`. WalGit's internal/admin interface is
-never publicly proxied.
+at `/api/pull-requests/<event-id>/diff` for either backend. GitHub clone/push
+remain provider-native. Additive NIP-98 `/api/forge` routes provide capability
+discovery, admin attachment, durable provider commands, migration, and CI.
+WalGit's internal/admin interface is never publicly proxied.
 
 Project/task group scope is derived from `buzz-channel` and enforced through
 the normal NIP-29 policy without adding an `h` tag to signed events. A pull
@@ -69,10 +73,13 @@ assignment/review reduction, dual comment compatibility, deletion behavior, and
 non-goals. The current Buzz Desktop HTTP/event audit and upstream refresh
 checklist are in
 [docs/BUZZ_PROJECT_COMPATIBILITY.md](docs/BUZZ_PROJECT_COMPATIBILITY.md).
-The authority, repository classification, proxy, recovery, and pinned-sidecar
-update contracts are in [PROJECT_FORGE_MODEL.md](PROJECT_FORGE_MODEL.md) and
-[WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md). The work intentionally deferred
-from the original WalGit forge plan is tracked in
+The authority and repository model is in
+[PROJECT_FORGE_MODEL.md](PROJECT_FORGE_MODEL.md). Capability composition and
+provider operations are documented in
+[FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md) and
+[GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md); the WalGit deployment/recovery
+contract remains in [WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md). Work still
+deferred after both forge plans is tracked in
 [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
 
 ## Lapis container
@@ -81,14 +88,19 @@ Build the local image:
 
 ```sh
 docker build --tag lapis-relay:local .
+docker build --target forge-worker --tag lapis-forge-worker:local .
 ```
 
 The image runs `/bin/lapis-relay`. `docker compose up --build` starts the relay,
 PostgreSQL, WalGit, RustFS, and the bucket initializer after the required relay,
 sidecar, webhook, and object-store credentials are supplied through the
-environment. Never commit those values. See
+environment. The optional `external-forge-worker` profile separates background
+GitHub work from the relay process; set `LAPIS_FORGE_WORKER_MODE=disabled` on
+the relay when enabling it. Never commit credential values. See
 [WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md) for the complete local variable
-list and the tagged recovery test.
+list and tagged recovery test, and
+[GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) for GitHub secret references and
+the deterministic fake-provider lane.
 
 ## Fresh deployment and data bootstrap
 
@@ -103,6 +115,9 @@ project. Startup performs only infrastructure and relay-internal bootstrap:
 4. Compose idempotently creates the empty `lapis-walgit` object-store bucket.
    The Git reconciler then resumes repository intents derived from any existing
    `kind:30617` events; on a new database there are none.
+5. Forge operational migrations create empty integration/outbox/webhook/CI
+   tables. No GitHub connection, repository attachment, import, mirror, or CI
+   run is created automatically.
 
 Projects and collaboration data are populated by signed client events. With
 the default `groups.admin_create_only = true`, a configured relay admin first
@@ -115,8 +130,10 @@ events through WebSocket `EVENT` or NIP-98 `POST /events`.
 Publishing a hosted `kind:30617` records a durable provisioning intent; the
 background reconciler creates the empty WalGit repository asynchronously.
 Commits arrive later through Git smart HTTP at `/git/<owner>/<repo>.git`.
-Project Task Anchors never provision Git storage. Test fixtures and tagged
-integration setup are not run by the production entrypoint.
+Project Task Anchors never provision Git storage. GitHub integrations require
+an explicit relay-admin connection and attachment after an owner-signed
+announcement exists. Test fixtures and tagged integration setup are not run by
+the production entrypoint.
 
 ## Upstream description
 

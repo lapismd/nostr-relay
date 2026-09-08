@@ -21,6 +21,9 @@ web / desktop / Git credential helper
 Nostr remains authoritative for `30621` projects, `30617` repository identity,
 `1621` tasks, `1618/1619` pull requests, comments, reviews and lifecycle.
 WalGit is authoritative only for Git objects, refs, pushes, LFS and its WAL.
+It is registered through the capability model described in
+[FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md); the existing
+`internal/gitforge` implementation is wrapped rather than rewritten.
 
 ## Deployment
 
@@ -46,6 +49,10 @@ Use independently generated values. Never reuse the relay signing key as a
 service or object-store credential. Production deployments should keep WalGit
 and object storage on private networking and replace the local RustFS choices
 with normal secret injection, backup and lifecycle controls.
+
+GitHub and its forge worker are optional. Their configuration, separate App
+permissions, secret references, and one-way CI mirror are documented in
+[GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md).
 
 The relay `[git]` configuration is:
 
@@ -76,8 +83,13 @@ hosted repository. Any other clone locator denotes an external repository.
 After a hosted announcement is stored, the reconciler idempotently issues the
 internal repository ensure request. Sidecar failure never rolls back the signed
 event. Replacement and tombstone state are retained without automatically
-destroying Git objects. External-to-hosted import and destructive deletion are
-not part of this slice.
+destroying Git objects.
+
+An explicit admin migration can import GitHub into WalGit through an ephemeral
+bare Git directory, verify refs/connectivity, re-read the frozen source, and
+wait for the owner to publish a canonical relay clone announcement before
+activation. It never rewrites signed history. Destructive repository deletion
+remains deferred.
 
 ## Authentication and authorization
 
@@ -104,7 +116,8 @@ The smart-HTTP proxy allowlists upload-pack, receive-pack, required LFS object
 operations and read-only bundle routes. It streams request and response bodies;
 WalGit retains responsibility for Git protocol, LFS and cache behavior.
 
-The read-only browser proxy preserves WalGit response JSON for:
+The read-only browser proxy preserves WalGit response JSON as the normalized
+v1 contract for:
 
 ```text
 refs and refs/branches or refs/tags
@@ -118,7 +131,8 @@ commit/<object-id>
 No browser needs a checkout or local Git binary. Response streaming is
 preserved. Backend cache headers are retained but rewritten as private; absent
 cache metadata defaults to `private, no-store`, preventing shared caches from
-leaking repository content.
+leaking repository content. GitHub-backed repositories translate provider
+responses to the same contract; WalGit responses remain byte-compatible.
 
 `GET /api/pull-requests/<event-id>/diff` is application-owned because it must
 reduce Nostr PR state. It calls the patched internal WalGit
@@ -135,11 +149,12 @@ and safely ignores events for unknown or non-hosted repositories. Decimal
 uint64 WAL sequences are stored in `NUMERIC(20,0)` columns. Replayed deliveries
 do not change the current-ref projection.
 
-These events are durable integration inputs only. This slice does not publish
-activity, PR revisions or CI events from them.
+These events are durable integration inputs only. They do not publish activity,
+PR revisions, or CI runs. CI is explicitly requested for an immutable commit;
+a ref update alone grants no signing or execution authority.
 
-The remaining ref-policy, import, activity, PR-revision, merge, and CI work is
-tracked with its original plan phases and acceptance boundaries in
+The remaining ref-policy, activity, automatic PR-revision, native merge, and
+repository-retirement work is tracked with its acceptance boundaries in
 [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
 
 ## Failure and recovery
@@ -166,7 +181,10 @@ go test -tags walgit_integration ./zooid \
 3. Recreate the patch against a pristine archive; do not vendor upstream source.
 4. Run `third_party/walgit/verify.sh <unpacked-source>`.
 5. Run its focused Rust compare tests, the tagged recovery test, full Go tests,
-   Compose validation and both local image builds.
+   the GitHub Docker lane when importer/CI seams changed, Compose validation,
+   and the local WalGit, relay, and forge-worker image builds.
 
 The patch adds only the bounded arbitrary compare API required for PR review.
-All other repository operations use the upstream WalGit interface.
+Import and CI mirroring use ordinary authenticated Git through an ephemeral
+bare directory. All public repository operations continue through the upstream
+WalGit interface; no policy or provider logic is moved into the sidecar.

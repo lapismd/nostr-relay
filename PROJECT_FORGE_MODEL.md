@@ -1,77 +1,104 @@
 # Project forge model
 
-The Lapis forge has two authorities with a strict process boundary:
+The Lapis forge keeps signed Nostr collaboration, Git storage, and external
+provider automation as separate authorities:
 
 ```text
-Nostr relay                         WalGit + object store
-projects, tasks, PRs, reviews       Git objects and refs
-comments, lifecycle, membership     branches, tags, pushes and LFS
+Nostr relay                 Git backend                 provider automation
+projects/tasks/PRs          WalGit or GitHub            GitHub App + Actions
+comments/lifecycle          objects/refs/compare        optional sync/mirror/CI
+        \_____________________ Zooid NIP-29 policy _____________________/
 ```
 
-WalGit is an internal sidecar. Public clients use the Go relay for both Nostr
-and Git; they never receive the sidecar address or service credential.
+The canonical identity is always `30617:<owner-pubkey>:<d>`. A repository's
+operational integration selects Git, collaboration, mirror, and CI backends
+independently; it never rewrites the signed announcement. See
+[FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md) for the interface and persistence
+model.
 
-## Repository classes
+## Repository classes and defaults
 
-The canonical identity is always `30617:<owner-pubkey>:<d>` and maps directly
-to WalGit `<owner-pubkey>/<d>`. No second repository-ID mapping exists.
+| Announcement | Legacy-default integration |
+| --- | --- |
+| exact `project-task-anchor=true` | no Git; relay collaboration |
+| no `clone` | WalGit; relay collaboration |
+| canonical relay clone URL | WalGit; relay collaboration |
+| other clone locator | unmanaged provider-native clone; relay collaboration |
 
-| Announcement | Class | Behavior |
-| --- | --- | --- |
-| exact `project-task-anchor=true` | task anchor | logical NIP-34 issue namespace; never provision Git |
-| no `clone` | hosted | lazily ensure WalGit repository |
-| canonical relay clone URL in `clone` | hosted | lazily ensure WalGit repository |
-| other `clone` locator | external | retain NIP-34 metadata; do not provision or proxy |
+WalGit-hosted repository names use a bounded ASCII contract. Every repository
+requires a non-empty `buzz-channel`. Replacing or deleting an announcement
+changes desired operational state but does not destroy Git data. Once a relay
+admin explicitly attaches an integration, later clone URLs do not silently
+retarget it.
 
-Hosted repository names additionally match WalGit's bounded ASCII contract.
-Every hosted repository must have a non-empty `buzz-channel`. Replacing or
-deleting its announcement changes durable desired state; Git data is not
-destructively deleted by that projection.
+## Public surfaces
 
-## Public operations
+The unchanged data/event surfaces are:
 
-The relay exposes only these forge surfaces:
+- WebSocket `REQ` and `EVENT`;
+- NIP-98 `POST /events`, `/query`, and `/count`;
+- `/git/<owner>/<repo>.git` for backends with relay Smart HTTP;
+- `/api/git/<owner>/<repo>/...` for normalized browser reads; and
+- `/api/pull-requests/<event-id>/diff` for reduced PR comparison.
 
-| Route | Purpose | Authentication |
-| --- | --- | --- |
-| `/git/<owner>/<repo>[.git]/...` | Git smart HTTP, LFS and bundles | Buzz Git NIP-98 credential signed for the repository root |
-| `/api/git/<owner>/<repo>/...` | refs, resolve, tree, blob, commits and commit | exact URL/method NIP-98 |
-| `/api/pull-requests/<event-id>/diff` | reduced PR base-to-current-head comparison | exact URL/method NIP-98 and full PR scope |
+WalGit keeps Buzz-compatible NIP-98 Smart HTTP. GitHub clone/push are direct
+provider traffic and `/git` returns `provider_git_required`. Both backends
+provide the normalized v1 `/api/git` shape so web clients can browse without a
+checkout or local Git.
 
-Repository reads require NIP-29 access to the repository `buzz-channel`.
-Writes additionally use the group's existing `CanWrite` rule. Public/private
-existence hiding follows the existing group behavior. PR diffs require every
-derived repository and origin channel, not merely the repository channel.
+The additive NIP-98 `/api/forge` routes expose capability/health discovery,
+admin integration, durable provider commands, explicit import/migration, and
+CI operations. Provider commands return `202`; their durable operation state
+is read separately. [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) documents
+the complete route and credential contract.
 
-The Go gateway allowlists Git data-plane and read API routes. It does not expose
-WalGit settings, policy mutation, maintenance, diagnostics or repository
-deletion. It removes public `Authorization`, cookies and all public
-`X-Walgit-*` headers, then adds its internal bearer credential and trusted
-principal. Internal response headers are removed on the way back.
+Repository reads require NIP-29 access to `buzz-channel`; writes additionally
+use the group's `CanWrite` rule. Public/private existence hiding follows the
+existing group policy. PR reads and commands require the complete derived
+repository-plus-origin scope intersection.
 
 ## State and failure semantics
 
 Publishing a hosted `30617` succeeds after its signed event is stored even if
-WalGit is unavailable. A durable desired-state row is reconciled with bounded
-backoff; public Git returns `503 repository_provisioning` until it is ready.
-Generation checks prevent a slow response for an old announcement from marking
-a replacement ready.
+WalGit is unavailable. A generation-guarded durable intent is retried with
+bounded backoff; public Git returns `503 repository_provisioning` until ready.
 
-WalGit ref webhooks are authenticated with HMAC, validated before storage and
-deduplicated by `(owner, repo, WAL sequence, ref)`. A separate monotonic ref
-projection is input for future activity, PR-revision and CI work; it is not a
-Nostr event and does not alter PR authority.
+WalGit ref webhooks are HMAC authenticated and deduplicated by repository,
+unsigned decimal WAL sequence, and ref. They are inputs for future native
+automation and do not themselves grant signing authority.
 
-PR diffs reduce the existing `1618/1619/163x` graph first. An explicit current
-merge base is used directly; otherwise the target branch is resolved and
-WalGit computes a deterministic merge base. Both comparison endpoints accept
-only full SHA-1/SHA-256 object IDs and enforce configured file/patch bounds.
+GitHub commands, deliveries, mappings, migrations, and CI runs are operational
+state. Workers lease them, retry transient failures, redact failure details,
+and preserve restart recovery. Deterministic correlation markers close the
+provider-success/local-crash gap without creating duplicate provider objects.
 
-## Deferred capabilities
+PR diffs first reduce the existing `1618/1619/163x` graph, then compare the
+current immutable head through the selected Git backend. An explicit merge base
+is used directly; otherwise the target branch is resolved. Full SHA-1/SHA-256
+IDs and configured file/patch bounds apply to every backend.
 
-Protected-target policy compilation, merge coordination/execution, automatic
-`1619` publication, CI providers/results, external repository import, and
-`30618` publication remain deliberate follow-up slices. No GitHub or GitLab
-issue/PR synchronization is introduced. Their current foundations, missing
-behavior, acceptance boundaries, and permanent non-goals are tracked in
+## Collaboration authority
+
+Native relay objects remain normal signed events and stock Buzz reduction is
+unchanged. The relay never signs for a user.
+
+Provider-origin roots use a dedicated bridge identity and deterministic
+provenance tags. The bridge may publish canonical provider-origin lifecycle.
+For relay-origin roots, GitHub lifecycle and reviews are observational kind-1
+notes (`t=external-state` or `t=external-review`), never native trusted state
+or review decisions. GitHub mirror mode imports no unrelated roots.
+
+CI terminal results are bridge-signed `t=ci` activity bound to the exact
+commit. They remain historical when a PR tip changes and do not authorize a
+merge.
+
+## Deliberate boundaries
+
+WalGit is private to the relay and its object store is the durable Git backing;
+GitHub is accessed only through its fixed public API. Provider credentials and
+types remain inside the GitHub adapter. No client can supply a WalGit service
+token, trusted principal header, arbitrary provider API host, or bridge secret.
+
+Current unavailable behavior—including protected-ref compilation, automatic
+`1619` publication, and the WalGit merge coordinator—is tracked in
 [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).

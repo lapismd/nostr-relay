@@ -32,13 +32,19 @@ authenticated web read surface without changing Buzz's Nostr wire contract:
 | Endpoint | Compatibility role |
 | --- | --- |
 | `/git/<owner>/<repo>[.git]/...` | Buzz credential-helper-compatible smart HTTP, LFS and bundles. |
-| `/api/git/<owner>/<repo>/...` | Lapis web source browsing via WalGit refs/resolve/tree/blob/commit APIs. |
+| `/api/git/<owner>/<repo>/...` | Lapis web source browsing through normalized WalGit or GitHub refs/resolve/tree/blob/commit APIs. |
 | `/api/pull-requests/<event-id>/diff` | Lapis web PR diff after reducing the same Buzz-compatible event graph. |
 
 The last two routes require strict method-and-URL NIP-98 credentials. They are
 Lapis web capabilities, not endpoints required or emitted by the audited Buzz
-Desktop. WalGit remains private, and its admin/settings/policy interfaces are
-not proxied.
+Desktop. WalGit remains private, GitHub clone/push remain provider-native, and
+provider objects do not leak into the normalized browser response contract.
+
+Lapis also adds NIP-98 `/api/forge` capability, health, attachment, durable
+provider-command, migration, operation, and CI routes. These are application
+control APIs, not a second way to query or publish the NIP-34 graph. Native
+Buzz clients continue to use WebSocket `REQ`/`EVENT` or generic `/query` and
+`/events`; signed relay-origin state is never translated into provider CRUD.
 
 ## Desktop event/query contract
 
@@ -92,6 +98,12 @@ The separate `walgit_integration` Docker lane pushes and clones through real
 WalGit, covers the browser API and arbitrary comparison, and proves that a
 fresh sidecar with an empty cache reconstructs the repository from RustFS.
 
+The separate `github_integration` Docker lane uses a deterministic fake GitHub
+App/API service—never live credentials—to exercise admin attachment,
+provider-native capabilities, normalized browser reads, durable collaboration,
+webhook echo suppression, exact-SHA CI, mixed repositories, and restart
+persistence.
+
 The relay adds one deliberately narrow filter extension: exact
 `#buzz-channel`. Arbitrary multi-character tag filtering remains unsupported so
 upstream query behavior does not change accidentally.
@@ -109,11 +121,14 @@ When Buzz changes:
    Git, browser data needs, and Nostr event transport separately.
 4. Update the event/query table and the contract fixtures before changing
    implementation.
-5. Run `go test ./internal/projecttask ./internal/gitforge`, the Zooid
-   project/task/PR integration tests, `go test ./...`, the tagged WalGit
-   recovery test, and both local Docker image builds.
+5. Run `go test ./internal/projecttask ./internal/forge ./internal/gitforge
+   ./internal/githubforge`, the Zooid project/task/PR integration tests,
+   `go test ./...`, the tagged WalGit and fake-GitHub Docker lanes, and the
+   local WalGit, relay, and forge-worker image builds.
 
 No changes for this feature belong under `internal/khatru`. The stable local
 seams are `internal/projecttask` for domain rules, `internal/gitforge` for the
-storage-independent sidecar contract, Zooid for persistence and NIP-29 scope
-enforcement, and `internal/buzzcompat` for HTTP route registration.
+storage-independent sidecar contract, `internal/forge` for capabilities,
+`internal/githubforge` for provider translation, Zooid for persistence and
+NIP-29 scope enforcement, and `internal/buzzcompat` for HTTP route
+registration.

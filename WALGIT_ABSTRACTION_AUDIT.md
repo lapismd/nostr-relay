@@ -88,7 +88,7 @@ Each changed file contains `path`, optional `old_path`, `status`, `additions`,
 configured file/patch bounds, `413 diff_too_large`, `422 unrelated_histories`,
 and `404 git_object_not_found`.
 
-## Capability truth table
+## Historical capability truth table
 
 | Capability | WalGit baseline |
 | --- | --- |
@@ -108,11 +108,32 @@ and `404 git_object_not_found`.
 | merge coordination/execution | false |
 | CI dispatch | false |
 
-These false values are intentional. Later adapters must advertise capability
-availability rather than routing requests to fictional behavior.
+These values describe the frozen `809484b2` baseline. The abstraction was
+implemented without changing that route contract. WalGit now additionally
+implements the optional repository importer and exact-commit source export used
+by verified GitHub-to-WalGit migration and a disposable GitHub Actions mirror.
+Those orchestration features live in the forge/Zooid layer rather than WalGit's
+public routes.
+
+The following values intentionally remain false for WalGit itself:
+
+- provider issue/PR/review CRUD and provider merge;
+- protected-ref policy compilation;
+- automatic `kind:1619` publication;
+- native merge coordination/execution; and
+- CI execution (GitHub implements `CIBackend`; WalGit only supplies the exact
+  source commit to its configured one-way CI mirror).
+
+Current callers resolve every value through `internal/forge`; they never infer
+functionality from `git_backend=walgit`.
 
 ## Refactor acceptance
 
-The WalGit adapter cutover is acceptable only if the existing focused unit
-tests, full Go suite, tagged PR/project tests, tagged WalGit recovery test, and
-local image build still pass without externally observable route changes.
+The WalGit adapter cutover is accepted by the existing focused unit tests, full
+Go suite, tagged PR/project tests, tagged WalGit recovery test, and local image
+build without externally observable route changes. New provider work must keep
+rerunning those lanes in addition to its own contract/Docker tests.
+
+The live architecture and update checklist are in
+[FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md); this file remains the historical
+pre-refactor characterization artifact.
