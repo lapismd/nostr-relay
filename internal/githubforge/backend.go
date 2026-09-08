@@ -79,6 +79,7 @@ func (backend *Backend) Capabilities(ctx context.Context, repository forge.Repos
 	return forge.Capabilities{
 		GitBackend: forge.BackendGitHub, Clone: descriptor,
 		Browse: true, Compare: true, RefEvents: true,
+		Issues: true, PullRequests: true, Reviews: true, Merge: true,
 		Limits: forge.Limits{
 			MaximumBlobBytes: 100 << 20, MaximumChangedFiles: 300, MaximumTreeEntries: 1000,
 			MayTruncateCompare: true, MayTruncateTree: true,

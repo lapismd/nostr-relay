@@ -20,6 +20,10 @@ func (loader staticConnectionLoader) LoadGitHubConnection(_ context.Context, id 
 	return loader.connection, id == loader.connection.ID, nil
 }
 
+func (loader staticConnectionLoader) GitHubWebhookConnections(context.Context) ([]Connection, error) {
+	return []Connection{loader.connection}, nil
+}
+
 func testGitHubBackend(t *testing.T, handler http.HandlerFunc) (*Backend, forge.Repository) {
 	t.Helper()
 	key := testPrivateKey(t)

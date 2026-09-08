@@ -212,10 +212,20 @@ type CollaborationCommand struct {
 }
 
 type CollaborationResult struct {
-	ExternalID     string `json:"external_id"`
-	ExternalNumber int64  `json:"external_number,omitempty"`
-	ExternalURL    string `json:"external_url,omitempty"`
-	State          string `json:"state,omitempty"`
+	ExternalID       string   `json:"external_id"`
+	ExternalNumber   int64    `json:"external_number,omitempty"`
+	ExternalURL      string   `json:"external_url,omitempty"`
+	ExternalAuthor   string   `json:"external_author,omitempty"`
+	ExternalAuthorID string   `json:"external_author_id,omitempty"`
+	State            string   `json:"state,omitempty"`
+	HeadSHA          string   `json:"head_sha,omitempty"`
+	HeadRef          string   `json:"head_ref,omitempty"`
+	BaseRef          string   `json:"base_ref,omitempty"`
+	MergedCommit     string   `json:"merged_commit,omitempty"`
+	ImportedRoots    int      `json:"imported_roots,omitempty"`
+	ImportedComments int      `json:"imported_comments,omitempty"`
+	Truncated        bool     `json:"truncated,omitempty"`
+	Incomplete       []string `json:"incomplete,omitempty"`
 }
 
 type CollaborationBackend interface {
@@ -239,6 +249,8 @@ type MirrorBackend interface {
 type ProviderEvent struct {
 	DeliveryID           string
 	Provider             string
+	ConnectionID         string
+	InstallationID       int64
 	EventType            string
 	Action               string
 	ExternalRepositoryID string
@@ -248,7 +260,30 @@ type ProviderEvent struct {
 
 type EventSource interface {
 	Provider() string
-	VerifyAndDecode(http.Header, []byte) ([]ProviderEvent, error)
+	VerifyAndDecode(context.Context, http.Header, []byte) ([]ProviderEvent, error)
+}
+
+type ProviderImportRequest struct {
+	UpdatedSince    time.Time
+	OpenOnly        bool
+	MaximumRoots    int
+	MaximumComments int
+}
+
+type ProviderImportResult struct {
+	Events     []ProviderEvent `json:"-"`
+	Roots      int             `json:"roots"`
+	Comments   int             `json:"comments"`
+	Truncated  bool            `json:"truncated,omitempty"`
+	Incomplete []string        `json:"incomplete,omitempty"`
+}
+
+type CollaborationImporter interface {
+	InitialImport(context.Context, Repository, ProviderImportRequest) (ProviderImportResult, error)
+}
+
+type CollaborationReconciler interface {
+	Reconcile(context.Context, Repository, ProviderImportRequest) (ProviderImportResult, error)
 }
 
 type CIRequest struct {

@@ -206,5 +206,18 @@ func githubStatusError(status int, headers http.Header) error {
 		code = "github_rate_limited"
 		retryable = true
 	}
-	return &forge.Error{Status: status, Code: code, Retryable: retryable}
+	var retryAt time.Time
+	if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+			retryAt = time.Now().Add(time.Duration(seconds) * time.Second)
+		} else if parsed, err := http.ParseTime(raw); err == nil {
+			retryAt = parsed
+		}
+	}
+	if raw := strings.TrimSpace(headers.Get("X-RateLimit-Reset")); retryAt.IsZero() && raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			retryAt = time.Unix(seconds, 0)
+		}
+	}
+	return &forge.Error{Status: status, Code: code, Retryable: retryable, RetryAt: retryAt}
 }

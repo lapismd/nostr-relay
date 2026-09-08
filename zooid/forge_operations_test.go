@@ -1,0 +1,195 @@
+package zooid
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"fiatjaf.com/nostr"
+	"github.com/stretchr/testify/require"
+	"zooid/internal/forge"
+	"zooid/internal/githubforge"
+	"zooid/internal/projecttask"
+)
+
+func configureForgeCollaborationTest(t *testing.T) (*GitForgePolicy, *EventStore, *fakeGitHubProvider, nostr.SecretKey, nostr.Event, string) {
+	t.Helper()
+	policy, store := createGitForgeTestPolicy(t, &recordingGitBackend{})
+	store.Config.GitHub.Enabled = true
+	bridge := nostr.Generate()
+	provider := &fakeGitHubProvider{result: forge.CollaborationResult{
+		ExternalID: "8001", ExternalNumber: 12, ExternalURL: "https://github.com/lapis/notes/issues/12",
+		ExternalAuthor: "lapis-bot", ExternalAuthorID: "55", State: "open",
+	}}
+	provider.repository.ID = 42
+	provider.repository.FullName = "lapis/notes"
+	provider.repository.CloneURL = "https://github.com/lapis/notes.git"
+	provider.repository.HTMLURL = "https://github.com/lapis/notes"
+	require.NoError(t, policy.Registry.RegisterGit(provider))
+	require.NoError(t, policy.Registry.RegisterCollaboration(provider))
+	policy.GitHub = provider
+	policy.Credentials = fakeCredentialStore{"env:BRIDGE": []byte(bridge.Hex())}
+	connection := githubforge.Connection{
+		ID: "connection", Host: "github.com", AppID: "123", InstallationID: 99,
+		CredentialRef: "env:APP", WebhookSecretRef: "env:WEBHOOK",
+		BridgeCredentialRef: "env:BRIDGE", BridgePubkey: bridge.Public().Hex(), Status: "active",
+	}
+	require.NoError(t, policy.saveGitHubConnection(context.Background(), connection))
+	owner := nostr.Generate()
+	repository := gitForgeRepositoryEvent(t, owner, "notes",
+		nostr.Tag{"clone", "https://github.com/lapis/notes.git"},
+		nostr.Tag{"web", "https://github.com/lapis/notes"})
+	require.NoError(t, store.SaveEvent(repository))
+	require.NoError(t, policy.Remember(context.Background(), repository))
+	require.NoError(t, policy.setExplicitIntegration(context.Background(), forge.Integration{
+		Coordinate:     projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"},
+		AnnouncementID: repository.ID.Hex(), ConfigurationSource: forge.ConfigurationExplicit,
+		GitBackend: forge.BackendGitHub, CollaborationBackend: forge.BackendGitHub,
+		ConnectionID: "connection", ExternalRepositoryID: "42", ExternalRepository: "lapis/notes",
+		HealthState: "ready",
+	}, repository.ID.Hex()))
+	actor := store.Config.secret
+	grantGitGroup(policy, "channel", actor.Public())
+	return policy, store, provider, actor, repository, "connection"
+}
+
+func TestProviderCommandIsDurableIdempotentAndProjectsBridgeRoot(t *testing.T) {
+	policy, store, provider, actor, repository, _ := configureForgeCollaborationTest(t)
+	target := "https://relay.example/api/forge/repositories/" + repository.PubKey.Hex() + "/notes/issues"
+	body := []byte(`{"title":"Provider issue","body":"Track this"}`)
+	request := signedForgeRequest(t, http.MethodPost, target, body, actor)
+	request.Header.Set("Idempotency-Key", "issue-12")
+	recorder := httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, request)
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	var accepted map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &accepted))
+	operationID := accepted["operation_id"].(string)
+
+	retryRequest := signedForgeRequest(t, http.MethodPost, target, body, actor)
+	retryRequest.Header.Set("Idempotency-Key", "issue-12")
+	retryRecorder := httptest.NewRecorder()
+	policy.ServeForgeAPI(retryRecorder, retryRequest)
+	require.Equal(t, http.StatusAccepted, retryRecorder.Code)
+	var retried map[string]any
+	require.NoError(t, json.Unmarshal(retryRecorder.Body.Bytes(), &retried))
+	require.Equal(t, operationID, retried["operation_id"])
+
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	require.Len(t, provider.commands, 1)
+	require.Contains(t, string(provider.commands[0].Payload), "Provider issue")
+
+	var root nostr.Event
+	for event := range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{nostr.KindIssue}, Tags: nostr.TagMap{"a": {"30617:" + repository.PubKey.Hex() + ":notes"}}}, 10) {
+		root = event
+		break
+	}
+	require.NotEqual(t, nostr.ZeroID, root.ID)
+	require.Equal(t, "Provider issue", root.Tags.Find("subject")[1])
+	require.Equal(t, "github", root.Tags.Find("external-provider")[1])
+	require.Equal(t, "8001", root.Tags.Find("external-id")[1])
+	bridge, err := nostr.SecretKeyFromHex(string(policy.Credentials.(fakeCredentialStore)["env:BRIDGE"]))
+	require.NoError(t, err)
+	require.Equal(t, bridge.Public(), root.PubKey)
+
+	operation, found, err := policy.loadForgeOperation(context.Background(), operationID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, forgeOperationComplete, operation.State)
+	mapping, found, err := policy.loadMappingByNostrRoot(context.Background(), forge.BackendGitHub, "connection", root.ID.Hex())
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "provider", mapping.Authority)
+}
+
+func TestProviderOriginStateIsCanonicalButRelayOriginIsObservation(t *testing.T) {
+	policy, store, provider, actor, repository, connectionID := configureForgeCollaborationTest(t)
+	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
+	bridgeRaw := policy.Credentials.(fakeCredentialStore)["env:BRIDGE"]
+	bridge, err := nostr.SecretKeyFromHex(string(bridgeRaw))
+	require.NoError(t, err)
+	root := nostr.Event{Kind: nostr.KindIssue, CreatedAt: nostr.Now(), Content: "Provider root", Tags: nostr.Tags{{"a", coordinate.String()}, {"p", repository.PubKey.Hex()}, {"subject", "Provider root"}}}
+	require.NoError(t, root.Sign(bridge))
+	require.NoError(t, store.SaveEvent(root))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), root))
+	require.NoError(t, policy.saveForgeMapping(context.Background(), forgeObjectMapping{Provider: forge.BackendGitHub, ConnectionID: connectionID, Coordinate: coordinate, ObjectType: "issue", NostrEventID: root.ID.Hex(), NostrRootID: root.ID.Hex(), ExternalID: "8001", ExternalNumber: 12, Origin: "provider", Authority: "provider"}))
+
+	provider.result = forge.CollaborationResult{ExternalID: "8001", ExternalNumber: 12, State: "closed"}
+	target := "https://relay.example/api/forge/work-items/" + root.ID.Hex() + "/state"
+	body := []byte(`{"state":"closed"}`)
+	recorder := httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPost, target, body, actor))
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	statuses := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindStatusClosed}, Tags: nostr.TagMap{"e": {root.ID.Hex()}}})
+	require.Len(t, statuses, 1)
+	require.Equal(t, bridge.Public(), statuses[0].PubKey)
+
+	relayAuthor := nostr.Generate()
+	relayRoot := nostr.Event{Kind: nostr.KindIssue, CreatedAt: nostr.Now(), Content: "Relay root", Tags: nostr.Tags{{"a", coordinate.String()}, {"subject", "Relay root"}}}
+	require.NoError(t, relayRoot.Sign(relayAuthor))
+	require.NoError(t, store.SaveEvent(relayRoot))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), relayRoot))
+	require.NoError(t, policy.saveForgeMapping(context.Background(), forgeObjectMapping{Provider: forge.BackendGitHub, ConnectionID: connectionID, Coordinate: coordinate, ObjectType: "issue", NostrEventID: relayRoot.ID.Hex(), NostrRootID: relayRoot.ID.Hex(), ExternalID: "8002", ExternalNumber: 13, Origin: "relay", Authority: "relay"}))
+	provider.result = forge.CollaborationResult{ExternalID: "8002", ExternalNumber: 13, State: "closed"}
+	target = "https://relay.example/api/forge/work-items/" + relayRoot.ID.Hex() + "/state"
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPost, target, body, actor))
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	require.Empty(t, collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindStatusClosed}, Tags: nostr.TagMap{"e": {relayRoot.ID.Hex()}}}))
+	notes := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindTextNote}, Tags: nostr.TagMap{"e": {relayRoot.ID.Hex()}, "t": {"external-state"}}})
+	require.Len(t, notes, 1)
+	require.NotContains(t, forgeTagValues(notes[0], "t"), "approval")
+}
+
+func TestNativeNostrRootRemainsAuthoritativeAndOutboxRebuildsCrashGap(t *testing.T) {
+	policy, store, provider, actor, repository, connectionID := configureForgeCollaborationTest(t)
+	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
+	root := nostr.Event{Kind: nostr.KindIssue, CreatedAt: nostr.Now(), Content: "Native body", Tags: nostr.Tags{{"a", coordinate.String()}, {"subject", "Native issue"}}}
+	require.NoError(t, root.Sign(actor))
+	require.NoError(t, store.SaveEvent(root))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), root))
+	require.NoError(t, policy.Remember(context.Background(), root))
+
+	// Simulate the event-store/outbox crash gap, then rebuild it from signed
+	// relay history without changing the event or creating a second root.
+	_, err := GetDb().Exec(policy.Events.Schema.Render(`DELETE FROM {{.Name}}__forge_outbox WHERE source_event_id = $1`), root.ID.Hex())
+	require.NoError(t, err)
+	require.NoError(t, policy.rebuildForgeOutbox(context.Background()))
+	var queued int
+	require.NoError(t, GetDb().QueryRow(policy.Events.Schema.Render(`SELECT COUNT(*) FROM {{.Name}}__forge_outbox WHERE source_event_id = $1`), root.ID.Hex()).Scan(&queued))
+	require.Equal(t, 1, queued)
+
+	provider.result = forge.CollaborationResult{ExternalID: "8300", ExternalNumber: 31, ExternalURL: "https://github.com/lapis/notes/issues/31", State: "open"}
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	roots := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindIssue}, Tags: nostr.TagMap{"a": {coordinate.String()}}})
+	require.Len(t, roots, 1)
+	require.Equal(t, root.ID, roots[0].ID)
+	mapping, found, err := policy.loadMappingByNostrRoot(context.Background(), forge.BackendGitHub, connectionID, root.ID.Hex())
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "relay", mapping.Origin)
+	require.Equal(t, "relay", mapping.Authority)
+	require.Equal(t, "8300", mapping.ExternalID)
+}
+
+func collectForgeEvents(store *EventStore, filter nostr.Filter) []nostr.Event {
+	events := make([]nostr.Event, 0)
+	for event := range store.QueryEvents(filter, 100) {
+		events = append(events, event)
+	}
+	return events
+}
+
+func forgeTagValues(event nostr.Event, name string) []string {
+	values := make([]string, 0)
+	for _, tag := range event.Tags {
+		if len(tag) > 1 && tag[0] == name {
+			values = append(values, tag[1])
+		}
+	}
+	return values
+}

@@ -28,6 +28,8 @@ type GitForgePolicy struct {
 	WebhookSecret string
 	GitHub        githubAdministration
 	Credentials   githubforge.CredentialStore
+	EventSource   forge.EventSource
+	PersistEvent  func(context.Context, nostr.Event) error
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -91,7 +93,7 @@ func (policy *GitForgePolicy) Remember(ctx context.Context, event nostr.Event) e
 			}
 		}
 	}
-	return nil
+	return policy.rememberForgeProjection(ctx, event)
 }
 
 func deletionRepositoryCoordinate(tag nostr.Tag) (projecttask.RepositoryCoordinate, bool) {
@@ -150,6 +152,9 @@ func (policy *GitForgePolicy) Start() error {
 	if err := policy.rebuildIntents(policy.ctx); err != nil {
 		return err
 	}
+	if err := policy.rebuildForgeOutbox(policy.ctx); err != nil {
+		return err
+	}
 	policy.wg.Add(1)
 	go func() {
 		defer policy.wg.Done()
@@ -166,6 +171,43 @@ func (policy *GitForgePolicy) Start() error {
 			}
 		}
 	}()
+	if policy.Config.GitHub.Enabled {
+		policy.wg.Add(1)
+		go func() {
+			defer policy.wg.Done()
+			ticker := time.NewTicker(policy.Config.GitHubWorkerInterval())
+			defer ticker.Stop()
+			for {
+				if err := policy.ProcessForgeOutboxOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+					log.Printf("Forge outbox operation failed: %v", err)
+				}
+				if err := policy.ProcessGitHubWebhookOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+					log.Printf("GitHub webhook processing failed: %v", err)
+				}
+				select {
+				case <-policy.ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+		policy.wg.Add(1)
+		go func() {
+			defer policy.wg.Done()
+			ticker := time.NewTicker(policy.Config.GitHubReconcileInterval())
+			defer ticker.Stop()
+			for {
+				select {
+				case <-policy.ctx.Done():
+					return
+				case <-ticker.C:
+					if err := policy.ReconcileGitHubOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+						log.Printf("GitHub reconciliation failed: %v", err)
+					}
+				}
+			}
+		}()
+	}
 	return nil
 }
 

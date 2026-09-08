@@ -91,6 +91,14 @@ func (registry *Registry) Resolve(ctx context.Context, repository Repository) (R
 			return result, err
 		}
 		result.Capabilities = capabilities
+		// Collaboration, mirroring, and CI are selected independently. A Git
+		// adapter implementing those interfaces does not enable them by itself.
+		result.Capabilities.Issues = false
+		result.Capabilities.PullRequests = false
+		result.Capabilities.Reviews = false
+		result.Capabilities.Merge = false
+		result.Capabilities.Mirror = false
+		result.Capabilities.CI = false
 	} else {
 		result.Capabilities.GitBackend = integration.GitBackend
 		if integration.GitBackend == BackendUnmanaged && repository.CloneURL != "" {

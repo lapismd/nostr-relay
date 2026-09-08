@@ -148,3 +148,50 @@ func newOperationID(prefix string) (string, error) {
 }
 
 var _ githubforge.ConnectionLoader = (*GitForgePolicy)(nil)
+
+func (policy *GitForgePolicy) GitHubWebhookConnections(ctx context.Context) ([]githubforge.Connection, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	rows, err := GetDb().QueryContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT id, host, app_id, installation_id, credential_ref,
+		       webhook_secret_ref, bridge_credential_ref, bridge_pubkey,
+		       account_id, account_login, status
+		FROM {{.Name}}__forge_connections
+		WHERE provider = 'github' AND status = 'active'
+		ORDER BY id`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	connections := make([]githubforge.Connection, 0)
+	for rows.Next() {
+		var connection githubforge.Connection
+		var installationID string
+		if err := rows.Scan(
+			&connection.ID, &connection.Host, &connection.AppID, &installationID,
+			&connection.CredentialRef, &connection.WebhookSecretRef,
+			&connection.BridgeCredentialRef, &connection.BridgePubkey,
+			&connection.AccountID, &connection.AccountLogin, &connection.Status,
+		); err != nil {
+			return nil, err
+		}
+		connection.InstallationID, err = strconv.ParseInt(installationID, 10, 64)
+		if err != nil || connection.InstallationID <= 0 {
+			return nil, fmt.Errorf("invalid stored GitHub installation")
+		}
+		connections = append(connections, connection)
+	}
+	return connections, rows.Err()
+}
+
+func (policy *GitForgePolicy) updateGitHubConnectionStatus(ctx context.Context, id, status, failure string) error {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	_, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		UPDATE {{.Name}}__forge_connections
+		SET status = $2, last_error = $3, updated_at = NOW()
+		WHERE id = $1 AND provider = 'github'`), id, status, sanitizeGitErrorString(failure))
+	return err
+}
+
+var _ githubforge.WebhookConnectionLoader = (*GitForgePolicy)(nil)

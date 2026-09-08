@@ -19,6 +19,8 @@ import (
 
 type fakeGitHubProvider struct {
 	repository githubforge.RepositoryMetadata
+	commands   []forge.CollaborationCommand
+	result     forge.CollaborationResult
 }
 
 func (provider *fakeGitHubProvider) ValidateConnection(_ context.Context, connection githubforge.Connection) (githubforge.Connection, error) {
@@ -39,9 +41,14 @@ func (*fakeGitHubProvider) Capabilities(_ context.Context, repository forge.Repo
 	return forge.Capabilities{
 		GitBackend: forge.BackendGitHub,
 		Clone:      forge.CloneDescriptor{Available: true, URL: "https://github.com/" + repository.Integration.ExternalRepository + ".git", Auth: forge.CloneAuthProvider, Provider: forge.BackendGitHub},
-		Browse:     true, Compare: true, RefEvents: true,
+		Browse: true, Compare: true, RefEvents: true,
+		Issues: true, PullRequests: true, Reviews: true, Merge: true,
 		Limits: forge.Limits{MaximumBlobBytes: 100 << 20, MaximumChangedFiles: 300, MaximumTreeEntries: 1000, MayTruncateCompare: true, MayTruncateTree: true},
 	}, nil
+}
+func (provider *fakeGitHubProvider) Execute(_ context.Context, command forge.CollaborationCommand) (forge.CollaborationResult, error) {
+	provider.commands = append(provider.commands, command)
+	return provider.result, nil
 }
 func (*fakeGitHubProvider) CloneDescriptor(context.Context, forge.Repository) (forge.CloneDescriptor, error) {
 	return forge.CloneDescriptor{Available: true, Auth: forge.CloneAuthProvider}, nil

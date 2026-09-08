@@ -2,6 +2,7 @@ package zooid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"unsafe"
 
 	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/eventstore"
 	"github.com/fasthttp/websocket"
 	"github.com/gosimple/slug"
 	"zooid/internal/forge"
@@ -186,8 +188,26 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 				instance.Events.Close()
 				return nil, err
 			}
+			if err := forgeRegistry.RegisterCollaboration(backend); err != nil {
+				instance.Events.Close()
+				return nil, err
+			}
 			instance.GitForge.GitHub = backend
 			instance.GitForge.Credentials = credentials
+			instance.GitForge.EventSource = backend
+		}
+		instance.GitForge.PersistEvent = func(persistCtx context.Context, event nostr.Event) error {
+			if err := instance.Events.SaveEvent(event); err != nil && !errors.Is(err, eventstore.ErrDupEvent) {
+				return err
+			}
+			if err := instance.ProjectTasks.Remember(persistCtx, event); err != nil {
+				return err
+			}
+			if err := instance.GitForge.Remember(persistCtx, event); err != nil {
+				return err
+			}
+			instance.Relay.BroadcastEvent(event)
+			return nil
 		}
 		if err := instance.GitForge.Start(); err != nil {
 			instance.GitForge.Close()

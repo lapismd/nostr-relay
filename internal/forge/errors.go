@@ -1,11 +1,15 @@
 package forge
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type Error struct {
 	Status    int
 	Code      string
 	Retryable bool
+	RetryAt   time.Time
 }
 
 func (err *Error) Error() string {
