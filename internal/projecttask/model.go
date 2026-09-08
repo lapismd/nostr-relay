@@ -3,6 +3,7 @@
 package projecttask
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,12 +13,15 @@ import (
 )
 
 const (
-	KindProject nostr.Kind = 30621
+	KindProject           nostr.Kind = 30621
+	KindPullRequest       nostr.Kind = 1618
+	KindPullRequestUpdate nostr.Kind = 1619
 
 	TagBuzzChannel    = "buzz-channel"
 	TagBuzzVisibility = "buzz-visibility"
 
 	maxProjectCoordinates = 64
+	maxPullRequestContent = 64 * 1024
 )
 
 // RepositoryCoordinate is the NIP-34 address referenced by an a tag.
@@ -58,18 +62,22 @@ func ValidateEvent(event nostr.Event) (bool, error) {
 		return true, validateRepository(event)
 	case nostr.KindIssue:
 		return true, validateIssue(event)
+	case KindPullRequest:
+		return true, validatePullRequest(event)
+	case KindPullRequestUpdate:
+		return true, validatePullRequestUpdate(event)
 	case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft:
 		return true, validateStatus(event)
 	case nostr.KindComment:
-		if isNIP22TaskComment(event) {
-			return true, validateNIP22TaskComment(event)
+		if isNIP22WorkItemComment(event) {
+			return true, validateNIP22WorkItemComment(event)
 		}
 	case nostr.KindTextNote:
-		if isBuzzTaskNote(event) {
-			return true, validateBuzzTaskNote(event)
+		if isBuzzWorkItemNote(event) {
+			return true, validateBuzzWorkItemNote(event)
 		}
 	case nostr.KindDeletion:
-		if targetsProjectOrRepository(event) {
+		if targetsProjectOrRepository(event) || hasEventDeletionTarget(event.Tags) {
 			return true, validateTombstone(event)
 		}
 	}
@@ -150,23 +158,121 @@ func validateIssue(event nostr.Event) error {
 	return nil
 }
 
+func validatePullRequest(event nostr.Event) error {
+	coordinate, err := validateRequiredRepositoryTag(event.Tags, "pull request")
+	if err != nil {
+		return err
+	}
+	if !hasPubkeyValue(event.Tags, "p", coordinate.Owner) {
+		return fmt.Errorf("pull request p tags must contain the repository owner")
+	}
+	if !utf8.ValidString(event.Content) || len(event.Content) > maxPullRequestContent {
+		return fmt.Errorf("pull request content must not exceed 64 KiB of UTF-8")
+	}
+	if err := validateSingleton(event.Tags, "subject", 256, true); err != nil {
+		return err
+	}
+	if err := validateCommitSingleton(event.Tags, "c", true); err != nil {
+		return err
+	}
+	if err := validateCloneLocators(event.Tags); err != nil {
+		return err
+	}
+	for _, singleton := range []struct {
+		name string
+		max  int
+	}{
+		{"h", 256},
+		{"branch-name", 1024},
+		{"target-branch", 1024},
+	} {
+		if err := validateSingleton(event.Tags, singleton.name, singleton.max, false); err != nil {
+			return err
+		}
+	}
+	if err := validateCommitTags(event.Tags, "r", "merge-base"); err != nil {
+		return err
+	}
+	for _, tag := range tagsNamed(event.Tags, "e") {
+		if len(tag) < 2 {
+			return fmt.Errorf("pull request revision e tag must contain an event ID")
+		}
+		if _, err := nostr.IDFromHex(tag[1]); err != nil {
+			return fmt.Errorf("pull request revision e tag must contain a valid event ID")
+		}
+	}
+	return nil
+}
+
+func validatePullRequestUpdate(event nostr.Event) error {
+	coordinate, err := validateRequiredRepositoryTag(event.Tags, "pull request update")
+	if err != nil {
+		return err
+	}
+	if !hasPubkeyValue(event.Tags, "p", coordinate.Owner) {
+		return fmt.Errorf("pull request update p tags must contain the repository owner")
+	}
+	if !utf8.ValidString(event.Content) || len(event.Content) > maxPullRequestContent {
+		return fmt.Errorf("pull request update content must not exceed 64 KiB of UTF-8")
+	}
+	if err := validateExactHexSingleton(event.Tags, "E", "pull request root event ID"); err != nil {
+		return err
+	}
+	if err := validatePubkeySingleton(event.Tags, "P", "pull request root author"); err != nil {
+		return err
+	}
+	if err := validateCommitSingleton(event.Tags, "c", true); err != nil {
+		return err
+	}
+	if err := validateCloneLocators(event.Tags); err != nil {
+		return err
+	}
+	return validateCommitTags(event.Tags, "r", "merge-base")
+}
+
 func validateStatus(event nostr.Event) error {
 	if !hasRootEventTag(event.Tags) {
 		return fmt.Errorf("status must contain a valid root e tag")
 	}
-	return validateOptionalRepositoryTag(event.Tags)
+	if err := validateOptionalRepositoryTag(event.Tags); err != nil {
+		return err
+	}
+	if err := validateCommitTags(event.Tags, "r", "applied-as-commits"); err != nil {
+		return err
+	}
+	mergeCommits := tagsNamed(event.Tags, "merge-commit")
+	if len(mergeCommits) > 1 {
+		return fmt.Errorf("merge-commit tag must be a singleton")
+	}
+	if len(mergeCommits) == 0 {
+		return nil
+	}
+	if event.Kind != nostr.KindStatusApplied {
+		return fmt.Errorf("merge-commit is only valid on kind 1631")
+	}
+	if len(mergeCommits[0]) < 2 || !validCommitID(mergeCommits[0][1]) {
+		return fmt.Errorf("merge-commit must be a full SHA-1 or SHA-256 commit ID")
+	}
+	if !tagHasValue(event.Tags, "r", mergeCommits[0][1]) {
+		return fmt.Errorf("merge-commit must have a matching r tag")
+	}
+	return nil
 }
 
-func validateBuzzTaskNote(event nostr.Event) error {
+func validateBuzzWorkItemNote(event nostr.Event) error {
 	if !hasRootEventTag(event.Tags) {
 		return fmt.Errorf("task note must contain a valid root e tag")
 	}
-	return validateOptionalRepositoryTag(event.Tags)
+	if err := validateOptionalRepositoryTag(event.Tags); err != nil {
+		return err
+	}
+	return validateCommitTags(event.Tags, "c")
 }
 
-func validateNIP22TaskComment(event nostr.Event) error {
-	if !tagHasValue(event.Tags, "K", kindNumber(nostr.KindIssue)) {
-		return fmt.Errorf("NIP-22 task comment K tag must reference kind 1621")
+func validateNIP22WorkItemComment(event nostr.Event) error {
+	if !tagHasValue(event.Tags, "K", kindNumber(nostr.KindIssue)) &&
+		!tagHasValue(event.Tags, "K", kindNumber(KindPullRequest)) {
+		return fmt.Errorf("NIP-22 work-item comment K tag must reference kind 1621 or 1618")
 	}
 	if !hasHexTag(event.Tags, "E") {
 		return fmt.Errorf("NIP-22 task comment must contain a valid E tag")
@@ -177,7 +283,7 @@ func validateNIP22TaskComment(event nostr.Event) error {
 	if !hasHexTag(event.Tags, "e") || event.Tags.Find("k") == nil || !hasPubkeyTag(event.Tags, "p") {
 		return fmt.Errorf("NIP-22 task comment must contain valid immediate-parent e, k, and p tags")
 	}
-	return nil
+	return validateCommitTags(event.Tags, "c")
 }
 
 func validateTombstone(event nostr.Event) error {
@@ -193,7 +299,23 @@ func validateTombstone(event nostr.Event) error {
 			return fmt.Errorf("project and repository tombstones must be signed by the address owner")
 		}
 	}
+	for _, tag := range tagsNamed(event.Tags, "e") {
+		if len(tag) < 2 {
+			return fmt.Errorf("deletion e tag must contain an event ID")
+		}
+		if _, err := nostr.IDFromHex(tag[1]); err != nil {
+			return fmt.Errorf("deletion e tag must contain a valid event ID")
+		}
+	}
 	return nil
+}
+
+func validateRequiredRepositoryTag(tags nostr.Tags, label string) (RepositoryCoordinate, error) {
+	coordinates := tagsNamed(tags, "a")
+	if len(coordinates) != 1 || len(coordinates[0]) < 2 {
+		return RepositoryCoordinate{}, fmt.Errorf("%s must contain exactly one repository a tag", label)
+	}
+	return ParseRepositoryCoordinate(coordinates[0][1])
 }
 
 func validateOptionalRepositoryTag(tags nostr.Tags) error {
@@ -231,12 +353,117 @@ func validateSingleton(tags nostr.Tags, name string, maxBytes int, required bool
 	return nil
 }
 
-func isBuzzTaskNote(event nostr.Event) bool {
+func isBuzzWorkItemNote(event nostr.Event) bool {
 	return hasRootEventTag(event.Tags) && len(tagsNamed(event.Tags, "a")) > 0
 }
 
-func isNIP22TaskComment(event nostr.Event) bool {
-	return tagHasValue(event.Tags, "K", kindNumber(nostr.KindIssue))
+func isNIP22WorkItemComment(event nostr.Event) bool {
+	return tagHasValue(event.Tags, "K", kindNumber(nostr.KindIssue)) ||
+		tagHasValue(event.Tags, "K", kindNumber(KindPullRequest))
+}
+
+func hasEventDeletionTarget(tags nostr.Tags) bool {
+	return len(tagsNamed(tags, "e")) > 0
+}
+
+func validateCloneLocators(tags nostr.Tags) error {
+	count := 0
+	for _, tag := range tagsNamed(tags, "clone") {
+		for _, locator := range tag[1:] {
+			if locator == "" || !utf8.ValidString(locator) {
+				return fmt.Errorf("clone locators must be nonempty UTF-8 values")
+			}
+			count++
+		}
+	}
+	if count == 0 {
+		return fmt.Errorf("at least one nonempty clone locator is required")
+	}
+	return nil
+}
+
+func cloneLocators(tags nostr.Tags) []string {
+	locators := make([]string, 0)
+	for _, tag := range tagsNamed(tags, "clone") {
+		for _, locator := range tag[1:] {
+			if locator != "" {
+				locators = append(locators, locator)
+			}
+		}
+	}
+	return locators
+}
+
+func validateCommitSingleton(tags nostr.Tags, name string, required bool) error {
+	matching := tagsNamed(tags, name)
+	if len(matching) > 1 {
+		return fmt.Errorf("%s tag must be a singleton", name)
+	}
+	if len(matching) == 0 {
+		if required {
+			return fmt.Errorf("%s tag is required", name)
+		}
+		return nil
+	}
+	if len(matching[0]) < 2 || !validCommitID(matching[0][1]) {
+		return fmt.Errorf("%s must be a full SHA-1 or SHA-256 commit ID", name)
+	}
+	return nil
+}
+
+func validateCommitTags(tags nostr.Tags, names ...string) error {
+	for _, name := range names {
+		for _, tag := range tagsNamed(tags, name) {
+			if len(tag) < 2 {
+				return fmt.Errorf("%s must contain a full SHA-1 or SHA-256 commit ID", name)
+			}
+			for _, value := range tag[1:] {
+				if !validCommitID(value) {
+					return fmt.Errorf("%s must contain only full SHA-1 or SHA-256 commit IDs", name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validCommitID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validateExactHexSingleton(tags nostr.Tags, name, label string) error {
+	matching := tagsNamed(tags, name)
+	if len(matching) != 1 || len(matching[0]) < 2 {
+		return fmt.Errorf("%s must contain exactly one %s", name, label)
+	}
+	if _, err := nostr.IDFromHex(matching[0][1]); err != nil {
+		return fmt.Errorf("%s must contain a valid %s", name, label)
+	}
+	return nil
+}
+
+func validatePubkeySingleton(tags nostr.Tags, name, label string) error {
+	matching := tagsNamed(tags, name)
+	if len(matching) != 1 || len(matching[0]) < 2 {
+		return fmt.Errorf("%s must contain exactly one %s", name, label)
+	}
+	if _, err := nostr.PubKeyFromHex(matching[0][1]); err != nil {
+		return fmt.Errorf("%s must contain a valid %s", name, label)
+	}
+	return nil
+}
+
+func hasPubkeyValue(tags nostr.Tags, name string, pubkey nostr.PubKey) bool {
+	for _, tag := range tagsNamed(tags, name) {
+		if len(tag) >= 2 && tag[1] == pubkey.Hex() {
+			return true
+		}
+	}
+	return false
 }
 
 func targetsProjectOrRepository(event nostr.Event) bool {

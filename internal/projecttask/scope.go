@@ -249,9 +249,9 @@ func scopeRelevant(event nostr.Event) bool {
 	case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft:
 		return hasRootEventTag(event.Tags) || hasRepositoryCoordinate(event.Tags)
 	case nostr.KindTextNote:
-		return isBuzzTaskNote(event)
+		return isBuzzWorkItemNote(event)
 	case nostr.KindComment:
-		return isNIP22TaskComment(event)
+		return isNIP22WorkItemComment(event)
 	case nostr.KindDeletion:
 		return targetsProjectOrRepository(event)
 	default:

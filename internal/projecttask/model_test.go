@@ -112,6 +112,158 @@ func TestValidateTombstoneRequiresDirectAddressOwner(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidatePullRequestMatchesBuzzBuilderContract(t *testing.T) {
+	owner := pubkey(t, "7")
+	pr := validPullRequestEvent(t, id(t, "7"), owner, owner, "notes", strings.Repeat("a", 40))
+	pr.Tags = append(pr.Tags,
+		nostr.Tag{"r", strings.Repeat("b", 64)},
+		nostr.Tag{"merge-base", strings.Repeat("c", 40)},
+		nostr.Tag{"branch-name", "feature/reviews"},
+		nostr.Tag{"target-branch", "main"},
+		nostr.Tag{"h", "opaque-project-origin"},
+		nostr.Tag{"imeta", "url https://media.example/review.png"},
+		nostr.Tag{"x-vendor", "preserve-me"},
+	)
+	recognized, err := ValidateEvent(pr)
+	require.True(t, recognized)
+	require.NoError(t, err)
+	require.Equal(t, []string{"https://one.example/notes.git", "ssh://two/notes.git"}, cloneLocators(pr.Tags))
+	require.Equal(t, "preserve-me", pr.Tags.Find("x-vendor")[1], "validation must not rewrite unknown tags")
+
+	for _, length := range []int{40, 64} {
+		candidate := pr
+		candidate.Tags = replaceNamedTag(pr.Tags, "c", nostr.Tag{"c", strings.Repeat("d", length)})
+		_, err := ValidateEvent(candidate)
+		require.NoError(t, err, "full %d-character commit IDs are valid", length)
+	}
+
+	tests := []struct {
+		name string
+		edit func(nostr.Event) nostr.Event
+		want string
+	}{
+		{"missing repository", func(event nostr.Event) nostr.Event { event.Tags = removeNamedTags(event.Tags, "a"); return event }, "exactly one repository"},
+		{"owner recipient", func(event nostr.Event) nostr.Event { event.Tags = removeNamedTags(event.Tags, "p"); return event }, "repository owner"},
+		{"empty subject", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "subject", nostr.Tag{"subject", ""})
+			return event
+		}, "nonempty"},
+		{"subject bytes", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "subject", nostr.Tag{"subject", strings.Repeat("é", 129)})
+			return event
+		}, "256"},
+		{"missing commit", func(event nostr.Event) nostr.Event { event.Tags = removeNamedTags(event.Tags, "c"); return event }, "required"},
+		{"short commit", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "c", nostr.Tag{"c", "abc"})
+			return event
+		}, "full SHA"},
+		{"nonhex commit", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "c", nostr.Tag{"c", strings.Repeat("z", 40)})
+			return event
+		}, "full SHA"},
+		{"missing clone", func(event nostr.Event) nostr.Event { event.Tags = removeNamedTags(event.Tags, "clone"); return event }, "clone locator"},
+		{"empty clone", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "clone", nostr.Tag{"clone", ""})
+			return event
+		}, "nonempty"},
+		{"bad merge base", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "merge-base", nostr.Tag{"merge-base", "deadbeef"})
+			return event
+		}, "merge-base"},
+		{"bad revision", func(event nostr.Event) nostr.Event {
+			event.Tags = append(event.Tags.CloneDeep(), nostr.Tag{"e", "bad"})
+			return event
+		}, "revision"},
+		{"oversize origin", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "h", nostr.Tag{"h", strings.Repeat("x", 257)})
+			return event
+		}, "256"},
+		{"oversize content", func(event nostr.Event) nostr.Event {
+			event.Content = strings.Repeat("x", maxPullRequestContent+1)
+			return event
+		}, "64 KiB"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ValidateEvent(test.edit(pr))
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func TestValidatePullRequestUpdateAndMergeStatus(t *testing.T) {
+	owner := pubkey(t, "8")
+	author := pubkey(t, "9")
+	rootID := id(t, "8")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	update := nostr.Event{
+		Kind: KindPullRequestUpdate, Content: "rebased",
+		Tags: nostr.Tags{
+			{"a", coordinate.String()}, {"p", owner.Hex()},
+			{"E", rootID.Hex()}, {"P", author.Hex()},
+			{"c", strings.Repeat("d", 64)},
+			{"clone", "https://one.example/notes.git"},
+			{"clone", "ssh://two/notes.git"},
+			{"r", strings.Repeat("e", 40)},
+			{"merge-base", strings.Repeat("f", 64)},
+		},
+	}
+	recognized, err := ValidateEvent(update)
+	require.True(t, recognized)
+	require.NoError(t, err)
+
+	for _, name := range []string{"a", "p", "E", "P", "c", "clone"} {
+		candidate := update
+		candidate.Tags = removeNamedTags(update.Tags, name)
+		_, err := ValidateEvent(candidate)
+		require.Error(t, err, "missing %s must fail", name)
+	}
+
+	mergeCommit := strings.Repeat("a", 40)
+	merged := nostr.Event{
+		Kind: nostr.KindStatusApplied,
+		Tags: nostr.Tags{{"e", rootID.Hex(), "", "root"}, {"merge-commit", mergeCommit}, {"r", mergeCommit}, {"q", id(t, "9").Hex()}, {"applied-as-commits", strings.Repeat("b", 64)}},
+	}
+	_, err = ValidateEvent(merged)
+	require.NoError(t, err)
+
+	wrongKind := merged
+	wrongKind.Kind = nostr.KindStatusClosed
+	_, err = ValidateEvent(wrongKind)
+	require.ErrorContains(t, err, "only valid on kind 1631")
+
+	missingRevision := merged
+	missingRevision.Tags = removeNamedTags(merged.Tags, "r")
+	_, err = ValidateEvent(missingRevision)
+	require.ErrorContains(t, err, "matching r")
+
+	badAppliedCommit := merged
+	badAppliedCommit.Tags = replaceNamedTag(merged.Tags, "applied-as-commits", nostr.Tag{"applied-as-commits", "short"})
+	_, err = ValidateEvent(badAppliedCommit)
+	require.ErrorContains(t, err, "applied-as-commits")
+}
+
+func TestValidateEventClaimsBothPullRequestCommentEncodings(t *testing.T) {
+	owner := pubkey(t, "a")
+	rootID := id(t, "a")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	buzz := nostr.Event{Kind: nostr.KindTextNote, Tags: nostr.Tags{
+		{"e", rootID.Hex(), "", "root"}, {"a", coordinate.String()}, {"t", "approval"}, {"c", strings.Repeat("a", 40)},
+	}}
+	recognized, err := ValidateEvent(buzz)
+	require.True(t, recognized)
+	require.NoError(t, err)
+
+	nip22 := nostr.Event{Kind: nostr.KindComment, Tags: nostr.Tags{
+		{"E", rootID.Hex()}, {"K", "1618"}, {"P", owner.Hex()},
+		{"e", id(t, "b").Hex()}, {"k", "1111"}, {"p", owner.Hex()},
+		{"t", "changes-requested"},
+	}}
+	recognized, err = ValidateEvent(nip22)
+	require.True(t, recognized)
+	require.NoError(t, err)
+}
+
 func TestBuildProjectTaskAnchorIsLogicalOnly(t *testing.T) {
 	owner := pubkey(t, "6")
 	project := nostr.Event{
@@ -150,6 +302,33 @@ func TestBuildProjectTaskAnchorIsLogicalOnly(t *testing.T) {
 func projectWithCoordinate(project nostr.Event, coordinate RepositoryCoordinate) nostr.Event {
 	project.Tags = append(project.Tags.CloneDeep(), nostr.Tag{"a", coordinate.String()})
 	return project
+}
+
+func validPullRequestEvent(t *testing.T, eventID nostr.ID, author, owner nostr.PubKey, repositoryID, commit string) nostr.Event {
+	t.Helper()
+	return nostr.Event{
+		ID: eventID, Kind: KindPullRequest, PubKey: author, Content: "Review body",
+		Tags: nostr.Tags{
+			{"a", RepositoryCoordinate{Owner: owner, ID: repositoryID}.String()},
+			{"p", owner.Hex()}, {"subject", "Review title"}, {"c", commit},
+			{"clone", "https://one.example/notes.git", "ssh://two/notes.git"},
+		},
+	}
+}
+
+func removeNamedTags(tags nostr.Tags, name string) nostr.Tags {
+	result := make(nostr.Tags, 0, len(tags))
+	for _, tag := range tags {
+		if len(tag) == 0 || tag[0] != name {
+			result = append(result, append(nostr.Tag(nil), tag...))
+		}
+	}
+	return result
+}
+
+func replaceNamedTag(tags nostr.Tags, name string, replacement nostr.Tag) nostr.Tags {
+	result := removeNamedTags(tags, name)
+	return append(result, replacement)
 }
 
 func pubkey(t *testing.T, digit string) nostr.PubKey {
