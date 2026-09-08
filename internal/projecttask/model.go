@@ -132,8 +132,22 @@ func validateIssue(event nostr.Event) error {
 	if len(tags) != 1 || len(tags[0]) < 2 {
 		return fmt.Errorf("issue must contain exactly one repository a tag")
 	}
-	_, err := ParseRepositoryCoordinate(tags[0][1])
-	return err
+	if _, err := ParseRepositoryCoordinate(tags[0][1]); err != nil {
+		return err
+	}
+	parents := tagsNamed(event.Tags, "parent")
+	if len(parents) > 1 || (len(parents) == 1 && len(parents[0]) < 2) {
+		return fmt.Errorf("subtask parent tag must be a singleton event ID")
+	}
+	if len(parents) == 1 {
+		if _, err := nostr.IDFromHex(parents[0][1]); err != nil {
+			return fmt.Errorf("subtask parent tag must contain a valid event ID")
+		}
+		if !tagHasValue(event.Tags, "e", parents[0][1]) {
+			return fmt.Errorf("subtask parent and e tags must reference the same event")
+		}
+	}
+	return nil
 }
 
 func validateStatus(event nostr.Event) error {

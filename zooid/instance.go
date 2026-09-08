@@ -22,14 +22,15 @@ type Instance struct {
 	// signal.NotifyContext. Stored here so per-call DB timeouts in
 	// EventStore/etc. can derive from it instead of context.Background().
 	// Cancellation flows through on SIGTERM, aborting in-flight work.
-	Ctx        context.Context
-	Relay      *khatru.Relay
-	Config     *Config
-	Events     *EventStore
-	Blossom    *BlossomStore
-	Management *ManagementStore
-	Groups     *GroupStore
-	Registry   *RegistryPolicy
+	Ctx          context.Context
+	Relay        *khatru.Relay
+	Config       *Config
+	Events       *EventStore
+	Blossom      *BlossomStore
+	Management   *ManagementStore
+	Groups       *GroupStore
+	Registry     *RegistryPolicy
+	ProjectTasks *ProjectTaskPolicy
 }
 
 func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
@@ -87,6 +88,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		Groups:     groups,
 	}
 	instance.Registry = NewRegistryPolicy(config, groups, events)
+	instance.ProjectTasks = NewProjectTaskPolicy(events, groups)
 
 	// NIP 11 info
 
@@ -306,7 +308,10 @@ func (instance *Instance) PreventBroadcast(ws *khatru.WebSocket, filter nostr.Fi
 	if !authenticated {
 		return !instance.Config.Policy.AnonymousRead || !instance.CanAnonymousRead(event)
 	}
-	return instance.Groups.IsGroupEvent(event) && !instance.Groups.CanRead(pubkey, event)
+	if instance.Groups.IsGroupEvent(event) && !instance.Groups.CanRead(pubkey, event) {
+		return true
+	}
+	return instance.ProjectTasks != nil && !instance.ProjectTasks.CanRead(ws.Context, pubkey, event)
 }
 
 func (instance *Instance) StoreEvent(ctx context.Context, event nostr.Event) error {
@@ -389,6 +394,10 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 					continue
 				}
 
+				if instance.ProjectTasks != nil && instance.ProjectTasks.IsTombstoned(ctx, event) {
+					continue
+				}
+
 				if !authenticated {
 					if !instance.Config.Policy.AnonymousRead || !instance.CanAnonymousRead(event) {
 						continue
@@ -403,6 +412,10 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 					if !instance.Groups.CanRead(pubkey, event) {
 						continue
 					}
+				}
+
+				if instance.ProjectTasks != nil && !instance.ProjectTasks.CanRead(ctx, pubkey, event) {
+					continue
 				}
 
 				if !yield(instance.StripSignature(ctx, event)) {
@@ -421,6 +434,9 @@ func (instance *Instance) CanAnonymousRead(event nostr.Event) bool {
 		return false
 	}
 	if event.Kind == nostr.KindProfileMetadata || event.Kind == nostr.KindEmojiList || event.Kind == nostr.KindEmojiSets {
+		return true
+	}
+	if instance.ProjectTasks != nil && instance.ProjectTasks.CanAnonymousRead(instance.Ctx, event) {
 		return true
 	}
 	if !instance.Groups.IsGroupEvent(event) {
@@ -479,6 +495,12 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 		}
 	}
 
+	if instance.ProjectTasks != nil {
+		if _, reason := instance.ProjectTasks.CheckWrite(ctx, event); reason != "" {
+			return true, reason
+		}
+	}
+
 	if instance.Management.EventIsBanned(event.ID) {
 		return true, "restricted: this event has been banned from this relay"
 	}
@@ -487,6 +509,12 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 }
 
 func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
+	if instance.ProjectTasks != nil {
+		if err := instance.ProjectTasks.Remember(instance.Ctx, event); err != nil {
+			log.Printf("Failed to persist project/task scope for event %s: %v", event.ID.Hex(), err)
+		}
+	}
+
 	h := GetGroupIDFromEvent(event)
 
 	if event.Kind == nostr.KindSimpleGroupJoinRequest && instance.Config.Groups.AutoJoin {
