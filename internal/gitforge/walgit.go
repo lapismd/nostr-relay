@@ -49,7 +49,7 @@ func (backend *WalGitBackend) EnsureRepository(ctx context.Context, coordinate p
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusConflict {
 		return &BackendError{Status: response.StatusCode, Code: "repository_create_failed"}
 	}
 	return nil
@@ -112,20 +112,41 @@ func (backend *WalGitBackend) proxy(w http.ResponseWriter, r *http.Request, path
 			writeBackendError(w, http.StatusBadGateway, "walgit_unavailable")
 		},
 	}
-	if privateCache {
-		proxy.ModifyResponse = func(response *http.Response) error {
+	proxy.ModifyResponse = func(response *http.Response) error {
+		stripWalGitHeaders(response.Header)
+		response.Header.Del("Set-Cookie")
+		if privateCache {
 			cache := response.Header.Get("Cache-Control")
-			if cache != "" {
-				cache = strings.ReplaceAll(cache, "public", "private")
-				if !strings.Contains(strings.ToLower(cache), "private") {
-					cache = "private, " + cache
-				}
-				response.Header.Set("Cache-Control", cache)
+			if cache == "" {
+				response.Header.Set("Cache-Control", "private, no-store")
+			} else {
+				response.Header.Set("Cache-Control", privateCacheControl(cache))
 			}
-			return nil
 		}
+		return nil
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func privateCacheControl(value string) string {
+	directives := strings.Split(value, ",")
+	foundPrivate := false
+	for index, directive := range directives {
+		trimmed := strings.TrimSpace(directive)
+		if strings.EqualFold(trimmed, "public") {
+			directives[index] = "private"
+			foundPrivate = true
+		} else if strings.EqualFold(trimmed, "private") {
+			foundPrivate = true
+		}
+	}
+	if !foundPrivate {
+		directives = append([]string{"private"}, directives...)
+	}
+	for index := range directives {
+		directives[index] = strings.TrimSpace(directives[index])
+	}
+	return strings.Join(directives, ", ")
 }
 
 func (backend *WalGitBackend) Compare(ctx context.Context, repository Repository, request CompareRequest) (CompareResult, error) {

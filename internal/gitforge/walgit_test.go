@@ -36,6 +36,18 @@ func TestWalGitEnsureRepositoryUsesServiceIdentity(t *testing.T) {
 	require.NoError(t, backend.EnsureRepository(context.Background(), repository.Coordinate))
 }
 
+func TestWalGitEnsureRepositoryTreatsExistingAsSuccess(t *testing.T) {
+	repository := testRepository(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer server.Close()
+
+	backend, err := NewWalGitBackend(server.URL, "service-secret")
+	require.NoError(t, err)
+	require.NoError(t, backend.EnsureRepository(context.Background(), repository.Coordinate))
+}
+
 func TestWalGitGitProxyRewritesPathAndStripsUntrustedHeaders(t *testing.T) {
 	repository := testRepository(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +56,7 @@ func TestWalGitGitProxyRewritesPathAndStripsUntrustedHeaders(t *testing.T) {
 		require.Equal(t, "Bearer service-secret", r.Header.Get("Authorization"))
 		require.Equal(t, "actor", r.Header.Get("X-Walgit-Principal"))
 		require.Empty(t, r.Header.Get("X-Walgit-Evil"))
+		w.Header().Set("X-Walgit-Store-Authorization", "must-not-leak")
 		_, _ = io.WriteString(w, "pack")
 	}))
 	defer server.Close()
@@ -57,6 +70,31 @@ func TestWalGitGitProxyRewritesPathAndStripsUntrustedHeaders(t *testing.T) {
 	backend.ProxyGitHTTP(recorder, request, repository, "git-upload-pack", "actor")
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "pack", recorder.Body.String())
+	require.Empty(t, recorder.Header().Get("X-Walgit-Store-Authorization"))
+}
+
+func TestWalGitRepositoryAPIDefaultsToPrivateNoStore(t *testing.T) {
+	repository := testRepository(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Walgit-Internal", "must-not-leak")
+		w.Header().Set("Set-Cookie", "internal=secret")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	backend, err := NewWalGitBackend(server.URL, "service-secret")
+	require.NoError(t, err)
+
+	recorder := httptest.NewRecorder()
+	backend.ProxyRepositoryAPI(recorder, httptest.NewRequest(http.MethodGet, "https://relay.example/api/git/o/r/refs", nil), repository, "refs", "actor")
+	require.Equal(t, "private, no-store", recorder.Header().Get("Cache-Control"))
+	require.Empty(t, recorder.Header().Get("X-Walgit-Internal"))
+	require.Empty(t, recorder.Header().Get("Set-Cookie"))
+}
+
+func TestPrivateCacheControlReplacesCaseInsensitivePublicDirective(t *testing.T) {
+	require.Equal(t, "private, max-age=60, immutable", privateCacheControl("PUBLIC, max-age=60, immutable"))
+	require.Equal(t, "private, max-age=60", privateCacheControl("max-age=60"))
+	require.Equal(t, "private, no-store", privateCacheControl("private, no-store"))
 }
 
 func TestWalGitRepositoryAPIUsesPrivateCaching(t *testing.T) {

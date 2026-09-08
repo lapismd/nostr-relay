@@ -72,4 +72,7 @@ func TestCanonicalCloneURLValidation(t *testing.T) {
 		_, err := CanonicalCloneURL(invalid, coordinate)
 		require.Error(t, err, invalid)
 	}
+	clone, err := CanonicalCloneURL("https://relay.example/a%20b", coordinate)
+	require.NoError(t, err)
+	require.Equal(t, "https://relay.example/a%20b/git/"+owner.Hex()+"/notes", clone)
 }

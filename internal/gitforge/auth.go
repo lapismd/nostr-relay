@@ -14,13 +14,14 @@ import (
 )
 
 const AuthWindow = 60 * time.Second
+const maxAuthorizationHeaderBytes = 96 << 10
 
 // VerifyGitAuth implements Buzz's Git credential profile. Git signs the
 // repository root during the initial challenge and reuses that credential for
 // subsequent pack requests, so method, payload, and one-shot replay binding do
 // not apply to this transport.
 func VerifyGitAuth(r *http.Request, expectedRepositoryURL string, now time.Time) (nostr.Event, error) {
-	event, err := decodeNostrAuthorization(r.Header.Get("Authorization"))
+	event, err := decodeNostrAuthorization(singleAuthorizationHeader(r))
 	if err != nil {
 		return event, err
 	}
@@ -40,7 +41,7 @@ func VerifyGitAuth(r *http.Request, expectedRepositoryURL string, now time.Time)
 // VerifyReadAuth validates the exact method and URL used by browser repository
 // and PR reads. Empty-body GET/HEAD requests do not require a payload tag.
 func VerifyReadAuth(r *http.Request, expectedURL string, now time.Time) (nostr.Event, error) {
-	event, err := decodeNostrAuthorization(r.Header.Get("Authorization"))
+	event, err := decodeNostrAuthorization(singleAuthorizationHeader(r))
 	if err != nil {
 		return event, err
 	}
@@ -72,7 +73,7 @@ func validateAuthEvent(event nostr.Event, now time.Time) error {
 func decodeNostrAuthorization(header string) (nostr.Event, error) {
 	var event nostr.Event
 	header = strings.TrimSpace(header)
-	if len(header) < 7 || !strings.EqualFold(header[:6], "Nostr ") {
+	if len(header) < 7 || len(header) > maxAuthorizationHeaderBytes || !strings.EqualFold(header[:6], "Nostr ") {
 		return event, errors.New("missing Nostr authorization")
 	}
 	encoded := strings.TrimSpace(header[6:])
@@ -91,6 +92,14 @@ func decodeNostrAuthorization(header string) (nostr.Event, error) {
 		return event, fmt.Errorf("invalid auth event JSON: %w", err)
 	}
 	return event, nil
+}
+
+func singleAuthorizationHeader(r *http.Request) string {
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		return ""
+	}
+	return values[0]
 }
 
 func normalizeAuthURL(raw string) string {

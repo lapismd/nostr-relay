@@ -76,4 +76,15 @@ func TestGitAuthRejectsExpiredInvalidAndWrongRepository(t *testing.T) {
 	request.Header.Set("Authorization", "Nostr not-base64")
 	_, err = VerifyGitAuth(request, root, now)
 	require.Error(t, err)
+
+	request.Header["Authorization"] = []string{
+		signedHTTPAuth(t, secret, now, http.MethodGet, root),
+		signedHTTPAuth(t, secret, now, http.MethodGet, root),
+	}
+	_, err = VerifyGitAuth(request, root, now)
+	require.Error(t, err, "ambiguous authorization headers must fail closed")
+
+	request.Header.Set("Authorization", "Nostr "+strings.Repeat("a", maxAuthorizationHeaderBytes))
+	_, err = VerifyGitAuth(request, root, now)
+	require.Error(t, err, "oversized credentials must be rejected before decoding")
 }

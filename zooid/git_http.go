@@ -291,8 +291,8 @@ func (policy *GitForgePolicy) publicRequestURL(r *http.Request) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	requestPath := r.URL.EscapedPath()
-	prefix := strings.TrimRight(base.EscapedPath(), "/")
+	requestPath := r.URL.Path
+	prefix := strings.TrimRight(base.Path, "/")
 	if prefix != "" && prefix != "/" && requestPath != prefix && !strings.HasPrefix(requestPath, prefix+"/") {
 		requestPath = prefix + "/" + strings.TrimLeft(requestPath, "/")
 	}

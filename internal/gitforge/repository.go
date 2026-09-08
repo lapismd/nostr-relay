@@ -113,7 +113,7 @@ func CanonicalCloneURL(publicURL string, coordinate projecttask.RepositoryCoordi
 	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
 		return "", fmt.Errorf("git public_url must not contain user info, query, or fragment")
 	}
-	parsed.Path = strings.TrimRight(parsed.EscapedPath(), "/") + "/git/" + coordinate.Owner.Hex() + "/" + url.PathEscape(coordinate.ID)
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/git/" + coordinate.Owner.Hex() + "/" + coordinate.ID
 	parsed.RawPath = ""
 	return parsed.String(), nil
 }
