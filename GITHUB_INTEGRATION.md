@@ -80,7 +80,8 @@ ID. The relay never edits or republishes the announcement.
 PUT /api/forge/repositories/<owner>/<repo>/integration
 {
   "expected_announcement_id": "<current-30617-event-id>",
-  "git_backend": "github",
+  "git_authority_backend": "github",
+  "content_backend": "github",
   "collaboration_backend": "github",
   "connection_id": "<connection-id>",
   "external_repository_id": "123456",
@@ -90,6 +91,33 @@ PUT /api/forge/repositories/<owner>/<repo>/integration
   "ci_workflow": "ci.yml"
 }
 ```
+
+To keep GitHub as public clone/push authority while serving file, history, and
+diff reads from a private local copy, select WalGit as content and enable the
+replica:
+
+```json
+{
+  "expected_announcement_id": "<current-30617-event-id>",
+  "git_authority_backend": "github",
+  "content_backend": "walgit",
+  "collaboration_backend": "github",
+  "connection_id": "<connection-id>",
+  "external_repository_id": "123456",
+  "replica": {
+    "enabled": true,
+    "direction": "authority-to-replica",
+    "sync_branches": true,
+    "sync_tags": true,
+    "mode": "continuous",
+    "read_policy": "fallback",
+    "wait_milliseconds": 1500
+  }
+}
+```
+
+This does not change the owner-signed GitHub clone/web locators and does not
+enable relay Smart HTTP for users. See [GIT_REPLICAS.md](GIT_REPLICAS.md).
 
 For GitHub source, CI must target that same repository. For WalGit source, the
 CI fields instead identify a separately pre-provisioned private disposable
@@ -146,25 +174,29 @@ GitHub's [signature verification](https://docs.github.com/en/webhooks/using-webh
 and [timely delivery handling](https://docs.github.com/en/webhooks/using-webhooks/handling-webhook-deliveries)
 guidance.
 
-## GitHub-to-WalGit migration and mirror
+## GitHub-to-WalGit migration and Git replication
 
 Migration is an explicit relay-admin operation:
 
 1. `POST .../migration` with the current announcement ID and
    `acknowledge_provider_write_freeze=true`.
-2. The worker snapshots GitHub refs, imports through an ephemeral bare Git
-   directory (including LFS), verifies `git fsck`, ref equality, and object
-   reachability, then re-reads GitHub refs.
-3. Any provider ref change aborts the migration.
-4. The repository owner publishes a replacement `30617` that explicitly names
+2. The worker reconciles and reuses a verified current WalGit replica when one
+   exists. Otherwise it imports through an ephemeral bare Git directory
+   (including LFS).
+3. It verifies managed refs, object connectivity, and open PR head/merge-base
+   objects, then re-reads GitHub refs.
+4. Any provider ref change aborts the migration.
+5. The repository owner publishes a replacement `30617` that explicitly names
    the canonical relay clone URL.
-5. `POST .../migration/activate` with that new announcement ID activates
-   `git=walgit`.
+6. `POST .../migration/activate` with that new announcement ID atomically
+   selects WalGit for authority and content and disables incoming replication.
 
 Collaboration can temporarily remain on GitHub, and GitHub can remain a
-one-way mirror. Existing provider-origin roots keep their bridge signer and
-mappings; no Nostr event ID or history is rewritten. There is no bidirectional
-Git mirror.
+one-way Git target. `git_replication_target_backend=github` exact-projects
+WalGit heads/tags after cutover; `mirror_backend=github` is distinct and
+projects collaboration objects. Existing provider-origin roots keep their
+bridge signer and mappings; no Nostr event ID or history is rewritten. The two
+Git directions cannot be active simultaneously.
 
 ## GitHub Actions
 
@@ -206,15 +238,15 @@ contents API does not support files over 100 MB. These limits follow GitHub's
 [contents](https://docs.github.com/en/rest/repos/contents) APIs. Truncation is
 explicit; the adapter does not pretend complete WalGit equivalence.
 
-The deterministic Docker lane uses a local fake GitHub App/API service and no
-live credentials:
+The deterministic Docker lane uses a local fake GitHub App/API/Git service,
+real WalGit and RustFS, and no live credentials:
 
 ```sh
 go test -tags github_integration ./zooid \
   -run '^TestGitHubForgeDockerLane$' -count=1
 ```
 
-It exercises attachment, capability discovery, authenticated browsing,
-durable collaboration, webhook echo suppression, CI, mixed repositories, and
-restart persistence. See [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md) for
+It exercises attachment, initial Git replication into WalGit, authenticated
+local browsing, durable collaboration, webhook echo suppression, CI, and
+restart resolution. See [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md) for
 the deliberately unsupported provider and WalGit workflows.

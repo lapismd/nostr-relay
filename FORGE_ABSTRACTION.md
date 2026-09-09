@@ -12,7 +12,9 @@ signed Nostr events             operational integration
         |                                  |
         +---------- Zooid policy ----------+
                          |
-               normalized relay APIs
+        provider-neutral content results
+                         |
+               stable relay API encoding
 ```
 
 `internal/forge` owns normalized types, small optional interfaces, capability
@@ -24,18 +26,22 @@ No forge behavior lives in `internal/khatru`.
 
 ## Capability composition
 
-`GitBackend` is the read contract for clone metadata, refs, resolve, tree,
-blob, commit history, a commit, and comparison. Provisioning, import, Smart
-HTTP, collaboration commands, outbound mirroring, provider events, and CI are
-separate optional interfaces. A backend name does not imply an optional
-capability: callers use the resolved capability document.
+`GitAuthorityBackend` owns clone/default-branch/ref authority.
+`RepositoryContentBackend` answers resolve, tree, blob, history, commit, and
+diff operations. Their values are independent: GitHub can remain clone/push
+authority while a private WalGit replica serves application reads.
+Provisioning, import, Smart HTTP, collaboration commands, collaboration
+mirroring, outbound Git replication, provider events, and CI are separate
+optional interfaces. A backend name does not imply an optional capability:
+callers use the resolved capability document.
 
-| Composition | Git | Collaboration | Mirror | CI |
-| --- | --- | --- | --- | --- |
-| Project Task Anchor | none | relay | none | none |
-| external legacy repository | unmanaged provider clone | relay | none | none |
-| hosted repository | WalGit | relay | optional GitHub | optional GitHub Actions |
-| GitHub repository | GitHub | relay or GitHub | optional GitHub | optional GitHub Actions |
+| Composition | Git authority | Content | Collaboration | Git replication target | CI |
+| --- | --- | --- | --- | --- | --- |
+| Project Task Anchor | none | none | relay | none | none |
+| external legacy repository | unmanaged | unmanaged | relay | none | none |
+| hosted repository | WalGit | WalGit | relay | optional GitHub | optional GitHub Actions |
+| GitHub without replica | GitHub | GitHub | relay or GitHub | none | optional GitHub Actions |
+| GitHub with replica | GitHub | WalGit | relay or GitHub | none | optional GitHub Actions |
 
 Capabilities distinguish clone availability and `clone.auth` (`nostr` or
 `provider`), relay Smart HTTP read/write, browsing, comparison, ref events,
@@ -46,9 +52,9 @@ and possible truncation. Known unavailable WalGit behavior is reported as
 Operational `repository_integrations` rows select each backend independently.
 Existing announcements are backfilled without changing signed events:
 
-- hosted -> `git=walgit`, `collaboration=relay`;
-- external -> `git=unmanaged`, `collaboration=relay`;
-- task anchor -> `git=none`, `collaboration=relay`.
+- hosted -> `authority=walgit`, `content=walgit`, `collaboration=relay`;
+- external -> `authority=unmanaged`, `content=unmanaged`, `collaboration=relay`;
+- task anchor -> `authority=none`, `content=none`, `collaboration=relay`.
 
 These rows use `configuration_source=legacy-default` and continue tracking the
 signed announcement classification. An admin attachment switches the row to
@@ -59,14 +65,21 @@ current announcement ID as an optimistic-concurrency guard.
 
 The existing WebSocket, `/events`, `/query`, `/count`, `/git`, `/api/git`, and
 PR-diff routes retain their request, response, error, cache, and ACL behavior.
-`/api/git` JSON is the normalized v1 browser contract. WalGit streams its
-existing shape, while GitHub translates REST responses into that shape.
-Provider objects never escape an adapter.
+The abstraction is not WalGit's JSON schema. `internal/forge` defines
+provider-neutral `Revision`, `Ref`, `Tree`, `Blob`, `Commit`, and `Diff`
+results. WalGit and GitHub translate into those types, and Zooid serializes
+them so existing WalGit responses remain compatible. Provider objects and
+provider SDK types never escape an adapter.
 
-`/git/<owner>/<repo>.git` is only available when the selected Git backend
-implements relay Smart HTTP. GitHub repositories return
+Every content result can explicitly report `truncated`, an opaque
+`continuation`, incomplete portions, a structured `limit_exceeded`, and
+`capability_limits`. This prevents a GitHub result capped at 300 changed files
+or 1,000 tree entries from looking equivalent to a complete local result.
+
+`/git/<owner>/<repo>.git` is only available when the selected authority backend
+implements relay Smart HTTP. GitHub-authoritative repositories return
 `provider_git_required`; their capability document supplies the GitHub clone
-URL and `clone.auth=provider`.
+URL and `clone.auth=provider`, even when WalGit is the content backend.
 
 The additive `/api/forge` routes are NIP-98 authenticated. Capabilities require
 repository read access; provider commands require repository write access.
@@ -102,9 +115,12 @@ a public GitHub repository private or grant direct GitHub access.
 ## Persistence and workers
 
 Migrations `008`-`012` add connection, integration, mapping, webhook delivery,
-outbox, reconciliation, migration, CI-run, and mirror-ref state. Existing
-WalGit intent/ref tables remain intact. Signed Nostr events stay authoritative;
-operational tables are retry/recovery state and can be rebuilt where specified.
+outbox, reconciliation, migration, CI-run, and mirror-ref state. Migration
+`013` splits authority from content and adds incoming replica state/ref/jobs,
+object pins, replica-origin markers, and separate outbound Git replication
+state/jobs. Existing WalGit intent/ref tables remain intact. Signed Nostr
+events stay authoritative; operational tables are retry/recovery state and can
+be rebuilt where specified.
 
 Workers lease durable rows, use bounded exponential backoff, retain sanitized
 terminal failures, and honor provider retry/rate-limit timing. Set
@@ -117,6 +133,10 @@ terminal failures, and honor provider retry/rate-limit timing. Set
 When using the Compose `external-forge-worker` profile, set
 `LAPIS_FORGE_WORKER_MODE=disabled` for the relay; the worker container is
 already fixed to `only`.
+
+See [GIT_REPLICAS.md](GIT_REPLICAS.md) for GitHub-authoritative WalGit read
+replicas, freshness policy, PR object pinning, event-loop prevention, and the
+authority cutover path.
 
 ## Update checklist
 

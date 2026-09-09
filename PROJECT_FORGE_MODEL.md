@@ -4,15 +4,16 @@ The Lapis forge keeps signed Nostr collaboration, Git storage, and external
 provider automation as separate authorities:
 
 ```text
-Nostr relay                 Git backend                 provider automation
-projects/tasks/PRs          WalGit or GitHub            GitHub App + Actions
-comments/lifecycle          objects/refs/compare        optional sync/mirror/CI
+Nostr relay              Git authority / content          provider automation
+projects/tasks/PRs       WalGit, GitHub / WalGit replica  GitHub App + Actions
+comments/lifecycle       clone+refs / tree+blob+diff      optional sync/mirror/CI
         \_____________________ Zooid NIP-29 policy _____________________/
 ```
 
 The canonical identity is always `30617:<owner-pubkey>:<d>`. A repository's
-operational integration selects Git, collaboration, mirror, and CI backends
-independently; it never rewrites the signed announcement. See
+operational integration independently selects Git authority, repository
+content, collaboration, outbound Git replication, collaboration mirror, and CI
+backends; it never rewrites the signed announcement. See
 [FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md) for the interface and persistence
 model.
 
@@ -43,8 +44,10 @@ The unchanged data/event surfaces are:
 
 WalGit keeps Buzz-compatible NIP-98 Smart HTTP. GitHub clone/push are direct
 provider traffic and `/git` returns `provider_git_required`. Both backends
-provide the normalized v1 `/api/git` shape so web clients can browse without a
-checkout or local Git.
+translate into provider-neutral repository content results; Zooid preserves
+the observable v1 `/api/git` shape so web clients can browse without a checkout
+or local Git. Results can explicitly report truncation, continuation,
+incomplete data, oversized objects, and capability limits.
 
 The additive NIP-98 `/api/forge` routes expose capability/health discovery,
 admin integration, durable provider commands, explicit import/migration, and
@@ -73,7 +76,9 @@ and preserve restart recovery. Deterministic correlation markers close the
 provider-success/local-crash gap without creating duplicate provider objects.
 
 PR diffs first reduce the existing `1618/1619/163x` graph, then compare the
-current immutable head through the selected Git backend. An explicit merge base
+current immutable head through the selected content backend. For a
+GitHub-authoritative WalGit replica, missing PR-only commits are fetched by
+exact SHA and pinned privately before local comparison. An explicit merge base
 is used directly; otherwise the target branch is resolved. Full SHA-1/SHA-256
 IDs and configured file/patch bounds apply to every backend.
 
@@ -87,6 +92,11 @@ provenance tags. The bridge may publish canonical provider-origin lifecycle.
 For relay-origin roots, GitHub lifecycle and reviews are observational kind-1
 notes (`t=external-state` or `t=external-review`), never native trusted state
 or review decisions. GitHub mirror mode imports no unrelated roots.
+
+A private Git replica remains independent of collaboration. GitHub can own
+clone/push and collaboration while WalGit serves content, or collaboration can
+remain relay-native. The GitHub clone locator stays signed in `30617`; users
+cannot clone or push the private replica. See [GIT_REPLICAS.md](GIT_REPLICAS.md).
 
 CI terminal results are bridge-signed `t=ci` activity bound to the exact
 commit. They remain historical when a PR tip changes and do not authorize a

@@ -32,13 +32,15 @@ authenticated web read surface without changing Buzz's Nostr wire contract:
 | Endpoint | Compatibility role |
 | --- | --- |
 | `/git/<owner>/<repo>[.git]/...` | Buzz credential-helper-compatible smart HTTP, LFS and bundles. |
-| `/api/git/<owner>/<repo>/...` | Lapis web source browsing through normalized WalGit or GitHub refs/resolve/tree/blob/commit APIs. |
+| `/api/git/<owner>/<repo>/...` | Lapis web source browsing through provider-neutral refs/resolve/tree/blob/commit results serialized compatibly for WalGit and GitHub. |
 | `/api/pull-requests/<event-id>/diff` | Lapis web PR diff after reducing the same Buzz-compatible event graph. |
 
 The last two routes require strict method-and-URL NIP-98 credentials. They are
 Lapis web capabilities, not endpoints required or emitted by the audited Buzz
 Desktop. WalGit remains private, GitHub clone/push remain provider-native, and
-provider objects do not leak into the normalized browser response contract.
+provider objects do not leak into repository-content results. Additive
+truncation, continuation, incomplete-result, oversized-object, and capability
+limit fields make provider constraints explicit.
 
 Lapis also adds NIP-98 `/api/forge` capability, health, attachment, durable
 provider-command, migration, operation, and CI routes. These are application
@@ -99,10 +101,10 @@ WalGit, covers the browser API and arbitrary comparison, and proves that a
 fresh sidecar with an empty cache reconstructs the repository from RustFS.
 
 The separate `github_integration` Docker lane uses a deterministic fake GitHub
-App/API service—never live credentials—to exercise admin attachment,
-provider-native capabilities, normalized browser reads, durable collaboration,
-webhook echo suppression, exact-SHA CI, mixed repositories, and restart
-persistence.
+App/API/Git service—never live credentials—together with real WalGit and RustFS.
+It exercises admin attachment, GitHub-authoritative initial replication,
+authenticated browsing from WalGit, durable collaboration, webhook echo
+suppression, exact-SHA CI, and restart resolution.
 
 The relay adds one deliberately narrow filter extension: exact
 `#buzz-channel`. Arbitrary multi-character tag filtering remains unsupported so

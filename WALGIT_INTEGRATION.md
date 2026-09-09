@@ -1,9 +1,10 @@
 # WalGit integration
 
-WalGit runs as a private sidecar and is the canonical Git engine for hosted
-repositories. The relay is the only public policy boundary; RustFS provides the
-initial local S3-compatible durable store and WalGit's disk directory is a
-reconstructable cache.
+WalGit runs as a private sidecar. It is the canonical Git engine for hosted
+repositories and may also be the private content replica for a
+GitHub-authoritative repository. The relay is the only public policy boundary;
+RustFS provides the initial local S3-compatible durable store and WalGit's disk
+directory is a reconstructable cache.
 
 ```text
 web / desktop / Git credential helper
@@ -51,8 +52,9 @@ and object storage on private networking and replace the local RustFS choices
 with normal secret injection, backup and lifecycle controls.
 
 GitHub and its forge worker are optional. Their configuration, separate App
-permissions, secret references, and one-way CI mirror are documented in
-[GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md).
+permissions, secret references, private WalGit replica, and one-way CI mirror
+are documented in [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) and
+[GIT_REPLICAS.md](GIT_REPLICAS.md).
 
 The relay `[git]` configuration is:
 
@@ -116,8 +118,8 @@ The smart-HTTP proxy allowlists upload-pack, receive-pack, required LFS object
 operations and read-only bundle routes. It streams request and response bodies;
 WalGit retains responsibility for Git protocol, LFS and cache behavior.
 
-The read-only browser proxy preserves WalGit response JSON as the normalized
-v1 contract for:
+The read-only browser routes preserve the observable WalGit v1 response shape
+for:
 
 ```text
 refs and refs/branches or refs/tags
@@ -128,11 +130,14 @@ commits?ref=...
 commit/<object-id>
 ```
 
-No browser needs a checkout or local Git binary. Response streaming is
-preserved. Backend cache headers are retained but rewritten as private; absent
-cache metadata defaults to `private, no-store`, preventing shared caches from
-leaking repository content. GitHub-backed repositories translate provider
-responses to the same contract; WalGit responses remain byte-compatible.
+No browser needs a checkout or local Git binary. The abstraction itself is
+provider-neutral: the adapter decodes WalGit into `Ref`, `Tree`, `Blob`,
+`Commit`, and `Diff` results, and Zooid serializes the compatible public JSON.
+Provider-specific truncation, continuation, incomplete data, oversized blobs,
+and capability limits are additive metadata rather than hidden differences.
+Backend cache headers are retained but rewritten as private; absent cache
+metadata defaults to `private, no-store`, preventing shared caches from leaking
+repository content.
 
 `GET /api/pull-requests/<event-id>/diff` is application-owned because it must
 reduce Nostr PR state. It calls the patched internal WalGit
@@ -149,9 +154,13 @@ and safely ignores events for unknown or non-hosted repositories. Decimal
 uint64 WAL sequences are stored in `NUMERIC(20,0)` columns. Replayed deliveries
 do not change the current-ref projection.
 
-These events are durable integration inputs only. They do not publish activity,
-PR revisions, or CI runs. CI is explicitly requested for an immutable commit;
-a ref update alone grants no signing or execution authority.
+These events are durable integration inputs only. Replica-origin events are
+marked from the exact `github-replica:<connection-id>` principal and do not
+enter the native authoritative ref projection or trigger an outbound Git write,
+PR revision, CI run, or activity. Native WalGit events may enqueue a separately
+configured post-cutover Git replication target. CI is explicitly requested for
+an immutable commit; a ref update alone grants no signing or execution
+authority.
 
 The remaining ref-policy, activity, automatic PR-revision, native merge, and
 repository-retirement work is tracked with its acceptance boundaries in

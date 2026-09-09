@@ -44,11 +44,13 @@ behind that boundary when updating the fork.
 ## Projects, tasks, pull requests, and hosted Git
 
 The relay accepts Buzz NIP-MP projects (`kind:30621`) and repository-scoped
-NIP-34 tasks and pull requests. The capability-based forge integration can use
-a private [WalGit](https://github.com/tobi/walgit) sidecar or GitHub for Git
-reads, and can independently select relay or GitHub collaboration, optional
-one-way GitHub mirroring, and exact-commit GitHub Actions. Nostr remains the
-authority for relay-origin collaboration.
+NIP-34 tasks and pull requests. The capability-based forge integration
+independently selects Git authority and repository-content backends. It can use
+a private [WalGit](https://github.com/tobi/walgit) sidecar as native Git storage
+or as a continuously refreshed content replica while GitHub remains public
+clone/push authority. Collaboration, outbound Git replication, collaboration
+projection, and exact-commit GitHub Actions are separate capabilities. Nostr
+remains the authority for relay-origin collaboration.
 Project Task Anchors are explicit `kind:30617` logical namespaces with
 `project-task-anchor=true` and no Git backing. Clone-less unmarked repositories
 are provisioned lazily when Git hosting is enabled; external clone locators
@@ -77,8 +79,10 @@ The authority and repository model is in
 [PROJECT_FORGE_MODEL.md](PROJECT_FORGE_MODEL.md). Capability composition and
 provider operations are documented in
 [FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md) and
-[GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md); the WalGit deployment/recovery
-contract remains in [WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md). Work still
+[GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md); private repository replication
+and cutover are in [GIT_REPLICAS.md](GIT_REPLICAS.md), and the WalGit
+deployment/recovery contract remains in
+[WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md). Work still
 deferred after both forge plans is tracked in
 [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
 
@@ -115,9 +119,10 @@ project. Startup performs only infrastructure and relay-internal bootstrap:
 4. Compose idempotently creates the empty `lapis-walgit` object-store bucket.
    The Git reconciler then resumes repository intents derived from any existing
    `kind:30617` events; on a new database there are none.
-5. Forge operational migrations create empty integration/outbox/webhook/CI
-   tables. No GitHub connection, repository attachment, import, mirror, or CI
-   run is created automatically.
+5. Forge operational migrations create empty integration, replica,
+   replication-job, outbox, webhook, and CI tables. No GitHub connection,
+   repository attachment, replica/import, mirror, or CI run is created
+   automatically.
 
 Projects and collaboration data are populated by signed client events. With
 the default `groups.admin_create_only = true`, a configured relay admin first

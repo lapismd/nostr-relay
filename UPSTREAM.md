@@ -36,22 +36,28 @@ live under `internal/khatru`. The local patch map is:
   callbacks at the existing Zooid seam.
 - `internal/gitforge`: repository classification, Buzz Git authentication, and
   the storage-independent WalGit client plus its capability adapter, repository
-  importer, and exact-commit CI mirror source.
+  importer, exact-object pinning, one-way Git replication source, and
+  exact-commit CI mirror source.
 - `internal/forge`: provider-neutral types, small optional capability
   interfaces, normalized errors, registry, and backend composition.
 - `internal/githubforge`: fixed-host GitHub App authentication, normalized Git
   reads, provider collaboration/mirror/event decoding, migration source, and
   exact-SHA Actions adapter. Provider response types do not leave this package.
 - `zooid/git_forge.go`, `zooid/git_http.go`, `zooid/forge_*.go`,
-  `zooid/github_*.go`, and `zooid/walgit_events.go`: durable desired state,
+  `zooid/git_replicas.go`, `zooid/git_replication.go`, `zooid/github_*.go`, and
+  `zooid/walgit_events.go`: durable desired state,
   integration resolution, outbox/webhook/mapping/migration/CI recovery,
-  NIP-29 authorization, public Git/web routes, PR diff reduction, and
-  authenticated provider/ref-event ingestion.
+  replica/ref/object synchronization, outbound Git projection, NIP-29
+  authorization, public Git/web routes, PR diff reduction, and authenticated
+  provider/ref-event ingestion.
 - migrations `006` and `007`: Git desired state, idempotent ref-event/current-ref
   projections, and full unsigned-WAL-sequence storage.
 - migrations `008`-`012`: additive forge integrations/connections, stable
   object mappings, webhook delivery/outbox/reconciliation state, verified
   migration state, separate CI bindings/runs, and disposable mirror refs.
+- migration `013`: independent authority/content/replication-target selection,
+  private replica state/ref/jobs/object pins, replica-origin event marking, and
+  outbound Git replication state/jobs.
 - `third_party/walgit`: exact upstream pin, reproducible archive verification,
   image recipe, deployment configuration, and the short bounded-compare patch.
 - `cmd/forge-worker`, `Dockerfile`, and `docker-compose.yml`: private WalGit plus
@@ -63,8 +69,8 @@ The audited Buzz contract and refresh checklist live in
 `docs/BUZZ_PROJECT_COMPATIBILITY.md`. Update its pinned Buzz commit and contract
 fixtures before adapting behavior to a newer Desktop release.
 
-The provider boundary and operator contract live in `FORGE_ABSTRACTION.md` and
-`GITHUB_INTEGRATION.md`. During an upstream update, keep GitHub host/API
+The provider boundary and operator contract live in `FORGE_ABSTRACTION.md`,
+`GITHUB_INTEGRATION.md`, and `GIT_REPLICAS.md`. During an upstream update, keep GitHub host/API
 selection fixed in `internal/githubforge`, signed-event authority and NIP-29 in
 Zooid, and callback registration in `internal/buzzcompat`. Never move provider
 or forge domain behavior under `internal/khatru`.

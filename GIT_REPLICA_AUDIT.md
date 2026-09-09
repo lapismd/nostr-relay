@@ -24,7 +24,7 @@ This audit records the pre-replica boundary at the capability/GitHub baseline
   WalGit package. The implementation is not moved into `internal/forge`.
 - `RepositoryImporter` already uses an ephemeral bare repository, askpass for
   the source token, a temporary destination config, `fetch --prune`, and
-  `push --mirror`; it supports force moves and deletions without another
+  force/pruned managed refspecs; it supports force moves and deletions without another
   durable Git store in Go.
 - GitHub push deliveries already retain delivery ID, repository ID, ref, and
   target OID. WalGit ref events already retain pusher and correlation ID.

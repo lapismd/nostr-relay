@@ -1,10 +1,11 @@
 # Deferred forge work
 
 This ledger distinguishes unavailable workflow from landed foundations. It
-supersedes the pre-abstraction ledger: GitHub Git reads, provider collaboration,
-durable webhooks/outbox, explicit GitHub-to-WalGit migration, one-way GitHub
-mirrors, provider-neutral CI, and exact-SHA GitHub Actions dispatch are now
-implemented.
+supersedes the pre-abstraction ledger: provider-neutral Git content results,
+independent Git authority/content backends, GitHub-to-WalGit private replicas,
+provider collaboration, durable webhooks/outbox, verified authority cutover,
+separate one-way outbound Git and collaboration projection, provider-neutral
+CI, and exact-SHA GitHub Actions dispatch are now implemented.
 
 ## Landed foundations
 
@@ -12,15 +13,16 @@ The relay provides:
 
 - Buzz-compatible signed Nostr projects, tasks, pull requests, updates,
   reviews, comments, and lifecycle reduction;
-- capability-based WalGit/GitHub composition with stable normalized browser
-  and PR-diff APIs;
+- capability-based WalGit/GitHub composition with provider-neutral content
+  results and stable browser/PR-diff serialization;
 - WalGit provisioning, Smart HTTP, LFS, bundles, browser reads, arbitrary
   comparison, durable ref events, object-store recovery, and repository import;
 - GitHub App repository reads, provider-first issues/PRs/comments/state/merge,
   bridge-signed provider roots, strict relay-root authority, webhook recovery,
   reconciliation, and bounded initial import;
-- explicit verified GitHub-to-WalGit cutover and optional one-way outbound
-  GitHub collaboration mirror; and
+- continuous or on-demand private GitHub-to-WalGit replication, explicit
+  verified authority cutover, and independently optional one-way outbound
+  GitHub Git and collaboration projection; and
 - exact-commit GitHub Actions, including a disposable private GitHub CI mirror
   for WalGit repositories and bridge-signed historical CI activity.
 
@@ -82,7 +84,8 @@ implemented:
 - per-user provider OAuth or relayed GitHub clone credentials;
 - title/body edit synchronization, external comment edit/deletion, assignee
   identity sync, provider subtasks, Projects, or milestones;
-- bidirectional Git mirroring or importing a CI mirror back into WalGit;
+- simultaneous/bidirectional Git replication, reverse reconciliation while
+  GitHub is authoritative, or importing a CI mirror back into WalGit;
 - automatic GitHub repository/CI-mirror creation;
 - new Nostr event kinds or a trusted-bridge reducer extension;
 - a custom Git object database, upload-pack, receive-pack, LFS server, or
