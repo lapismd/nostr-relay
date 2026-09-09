@@ -1,4 +1,4 @@
-//go:build walgit_integration
+//go:build walgit_integration || github_integration
 
 package zooid
 

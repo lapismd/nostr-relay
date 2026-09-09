@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +23,10 @@ import (
 	"fiatjaf.com/nostr"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"zooid/internal/forge"
+	"zooid/internal/gitforge"
 	"zooid/internal/githubforge"
 	"zooid/internal/projecttask"
 )
@@ -60,6 +64,16 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	fakeURL, err := url.Parse(endpoint)
 	require.NoError(t, err)
 
+	dockerNetwork, err := network.New(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = dockerNetwork.Remove(context.Background()) })
+	rustfs := startRustFS(t, ctx, dockerNetwork)
+	t.Cleanup(func() { _ = rustfs.Terminate(context.Background()) })
+	createWalGitBucket(t, ctx, dockerNetwork)
+	walgit := startWalGit(t, ctx, dockerNetwork)
+	t.Cleanup(func() { _ = walgit.Terminate(context.Background()) })
+	walgitURL := containerHTTPURL(t, ctx, walgit, "8080")
+
 	policy, store := createGitForgeTestPolicy(t, nil)
 	store.Config.GitHub.Enabled = true
 	store.Config.GitHub.MaxWebhookBytes = 1 << 20
@@ -72,9 +86,14 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second, Transport: fakeGitHubTransport{target: fakeURL, inner: http.DefaultTransport}}
 	backend, err := githubforge.New(policy, credentials, client)
 	require.NoError(t, err)
+	walgitBackend, err := gitforge.NewWalGitBackend(walgitURL, walgitServiceToken)
+	require.NoError(t, err)
+	walgitAdapter := gitforge.NewWalGitAdapter(walgitBackend)
+	require.NoError(t, policy.Registry.RegisterGit(walgitAdapter))
 	require.NoError(t, policy.Registry.RegisterGit(backend))
 	require.NoError(t, policy.Registry.RegisterCollaboration(backend))
 	require.NoError(t, policy.Registry.RegisterMirror(backend))
+	require.NoError(t, policy.Registry.RegisterGitReplicationTarget(backend))
 	require.NoError(t, policy.Registry.RegisterCI(backend))
 	policy.GitHub = backend
 	policy.Credentials = credentials
@@ -107,8 +126,9 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	grantGitGroup(policy, "channel", admin.Public(), "private")
 	attachmentBody, err := json.Marshal(map[string]any{
 		"expected_announcement_id": repository.ID.Hex(),
-		"git_backend":              "github", "collaboration_backend": "github",
+		"git_authority_backend":    "github", "content_backend": "walgit", "collaboration_backend": "github",
 		"connection_id": connectionID, "external_repository_id": "42",
+		"replica":    map[string]any{"enabled": true, "mode": "continuous", "read_policy": "fallback"},
 		"ci_backend": "github", "ci_connection_id": connectionID,
 		"ci_external_repository_id": "42", "ci_workflow": "ci.yml",
 	})
@@ -119,11 +139,18 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.Contains(t, recorder.Body.String(), `"clone":{"available":true,"url":"https://github.com/lapis/notes.git","auth":"provider"`)
 	require.Contains(t, recorder.Body.String(), `"ci":true`)
+	require.Contains(t, recorder.Body.String(), `"local_replica":true`)
+
+	rewriteConfig := filepath.Join(t.TempDir(), "gitconfig")
+	require.NoError(t, os.WriteFile(rewriteConfig, []byte("[url \""+strings.TrimRight(endpoint, "/")+"/\"]\n\tinsteadOf = https://github.com/\n"), 0o600))
+	t.Setenv("GIT_CONFIG_GLOBAL", rewriteConfig)
+	require.NoError(t, policy.ProcessGitReplicaOnce(ctx))
 
 	capabilities := httptest.NewRecorder()
 	policy.ServeForgeAPI(capabilities, signedForgeRequest(t, http.MethodGet, repositoryBase+"/capabilities", nil, admin))
 	require.Equal(t, http.StatusOK, capabilities.Code, capabilities.Body.String())
-	require.Contains(t, capabilities.Body.String(), `"maximum_changed_files":300`)
+	require.Contains(t, capabilities.Body.String(), `"content_backend":"walgit"`)
+	require.Contains(t, capabilities.Body.String(), `"maximum_changed_files":20000`)
 
 	browseURL := "https://relay.example/api/git/" + repository.PubKey.Hex() + "/notes/refs"
 	browseRequest := httptest.NewRequest(http.MethodGet, browseURL, nil)
@@ -131,7 +158,19 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	browse := httptest.NewRecorder()
 	policy.ServeRepositoryAPI(browse, browseRequest)
 	require.Equal(t, http.StatusOK, browse.Code, browse.Body.String())
-	require.Contains(t, browse.Body.String(), `"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`)
+	var refPage forge.RefPage
+	require.NoError(t, json.Unmarshal(browse.Body.Bytes(), &refPage))
+	require.NotNil(t, refPage.Head)
+	require.Len(t, refPage.Head.SHA, 40)
+	head := refPage.Head.SHA
+
+	blobURL := "https://relay.example/api/git/" + repository.PubKey.Hex() + "/notes/blob/" + head + "/web.txt"
+	blobRequest := httptest.NewRequest(http.MethodGet, blobURL, nil)
+	signedGitRequest(t, blobRequest, admin, http.MethodGet, blobURL)
+	blob := httptest.NewRecorder()
+	policy.ServeRepositoryAPI(blob, blobRequest)
+	require.Equal(t, http.StatusOK, blob.Code, blob.Body.String())
+	require.Contains(t, blob.Body.String(), "replicated content")
 
 	issueURL := repositoryBase + "/issues"
 	issueRequest := signedForgeRequest(t, http.MethodPost, issueURL, []byte(`{"title":"Docker issue","body":"Created through the durable provider command"}`), admin)
@@ -162,7 +201,7 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	require.Len(t, collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindIssue}, Tags: nostr.TagMap{"a": {"30617:" + repository.PubKey.Hex() + ":notes"}}}), 1)
 
 	ciURL := repositoryBase + "/ci"
-	ciRequest := signedForgeRequest(t, http.MethodPost, ciURL, []byte(`{"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`), admin)
+	ciRequest := signedForgeRequest(t, http.MethodPost, ciURL, []byte(`{"commit":"`+head+`"}`), admin)
 	ciRequest.Header.Set("Idempotency-Key", "fake-github-ci")
 	recorder = httptest.NewRecorder()
 	policy.ServeForgeAPI(recorder, ciRequest)
@@ -170,7 +209,7 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	require.NoError(t, policy.ProcessForgeOutboxOnce(ctx))
 	require.NoError(t, policy.ProcessForgeCIOnce(ctx))
 	ciEvents := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindTextNote}, Tags: nostr.TagMap{
-		"a": {"30617:" + repository.PubKey.Hex() + ":notes"}, "t": {"ci"}, "c": {strings.Repeat("a", 40)},
+		"a": {"30617:" + repository.PubKey.Hex() + ":notes"}, "t": {"ci"}, "c": {head},
 	}})
 	require.Len(t, ciEvents, 1)
 	require.Equal(t, "success", ciEvents[0].Tags.Find("status")[1])
@@ -179,9 +218,11 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	require.NoError(t, store.SaveEvent(anchor))
 	require.NoError(t, policy.Remember(ctx, anchor))
 	freshRegistry := forge.NewRegistry()
+	require.NoError(t, freshRegistry.RegisterGit(walgitAdapter))
 	require.NoError(t, freshRegistry.RegisterGit(backend))
 	require.NoError(t, freshRegistry.RegisterCollaboration(backend))
 	require.NoError(t, freshRegistry.RegisterMirror(backend))
+	require.NoError(t, freshRegistry.RegisterGitReplicationTarget(backend))
 	require.NoError(t, freshRegistry.RegisterCI(backend))
 	restarted := NewGitForgePolicyWithRegistry(ctx, store.Config, store, policy.Groups, policy.ProjectTasks, freshRegistry)
 	restarted.GitHub, restarted.Credentials, restarted.EventSource = backend, credentials, backend
@@ -189,7 +230,9 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 	resolved, found, err := restarted.ResolveIntegration(ctx, projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"})
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, forge.BackendGitHub, resolved.Repository.Integration.GitBackend)
+	require.Equal(t, forge.BackendGitHub, resolved.Repository.Integration.GitAuthorityBackend)
+	require.Equal(t, forge.BackendWalGit, resolved.Repository.Integration.ContentBackend)
+	require.Equal(t, "current", resolved.Capabilities.ReplicaState)
 	require.True(t, resolved.Capabilities.CI)
 	anchorResolved, found, err := restarted.ResolveIntegration(ctx, projecttask.RepositoryCoordinate{Owner: anchor.PubKey, ID: "project-tasks"})
 	require.NoError(t, err)

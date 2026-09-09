@@ -4,28 +4,40 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-const (
-	commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	runID  = 7001
-)
+const runID = 7001
 
 type service struct {
 	mu         sync.Mutex
 	ciRefs     map[string]string
 	dispatched bool
+	commit     string
+	tag        string
 }
 
 func main() {
-	api := &service{ciRefs: make(map[string]string)}
+	head, err := os.ReadFile("/git-data/refs/heads/main")
+	if err != nil {
+		log.Fatal(err)
+	}
+	tag, err := os.ReadFile("/git-data/refs/tags/v1")
+	if err != nil {
+		log.Fatal(err)
+	}
+	api := &service{ciRefs: make(map[string]string), commit: strings.TrimSpace(string(head)), tag: strings.TrimSpace(string(tag))}
 	log.Fatal(http.ListenAndServe(":8080", api))
 }
 
 func (api *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/lapis/notes.git/") {
+		http.StripPrefix("/lapis/notes.git/", http.FileServer(http.Dir("/git-data"))).ServeHTTP(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/health":
@@ -39,9 +51,13 @@ func (api *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/repositories/42":
 		writeJSON(w, http.StatusOK, repository())
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/git/ref/heads/main":
-		writeJSON(w, http.StatusOK, gitRef("refs/heads/main", commit))
-	case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/commits/"+commit:
-		writeJSON(w, http.StatusOK, map[string]any{"sha": commit})
+		writeJSON(w, http.StatusOK, gitRef("refs/heads/main", api.commit))
+	case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/git/matching-refs/heads":
+		writeJSON(w, http.StatusOK, []any{gitRef("refs/heads/main", api.commit)})
+	case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/git/matching-refs/tags":
+		writeJSON(w, http.StatusOK, []any{gitRef("refs/tags/v1", api.tag)})
+	case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/commits/"+api.commit:
+		writeJSON(w, http.StatusOK, map[string]any{"sha": api.commit})
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/issues":
 		writeJSON(w, http.StatusOK, []any{})
 	case r.Method == http.MethodPost && r.URL.Path == "/repos/lapis/notes/issues":
@@ -64,7 +80,7 @@ func (api *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		}
-		if json.NewDecoder(r.Body).Decode(&request) != nil || !strings.HasPrefix(request.Ref, "refs/heads/lapis-ci/") || request.SHA != commit {
+		if json.NewDecoder(r.Body).Decode(&request) != nil || !strings.HasPrefix(request.Ref, "refs/heads/lapis-ci/") || request.SHA != api.commit {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"message": "invalid test ref"})
 			return
 		}
@@ -122,7 +138,7 @@ func (api *service) workflowRun(status string) map[string]any {
 	}
 	api.mu.Unlock()
 	result := map[string]any{
-		"id": runID, "head_sha": commit, "status": status,
+		"id": runID, "head_sha": api.commit, "status": status,
 		"head_branch": branch, "html_url": "https://github.com/lapis/notes/actions/runs/7001",
 		"updated_at": "2026-09-09T12:00:00Z",
 	}
