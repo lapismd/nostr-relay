@@ -130,15 +130,14 @@ func createWalGitBucket(t *testing.T, ctx context.Context, net *testcontainers.D
 	t.Helper()
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:      "amazon/aws-cli@sha256:b6aeb95d19d7f5a8cae4eb814cb16739b6b2a4f2f46f427ada6a8c9a20d9881d",
-			Entrypoint: []string{"/bin/sh", "-c"},
+			Image:      "rustfs/rc@sha256:fad686174251b22de1e7b11438b3389932c93d2043c4eec981e1168c59edf92f",
+			Entrypoint: []string{"/bin/sh", "-ec"},
 			Cmd: []string{
-				"aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket lapis-walgit",
+				"rc alias set --quiet --region us-east-1 --bucket-lookup path local http://rustfs:9000 \"$S3_ACCESS_KEY_ID\" \"$S3_SECRET_ACCESS_KEY\" && rc bucket create --quiet --ignore-existing local/lapis-walgit",
 			},
 			Env: map[string]string{
-				"AWS_ACCESS_KEY_ID":     rustfsAccessKey,
-				"AWS_SECRET_ACCESS_KEY": rustfsSecretKey,
-				"AWS_DEFAULT_REGION":    "us-east-1",
+				"S3_ACCESS_KEY_ID":     rustfsAccessKey,
+				"S3_SECRET_ACCESS_KEY": rustfsSecretKey,
 			},
 			Networks:   []string{net.Name},
 			WaitingFor: wait.ForExit().WithExitTimeout(60 * time.Second),

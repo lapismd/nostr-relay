@@ -43,7 +43,7 @@ Validate and start the reference stack:
 ```sh
 docker compose config --quiet
 docker compose build relay walgit
-docker compose up -d postgres rustfs create-walgit-bucket walgit relay
+docker compose up -d postgres rustfs init-local-walgit-bucket walgit relay
 docker compose ps
 curl --fail http://127.0.0.1:8281/health
 ```
@@ -113,9 +113,8 @@ docker compose -f docker-compose.yml \
 
 This overlay demonstrates the production storage topology; the deployment
 platform should still provide production PostgreSQL, TLS, backups, and secret
-injection. The `AWS_*` names visible inside the local bucket initializer belong
-only to the AWS CLI's S3-compatible client interface. They are not part of the
-Lapis deployment contract or required in the WalGit container.
+injection. Local bucket creation uses the official RustFS `rc` client. No AWS
+CLI image or `AWS_*` credential variable is part of either topology.
 
 ## Configure a GitHub App
 

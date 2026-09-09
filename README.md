@@ -124,7 +124,8 @@ project. Startup performs only infrastructure and relay-internal bootstrap:
 2. The relay creates the PostgreSQL schema, indexes, and migration state.
 3. The relay signs its relay-level admin list and ensures the relay key, owner,
    and configured role pubkeys are present in its internal membership events.
-4. Compose idempotently creates the empty `lapis-walgit` object-store bucket.
+4. The local Compose stack uses the RustFS `rc` client to idempotently create
+   the empty `lapis-walgit` object-store bucket.
    The Git reconciler then resumes repository intents derived from any existing
    `kind:30617` events; on a new database there are none.
 5. Forge operational migrations create empty integration, replica,

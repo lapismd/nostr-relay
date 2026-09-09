@@ -7,5 +7,5 @@ services:
   rustfs:
     profiles: ["local-object-store"]
 
-  create-walgit-bucket:
+  init-local-walgit-bucket:
     profiles: ["local-object-store"]
