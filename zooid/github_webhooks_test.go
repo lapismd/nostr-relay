@@ -138,6 +138,69 @@ func TestGitHubExternalReviewCannotBecomeNativeApproval(t *testing.T) {
 	require.Empty(t, state.Approvals, "stock Buzz reduction must not trust an external-review observation")
 }
 
+func TestGitHubReviewCommentReactionSnapshotProjectsAddsAndRemovals(t *testing.T) {
+	policy, store, _, repository := configureWebhookTest(t)
+	head := strings.Repeat("a", 40)
+	process := func(delivery githubWebhookDelivery) {
+		t.Helper()
+		delivery.Provider = forge.BackendGitHub
+		delivery.ConnectionID = "connection"
+		delivery.ExternalRepositoryID = "42"
+		delivery.ReceivedAt = time.Now().UTC()
+		require.NoError(t, policy.processGitHubWebhook(context.Background(), delivery))
+	}
+
+	pullPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42},
+		"pull_request": map[string]any{
+			"id": 9100, "number": 18, "title": "Webhook PR", "body": "Review it", "state": "open",
+			"html_url": "https://github.com/lapis/notes/pull/18", "user": map[string]any{"id": 72, "login": "author"},
+			"head": map[string]any{"sha": head, "ref": "feature"}, "base": map[string]any{"ref": "main"},
+		},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "pull_request", Action: "opened", ExternalObjectID: "9100", Payload: pullPayload})
+
+	commentPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42}, "pull_request": map[string]any{"id": 9100},
+		"comment": map[string]any{
+			"id": 9300, "body": "Please change this", "commit_id": head, "path": "README.md", "line": 2, "side": "RIGHT",
+			"html_url": "https://github.com/lapis/notes/pull/18#discussion_r9300", "user": map[string]any{"id": 73, "login": "reviewer"},
+		},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "pull_request_review_comment", Action: "created", ExternalObjectID: "9300", Payload: commentPayload})
+
+	reactionPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42}, "comment": map[string]any{"id": 9300},
+		"reactions": []map[string]any{{
+			"id": 9400, "content": "heart", "created_at": "2026-09-09T10:00:00Z",
+			"user": map[string]any{"id": 74, "login": "reactor"},
+		}},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "pull_request_review_comment_reactions", Action: "synchronize", ExternalObjectID: "9300", Payload: reactionPayload})
+
+	reactions := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindReaction}})
+	require.Len(t, reactions, 1)
+	require.Equal(t, "❤️", reactions[0].Content)
+	require.Equal(t, "9400", reactions[0].Tags.Find("external-id")[1])
+	require.Equal(t, "reactor", reactions[0].Tags.Find("external-author")[1])
+
+	emptyPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42}, "comment": map[string]any{"id": 9300},
+		"reactions": []any{},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "pull_request_review_comment_reactions", Action: "synchronize", ExternalObjectID: "9300", Payload: emptyPayload})
+	deletions := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindDeletion}, Tags: nostr.TagMap{"e": {reactions[0].ID.Hex()}}})
+	require.Len(t, deletions, 1)
+	bridge, err := policy.bridgeSecretForConnection(context.Background(), "connection")
+	require.NoError(t, err)
+	require.Equal(t, bridge.Public(), deletions[0].PubKey)
+	require.Equal(t, "30617:"+repository.PubKey.Hex()+":notes", reactions[0].Tags.Find("a")[1])
+}
+
 func TestGitHubWebhookRejectsInvalidSignatureBodyLimitAndDeliveryConflict(t *testing.T) {
 	policy, _, _, _ := configureWebhookTest(t)
 	body := []byte(`{"installation":{"id":99}}`)

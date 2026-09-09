@@ -329,6 +329,68 @@ func (policy *GitForgePolicy) loadMappingByExternal(ctx context.Context, provide
 		provider, connectionID, externalID, objectType))
 }
 
+func (policy *GitForgePolicy) loadMappingByNostrEvent(ctx context.Context, provider, connectionID, eventID, objectType string) (forgeObjectMapping, bool, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	return policy.scanForgeMapping(GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT provider, connection_id, owner, repo, object_type, nostr_event_id,
+		       nostr_root_id, external_id, COALESCE(external_number, 0), origin,
+		       authority, external_url, correlation_marker
+		FROM {{.Name}}__forge_object_mappings
+		WHERE provider = $1 AND connection_id = $2 AND nostr_event_id = $3 AND object_type = $4`),
+		provider, connectionID, eventID, objectType))
+}
+
+func (policy *GitForgePolicy) loadCommentMappingByNostrEvent(ctx context.Context, provider, connectionID, eventID string) (forgeObjectMapping, bool, error) {
+	for _, objectType := range []string{"comment", "activity"} {
+		mapping, found, err := policy.loadMappingByNostrEvent(ctx, provider, connectionID, eventID, objectType)
+		if err != nil || found {
+			return mapping, found, err
+		}
+	}
+	return forgeObjectMapping{}, false, nil
+}
+
+func (policy *GitForgePolicy) loadProviderReactionMappings(ctx context.Context, connectionID, targetEventID string) ([]forgeObjectMapping, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	rows, err := GetDb().QueryContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT provider, connection_id, owner, repo, object_type, nostr_event_id,
+		       nostr_root_id, external_id, COALESCE(external_number, 0), origin,
+		       authority, external_url, correlation_marker
+		FROM {{.Name}}__forge_object_mappings
+		WHERE provider = 'github' AND connection_id = $1 AND nostr_root_id = $2
+		  AND object_type = 'reaction' AND origin = 'provider' AND authority <> 'deleted'
+		ORDER BY external_id`), connectionID, targetEventID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]forgeObjectMapping, 0)
+	for rows.Next() {
+		mapping, found, err := policy.scanForgeMapping(rows)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			result = append(result, mapping)
+		}
+	}
+	return result, rows.Err()
+}
+
+func (policy *GitForgePolicy) markProviderReactionDeleted(ctx context.Context, mapping forgeObjectMapping) error {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	_, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		UPDATE {{.Name}}__forge_object_mappings
+		SET authority = 'deleted', updated_at = NOW()
+		WHERE provider = $1 AND connection_id = $2 AND external_id = $3
+		  AND object_type = 'reaction' AND origin = 'provider'`),
+		mapping.Provider, mapping.ConnectionID, mapping.ExternalID)
+	return err
+}
+
 func (policy *GitForgePolicy) scanForgeMapping(row rowScanner) (forgeObjectMapping, bool, error) {
 	var mapping forgeObjectMapping
 	var ownerHex string
@@ -485,6 +547,15 @@ func (policy *GitForgePolicy) projectForgeOperation(ctx context.Context, reposit
 				Origin: "relay", Authority: "relay", ExternalURL: result.ExternalURL,
 				CorrelationMarker: operation.CorrelationMarker,
 			})
+		case "reaction_add":
+			return policy.saveForgeMapping(ctx, forgeObjectMapping{
+				Provider: operation.Provider, ConnectionID: operation.ConnectionID,
+				Coordinate: operation.Coordinate, ObjectType: "reaction",
+				NostrEventID: source.ID.Hex(), NostrRootID: operation.RootEventID,
+				ExternalID: result.ExternalID, Origin: "relay", Authority: "relay",
+			})
+		case "reaction_delete":
+			return nil
 		case "state":
 			return nil
 		}
@@ -617,6 +688,47 @@ func (policy *GitForgePolicy) prepareForgeCommand(ctx context.Context, operation
 	if operation.RootEventID == "" || operation.Command == "create_issue" || operation.Command == "create_pull_request" {
 		return operation.Payload, nil
 	}
+	if operation.Command == "reaction_add" || operation.Command == "reaction_delete" {
+		var payload map[string]any
+		if err := json.Unmarshal(operation.Payload, &payload); err != nil {
+			return nil, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_forge_command"}
+		}
+		targetID := stringValue(payload["target_event_id"])
+		mapping, found, err := policy.loadCommentMappingByNostrEvent(ctx, operation.Provider, operation.ConnectionID, targetID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_pending", Retryable: true}
+		}
+		target, found, err := policy.eventByHexID(ctx, targetID)
+		if err != nil || !found {
+			return nil, &forge.Error{Status: http.StatusConflict, Code: "source_event_not_found"}
+		}
+		if target.Tags.Find("external-decision") != nil {
+			return nil, &forge.Error{Status: http.StatusBadRequest, Code: "unsupported_github_comment_type"}
+		}
+		commentType := "issue_comment"
+		if forgeHasTagValue(target, "t", "external-review") && target.Tags.Find("path") != nil {
+			commentType = "pull_request_review_comment"
+		}
+		payload["external_comment_id"] = mapping.ExternalID
+		payload["comment_type"] = commentType
+		delete(payload, "target_event_id")
+		if operation.Command == "reaction_delete" {
+			reactionID := stringValue(payload["reaction_event_id"])
+			reactionMapping, found, err := policy.loadMappingByNostrEvent(ctx, operation.Provider, operation.ConnectionID, reactionID, "reaction")
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				return nil, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_pending", Retryable: true}
+			}
+			payload["external_reaction_id"] = reactionMapping.ExternalID
+			delete(payload, "reaction_event_id")
+		}
+		return json.Marshal(payload)
+	}
 	mapping, found, err := policy.loadMappingByNostrRoot(ctx, operation.Provider, operation.ConnectionID, operation.RootEventID)
 	if err != nil {
 		return nil, err
@@ -653,6 +765,11 @@ func (policy *GitForgePolicy) persistBridgeEvent(ctx context.Context, event nost
 		return &forge.Error{Status: http.StatusInternalServerError, Code: "invalid_bridge_event"}
 	}
 	recognized, err := projecttask.ValidateEvent(event)
+	if err == nil && !recognized && event.Kind == nostr.KindDeletion {
+		scope, scopeErr := policy.ProjectTasks.Resolver.Resolve(ctx, event)
+		err = scopeErr
+		recognized = scope.Relevant
+	}
 	if err != nil || !recognized {
 		return &forge.Error{Status: http.StatusInternalServerError, Code: "invalid_bridge_event"}
 	}

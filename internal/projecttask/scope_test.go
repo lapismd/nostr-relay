@@ -114,6 +114,44 @@ func TestScopeResolverIntersectsRepositoryAndPullRequestOriginForEveryDescendant
 	require.Nil(t, root.Tags.Find("derived-h"), "resolution never rewrites the signed event")
 }
 
+func TestScopeResolverDerivesPullRequestReactionAndDeletionScope(t *testing.T) {
+	owner := pubkey(t, "c")
+	author := pubkey(t, "d")
+	reviewer := pubkey(t, "e")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	repository := nostr.Event{
+		ID: id(t, "6"), Kind: nostr.KindRepositoryAnnouncement, PubKey: owner,
+		Tags: nostr.Tags{{"d", "notes"}, {TagBuzzChannel, "repo-channel"}},
+	}
+	root := validPullRequestEvent(t, id(t, "7"), author, owner, "notes", strings.Repeat("a", 40))
+	comment := nostr.Event{
+		ID: id(t, "8"), Kind: nostr.KindTextNote, PubKey: reviewer,
+		Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}},
+	}
+	reaction := nostr.Event{
+		ID: id(t, "9"), Kind: nostr.KindReaction, PubKey: reviewer, Content: "👍",
+		Tags: nostr.Tags{{"e", comment.ID.Hex()}, {"p", reviewer.Hex()}, {"k", "1"}, {"a", coordinate.String()}},
+	}
+	reader := memoryEventReader{
+		byID: map[nostr.ID]nostr.Event{
+			repository.ID: repository, root.ID: root, comment.ID: comment, reaction.ID: reaction,
+		},
+		byAddress: map[string]nostr.Event{coordinate.String(): repository},
+	}
+	resolver := ScopeResolver{Reader: reader}
+
+	for name, event := range map[string]nostr.Event{
+		"reaction": reaction,
+		"deletion": {Kind: nostr.KindDeletion, PubKey: reviewer, Tags: nostr.Tags{{"e", reaction.ID.Hex()}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scope, err := resolver.Resolve(context.Background(), event)
+			require.NoError(t, err)
+			require.Equal(t, ResolvedScope{Relevant: true, Channels: []string{"repo-channel"}}, scope)
+		})
+	}
+}
+
 func TestScopeResolverRejectsPullRequestRootAndRepositoryMismatches(t *testing.T) {
 	owner := pubkey(t, "8")
 	author := pubkey(t, "9")

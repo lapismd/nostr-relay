@@ -15,12 +15,15 @@ import (
 )
 
 type importObject struct {
-	ID          int64           `json:"id"`
-	Number      int64           `json:"number"`
-	State       string          `json:"state"`
-	Draft       bool            `json:"draft"`
-	Merged      bool            `json:"merged"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID        int64     `json:"id"`
+	Number    int64     `json:"number"`
+	State     string    `json:"state"`
+	Draft     bool      `json:"draft"`
+	Merged    bool      `json:"merged"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Reactions struct {
+		TotalCount int `json:"total_count"`
+	} `json:"reactions"`
 	PullRequest json.RawMessage `json:"pull_request"`
 	Raw         json.RawMessage `json:"-"`
 }
@@ -133,11 +136,60 @@ func (backend *Backend) collectProviderObjects(ctx context.Context, repository f
 		result.Comments += len(comments)
 		result.Truncated = result.Truncated || limited
 	}
+	reactionSnapshots, limited, err := backend.importReviewCommentReactionSnapshots(ctx, repository, prefix, connection, metadata, request.MaximumComments)
+	if err != nil {
+		return result, err
+	}
+	result.Events = append(result.Events, reactionSnapshots...)
+	result.Truncated = result.Truncated || limited
 	if result.Truncated {
 		result.Incomplete = []string{"roots-or-comments"}
 	}
 	_ = repositoryID
 	return result, nil
+}
+
+type importReaction struct {
+	ID        int64      `json:"id"`
+	Content   string     `json:"content"`
+	CreatedAt time.Time  `json:"created_at"`
+	User      importUser `json:"user"`
+}
+
+type importUser struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
+}
+
+func (backend *Backend) importReviewCommentReactionSnapshots(ctx context.Context, repository forge.Repository, prefix string, connection Connection, metadata RepositoryMetadata, maximum int) ([]forge.ProviderEvent, bool, error) {
+	comments, truncated, err := backend.listImportObjects(ctx, repository, repoPath(repository)+"/pulls/comments?sort=updated&direction=desc", maximum)
+	if err != nil {
+		return nil, false, err
+	}
+	events := make([]forge.ProviderEvent, 0, len(comments))
+	for _, comment := range comments {
+		reactions := make([]importReaction, 0)
+		if comment.Reactions.TotalCount > 0 {
+			path := repoPath(repository) + "/pulls/comments/" + strconv.FormatInt(comment.ID, 10) + "/reactions?per_page=100"
+			response, err := backend.doRepository(ctx, repository, http.MethodGet, path, nil, collaborationPermissions)
+			if err != nil {
+				return nil, false, err
+			}
+			if err := decodeAndClose(response, &reactions, 8<<20); err != nil {
+				return nil, false, err
+			}
+		}
+		payload, err := json.Marshal(map[string]any{
+			"installation": map[string]int64{"id": connection.InstallationID},
+			"repository":   metadata, "comment": map[string]int64{"id": comment.ID},
+			"reactions": reactions,
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		events = append(events, normalizedImportedEvent(prefix, connection, metadata.ID, "pull_request_review_comment_reactions", "synchronize", comment.ID, payload))
+	}
+	return events, truncated, nil
 }
 
 func (backend *Backend) listImportObjects(ctx context.Context, repository forge.Repository, basePath string, maximum int) ([]importObject, bool, error) {

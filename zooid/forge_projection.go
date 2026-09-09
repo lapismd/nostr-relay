@@ -9,6 +9,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"zooid/internal/forge"
+	"zooid/internal/githubforge"
 	"zooid/internal/projecttask"
 )
 
@@ -62,6 +63,46 @@ func (policy *GitForgePolicy) rememberForgeProjection(ctx context.Context, event
 		}
 		command, objectType = "comment", "comment"
 		payload["body"] = event.Content
+	case nostr.KindReaction:
+		content, supported := githubforge.ReactionContent(event.Content)
+		if !supported {
+			return nil
+		}
+		targetID := forgeFirstTag(event, "e")
+		var found bool
+		var err error
+		root, found, err = policy.eventByHexID(ctx, targetID)
+		if err != nil || !found || root.Kind != nostr.KindTextNote && root.Kind != nostr.KindComment || root.Tags.Find("external-decision") != nil {
+			return err
+		}
+		coordinate, err = repositoryCoordinateFromEvent(event)
+		if err != nil || repositoryTagValueForForge(root) != coordinate.String() {
+			return nil
+		}
+		command, objectType = "reaction_add", "reaction"
+		payload["content"] = content
+		payload["target_event_id"] = root.ID.Hex()
+	case nostr.KindDeletion:
+		reactionID := forgeFirstTag(event, "e")
+		if reactionID == "" {
+			return nil
+		}
+		reaction, found, err := policy.eventByHexID(ctx, reactionID)
+		if err != nil || !found || reaction.Kind != nostr.KindReaction || reaction.PubKey != event.PubKey {
+			return err
+		}
+		targetID := forgeFirstTag(reaction, "e")
+		root, found, err = policy.eventByHexID(ctx, targetID)
+		if err != nil || !found || root.Kind != nostr.KindTextNote && root.Kind != nostr.KindComment || root.Tags.Find("external-decision") != nil {
+			return err
+		}
+		coordinate, err = repositoryCoordinateFromEvent(reaction)
+		if err != nil || repositoryTagValueForForge(root) != coordinate.String() {
+			return nil
+		}
+		command, objectType = "reaction_delete", "reaction"
+		payload["target_event_id"] = root.ID.Hex()
+		payload["reaction_event_id"] = reaction.ID.Hex()
 	case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft:
 		rootID := forgeRootEventID(event)
 		if rootID == "" {
@@ -108,7 +149,7 @@ func (policy *GitForgePolicy) rememberForgeProjection(ctx context.Context, event
 func (policy *GitForgePolicy) rebuildForgeOutbox(ctx context.Context) error {
 	for _, kinds := range [][]nostr.Kind{
 		{nostr.KindIssue, projecttask.KindPullRequest},
-		{nostr.KindTextNote, nostr.KindComment, nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft},
+		{nostr.KindTextNote, nostr.KindComment, nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft, nostr.KindReaction, nostr.KindDeletion},
 	} {
 		for event := range policy.Events.QueryEventsBefore(ctx, nostr.Filter{Kinds: kinds}, "", 0) {
 			if policy.ProjectTasks.IsTombstoned(ctx, event) {
@@ -170,6 +211,14 @@ func workItemTitle(event nostr.Event) string {
 		title = "Nostr work item"
 	}
 	return title
+}
+
+func repositoryTagValueForForge(event nostr.Event) string {
+	tag := event.Tags.Find("a")
+	if tag == nil || len(tag) < 2 {
+		return ""
+	}
+	return tag[1]
 }
 
 func forgeRootEventID(event nostr.Event) string {

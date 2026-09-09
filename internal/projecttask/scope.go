@@ -228,6 +228,37 @@ func (state *resolutionState) resolve(ctx context.Context, event nostr.Event, de
 		mergeChannels(result.channels, rootScope.channels)
 		return state.requireSingleScope(result)
 
+	case nostr.KindReaction:
+		result.relevant = hasRepositoryCoordinate(event.Tags)
+		if !result.relevant {
+			return result, nil
+		}
+		target, err := state.readEventTag(ctx, event.Tags.Find("e"), "reaction target")
+		if err != nil {
+			return result, err
+		}
+		if firstTagValue(event.Tags, "p") != target.PubKey.Hex() || firstTagValue(event.Tags, "k") != kindNumber(target.Kind) {
+			return result, fmt.Errorf("%w: reaction target metadata conflicts", ErrScopeUnresolved)
+		}
+		if repositoryTagValue(target) == "" || repositoryTagValue(event) != repositoryTagValue(target) {
+			return result, fmt.Errorf("%w: reaction repository does not match its target", ErrScopeUnresolved)
+		}
+		targetScope, err := state.resolve(ctx, target, depth+1)
+		if err != nil {
+			return result, err
+		}
+		if !targetScope.relevant {
+			return result, fmt.Errorf("%w: reaction target is outside the project graph", ErrScopeUnresolved)
+		}
+		if err := directScopeMustBeInherited(event, targetScope.channels); err != nil {
+			return result, err
+		}
+		mergeResolution(&result, targetScope)
+		if result.pullRequestGraph {
+			return result, nil
+		}
+		return state.requireSingleScope(result)
+
 	case nostr.KindDeletion:
 		return state.resolveDeletion(ctx, event, depth)
 	}

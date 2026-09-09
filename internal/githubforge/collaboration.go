@@ -26,11 +26,17 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 		payload["body"] = strings.TrimRight(body, "\n") + "\n\n<!-- lapis:" + command.CorrelationMarker + " -->"
 	}
 	externalNumber, _ := numberValue(payload["external_number"])
+	externalCommentID, _ := numberValue(payload["external_comment_id"])
+	externalReactionID, _ := numberValue(payload["external_reaction_id"])
 	objectType, _ := payload["object_type"].(string)
+	commentType, _ := payload["comment_type"].(string)
 	state, _ := payload["state"].(string)
 	delete(payload, "external_number")
+	delete(payload, "external_comment_id")
+	delete(payload, "external_reaction_id")
 	delete(payload, "head_sha")
 	delete(payload, "object_type")
+	delete(payload, "comment_type")
 
 	method, path := "", ""
 	switch command.Kind {
@@ -63,6 +69,33 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 		payload["sha"] = command.ExpectedHead
 		delete(payload, "state")
 		method, path = http.MethodPut, repoPath(command.Repository)+"/pulls/"+strconv.FormatInt(externalNumber, 10)+"/merge"
+	case "reaction_add", "reaction_delete":
+		if externalCommentID <= 0 {
+			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_missing"}
+		}
+		reactionPath := ""
+		switch commentType {
+		case "issue_comment":
+			reactionPath = repoPath(command.Repository) + "/issues/comments/" + strconv.FormatInt(externalCommentID, 10) + "/reactions"
+		case "pull_request_review_comment":
+			reactionPath = repoPath(command.Repository) + "/pulls/comments/" + strconv.FormatInt(externalCommentID, 10) + "/reactions"
+		default:
+			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "unsupported_github_comment_type"}
+		}
+		if command.Kind == "reaction_add" {
+			content, _ := payload["content"].(string)
+			if !isGitHubReactionContent(content) {
+				return forge.CollaborationResult{}, &forge.Error{Status: http.StatusBadRequest, Code: "unsupported_github_reaction"}
+			}
+			method, path = http.MethodPost, reactionPath
+			payload = map[string]any{"content": content}
+		} else {
+			if externalReactionID <= 0 {
+				return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_missing"}
+			}
+			method, path = http.MethodDelete, reactionPath+"/"+strconv.FormatInt(externalReactionID, 10)
+			payload = map[string]any{}
+		}
 	default:
 		return forge.CollaborationResult{}, &forge.Error{Status: http.StatusBadRequest, Code: "unsupported_forge_command"}
 	}
@@ -79,6 +112,9 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 		return forge.CollaborationResult{}, err
 	}
 	defer response.Body.Close()
+	if command.Kind == "reaction_delete" && response.StatusCode == http.StatusNoContent {
+		return forge.CollaborationResult{ExternalID: strconv.FormatInt(externalReactionID, 10)}, nil
+	}
 	var result struct {
 		ID        int64  `json:"id"`
 		Number    int64  `json:"number"`

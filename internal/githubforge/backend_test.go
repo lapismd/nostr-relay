@@ -203,6 +203,50 @@ func TestGitHubRepositoryMissingReadsUseShortNegativeCache(t *testing.T) {
 	require.Equal(t, int32(1), reads.Load())
 }
 
+func TestGitHubReconcileSnapshotsReviewCommentReactions(t *testing.T) {
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(t, w, r) {
+			return
+		}
+		switch r.URL.Path {
+		case "/repositories/42":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "lapis/notes", "default_branch": "main"})
+		case "/repos/lapis/notes/issues", "/repos/lapis/notes/pulls":
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/repos/lapis/notes/pulls/comments":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 44, "reactions": map[string]any{"total_count": 1}}})
+		case "/repos/lapis/notes/pulls/comments/44/reactions":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id": 77, "content": "heart", "created_at": "2026-09-09T10:00:00Z",
+				"user": map[string]any{"id": 55, "login": "octocat"},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	result, err := backend.Reconcile(context.Background(), repository, forge.ProviderImportRequest{
+		UpdatedSince: time.Now().Add(-10 * time.Minute), MaximumRoots: 10, MaximumComments: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Events, 1)
+	event := result.Events[0]
+	require.Equal(t, "pull_request_review_comment_reactions", event.EventType)
+	require.Equal(t, "synchronize", event.Action)
+	require.Equal(t, "44", event.ExternalObjectID)
+	var payload struct {
+		Comment   struct{ ID int64 } `json:"comment"`
+		Reactions []struct {
+			ID      int64  `json:"id"`
+			Content string `json:"content"`
+		} `json:"reactions"`
+	}
+	require.NoError(t, json.Unmarshal(event.Payload, &payload))
+	require.Equal(t, int64(44), payload.Comment.ID)
+	require.Equal(t, int64(77), payload.Reactions[0].ID)
+	require.Equal(t, "heart", payload.Reactions[0].Content)
+}
+
 func TestGitHubBlobAndCompareUseNormalizedV1Shapes(t *testing.T) {
 	head := strings.Repeat("b", 40)
 	base := strings.Repeat("a", 40)

@@ -82,12 +82,39 @@ func ValidateEvent(event nostr.Event) (bool, error) {
 		if isBuzzWorkItemNote(event) {
 			return true, validateBuzzWorkItemNote(event)
 		}
+	case nostr.KindReaction:
+		if hasRepositoryCoordinate(event.Tags) {
+			return true, validateWorkItemReaction(event)
+		}
 	case nostr.KindDeletion:
 		if targetsProjectOrRepository(event) {
 			return true, validateTombstone(event)
 		}
 	}
 	return false, nil
+}
+
+func validateWorkItemReaction(event nostr.Event) error {
+	if !utf8.ValidString(event.Content) || event.Content == "" || len(event.Content) > 64 {
+		return fmt.Errorf("work-item reaction content must be 1 to 64 UTF-8 bytes")
+	}
+	if _, err := validateRequiredRepositoryTag(event.Tags, "work-item reaction"); err != nil {
+		return err
+	}
+	if err := validateExactHexSingleton(event.Tags, "e", "reaction target event ID"); err != nil {
+		return err
+	}
+	if err := validatePubkeySingleton(event.Tags, "p", "reaction target author"); err != nil {
+		return err
+	}
+	kinds := tagsNamed(event.Tags, "k")
+	if len(kinds) != 1 || len(kinds[0]) < 2 {
+		return fmt.Errorf("k must contain exactly one reaction target kind")
+	}
+	if _, err := strconv.ParseUint(kinds[0][1], 10, 16); err != nil {
+		return fmt.Errorf("k must contain a valid reaction target kind")
+	}
+	return nil
 }
 
 func validateProject(event nostr.Event) error {

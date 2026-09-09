@@ -176,6 +176,67 @@ func TestNativeNostrRootRemainsAuthoritativeAndOutboxRebuildsCrashGap(t *testing
 	require.Equal(t, "8300", mapping.ExternalID)
 }
 
+func TestRelayReviewCommentReactionProjectsToGitHubAndDeletionRemovesIt(t *testing.T) {
+	policy, store, provider, actor, repository, connectionID := configureForgeCollaborationTest(t)
+	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
+	root := nostr.Event{Kind: projecttask.KindPullRequest, CreatedAt: nostr.Now(), Content: "Review body", Tags: nostr.Tags{
+		{"a", coordinate.String()}, {"p", repository.PubKey.Hex()}, {"subject", "Review reaction"},
+		{"c", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"clone", "https://github.com/lapis/notes.git"},
+	}}
+	require.NoError(t, root.Sign(actor))
+	require.NoError(t, store.SaveEvent(root))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), root))
+	require.NoError(t, policy.saveForgeMapping(context.Background(), forgeObjectMapping{
+		Provider: forge.BackendGitHub, ConnectionID: connectionID, Coordinate: coordinate,
+		ObjectType: "pull_request", NostrEventID: root.ID.Hex(), NostrRootID: root.ID.Hex(),
+		ExternalID: "9100", ExternalNumber: 18, Origin: "provider", Authority: "provider",
+	}))
+	bridge, err := policy.bridgeSecretForConnection(context.Background(), connectionID)
+	require.NoError(t, err)
+	comment := nostr.Event{Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Please change this", Tags: nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"p", root.PubKey.Hex()},
+		{"t", "external-review"}, {"path", "README.md"},
+	}}
+	require.NoError(t, comment.Sign(bridge))
+	require.NoError(t, store.SaveEvent(comment))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), comment))
+	require.NoError(t, policy.saveForgeMapping(context.Background(), forgeObjectMapping{
+		Provider: forge.BackendGitHub, ConnectionID: connectionID, Coordinate: coordinate,
+		ObjectType: "activity", NostrEventID: comment.ID.Hex(), NostrRootID: root.ID.Hex(),
+		ExternalID: "9300", Origin: "provider", Authority: "observation",
+	}))
+
+	reaction := nostr.Event{Kind: nostr.KindReaction, CreatedAt: nostr.Now(), Content: "❤️", Tags: nostr.Tags{
+		{"e", comment.ID.Hex()}, {"p", comment.PubKey.Hex()}, {"k", "1"}, {"a", coordinate.String()},
+	}}
+	require.NoError(t, reaction.Sign(actor))
+	require.NoError(t, store.SaveEvent(reaction))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), reaction))
+	require.NoError(t, policy.Remember(context.Background(), reaction))
+	provider.result = forge.CollaborationResult{ExternalID: "9400", ExternalAuthor: "lapis-bot"}
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	require.Len(t, provider.commands, 1)
+	require.Equal(t, "reaction_add", provider.commands[0].Kind)
+	var addPayload map[string]any
+	require.NoError(t, json.Unmarshal(provider.commands[0].Payload, &addPayload))
+	require.Equal(t, "9300", addPayload["external_comment_id"])
+	require.Equal(t, "pull_request_review_comment", addPayload["comment_type"])
+	require.Equal(t, "heart", addPayload["content"])
+
+	deletion := nostr.Event{Kind: nostr.KindDeletion, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"e", reaction.ID.Hex()}}}
+	require.NoError(t, deletion.Sign(actor))
+	require.NoError(t, store.SaveEvent(deletion))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), deletion))
+	require.NoError(t, policy.Remember(context.Background(), deletion))
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	require.Len(t, provider.commands, 2)
+	require.Equal(t, "reaction_delete", provider.commands[1].Kind)
+	var deletePayload map[string]any
+	require.NoError(t, json.Unmarshal(provider.commands[1].Payload, &deletePayload))
+	require.Equal(t, "9300", deletePayload["external_comment_id"])
+	require.Equal(t, "9400", deletePayload["external_reaction_id"])
+}
+
 func collectForgeEvents(store *EventStore, filter nostr.Filter) []nostr.Event {
 	events := make([]nostr.Event, 0)
 	for event := range store.QueryEvents(filter, 100) {

@@ -56,6 +56,7 @@ its clone locators equals the relay's canonical Git URL.
 | Current Buzz Desktop task comment | `kind:1` with root `e` and repository `a` |
 | Buzz pull-request comment or review | `kind:1` with root `e`, repository `a`, and optional review or inline `t` labels |
 | Standard pull-request comment | NIP-22 `kind:1111`, with `K=1618` and consistent root/immediate-parent ancestry |
+| Work-item comment reaction | NIP-25 `kind:7` with immediate target `e/p/k` and matching repository `a` |
 | Subtask | `kind:1621` with matching custom `parent` and `e` tags plus the same repository `a` |
 | Project/repository deletion | NIP-09 `kind:5` with an `a` target |
 | Pull-request graph deletion | NIP-09 `kind:5` with an `e` target, signed by that event's signer |
@@ -113,7 +114,7 @@ display divergence rather than rejecting maintainer-authored status events.
 
 `buzz-channel` binds a project or repository to a NIP-29 group. The relay
 derives the same channel for repository-scoped issues, PRs, status events,
-updates, notes, comments, subtasks, and tombstones. A PR root may additionally
+updates, notes, comments, reactions, subtasks, and tombstones. A PR root may additionally
 carry an opaque bounded `h` origin channel. Repository and origin channels are
 an intersection: a caller must pass normal NIP-29 policy for every channel,
 and all descendants inherit both. Each check uses an internal event copy with
@@ -132,7 +133,7 @@ owner mode is isolated behind the scope/actor policy interface; NIP-OA and
 
 Projects and repositories use normal parameterized-replaceable event rules.
 Project and repository tombstones must be signed by the addressed owner. A PR
-root or descendant can be deleted only by that event's signer. The read
+root, descendant, or reaction can be deleted only by that event's signer. The read
 projection suppresses an event when an authorized tombstone at the same or
 newer timestamp targets its address or ID. Tombstones remain queryable and an
 event-ID deletion does not cascade through the PR graph. This gives WebSocket

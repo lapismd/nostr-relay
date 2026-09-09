@@ -78,3 +78,52 @@ func TestCollaborationMergePinsExpectedHead(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, strings.Repeat("c", 40), result.MergedCommit)
 }
+
+func TestCollaborationReviewCommentReactionsUseGitHubAllowlist(t *testing.T) {
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(t, w, r) {
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			require.Equal(t, "/repos/lapis/notes/pulls/comments/44/reactions", r.URL.Path)
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, "heart", payload["content"])
+			require.NotContains(t, payload, "external_comment_id")
+			require.NotContains(t, payload, "comment_type")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 77, "content": "heart",
+				"user": map[string]any{"id": 55, "login": "lapis-bot"},
+			})
+		case http.MethodDelete:
+			require.Equal(t, "/repos/lapis/notes/pulls/comments/44/reactions/77", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	created, err := backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "reaction_add", Repository: repository,
+		Payload: json.RawMessage(`{"external_comment_id":44,"comment_type":"pull_request_review_comment","content":"heart"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "77", created.ExternalID)
+	require.Equal(t, "lapis-bot", created.ExternalAuthor)
+
+	deleted, err := backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "reaction_delete", Repository: repository,
+		Payload: json.RawMessage(`{"external_comment_id":44,"external_reaction_id":77,"comment_type":"pull_request_review_comment"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "77", deleted.ExternalID)
+
+	_, err = backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "reaction_add", Repository: repository,
+		Payload: json.RawMessage(`{"external_comment_id":44,"comment_type":"pull_request_review_comment","content":"fire"}`),
+	})
+	var forgeErr *forge.Error
+	require.ErrorAs(t, err, &forgeErr)
+	require.Equal(t, "unsupported_github_reaction", forgeErr.Code)
+}
