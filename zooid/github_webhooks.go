@@ -351,9 +351,9 @@ func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery
 		if delivery.Action == "created" {
 			return policy.publishExternalReview(ctx, repository, delivery, strconv.FormatInt(payload.PullRequest.ID, 10), githubWebhookReview{}, payload.Comment)
 		}
-	case "pull_request_review_comment_reactions":
+	case "issue_comment_reactions", "pull_request_review_comment_reactions":
 		if delivery.Action == "synchronize" {
-			return policy.syncExternalReviewCommentReactions(ctx, repository, delivery, payload)
+			return policy.syncExternalCommentReactions(ctx, repository, delivery, payload)
 		}
 	}
 	return nil
@@ -384,9 +384,9 @@ func (policy *GitForgePolicy) processGitHubMirrorObservation(ctx context.Context
 		if delivery.Action == "created" {
 			return policy.publishExternalReview(ctx, repository, delivery, strconv.FormatInt(payload.PullRequest.ID, 10), githubWebhookReview{}, payload.Comment)
 		}
-	case "pull_request_review_comment_reactions":
+	case "issue_comment_reactions", "pull_request_review_comment_reactions":
 		if delivery.Action == "synchronize" {
-			return policy.syncExternalReviewCommentReactions(ctx, repository, delivery, payload)
+			return policy.syncExternalCommentReactions(ctx, repository, delivery, payload)
 		}
 	}
 	return nil
@@ -933,7 +933,7 @@ func (policy *GitForgePolicy) publishBridgeNote(ctx context.Context, repository 
 	return nil
 }
 
-func (policy *GitForgePolicy) syncExternalReviewCommentReactions(ctx context.Context, repository forge.Repository, delivery githubWebhookDelivery, payload githubWebhookPayload) error {
+func (policy *GitForgePolicy) syncExternalCommentReactions(ctx context.Context, repository forge.Repository, delivery githubWebhookDelivery, payload githubWebhookPayload) error {
 	commentID := strconv.FormatInt(payload.Comment.ID, 10)
 	if payload.Comment.ID <= 0 {
 		commentID = delivery.ExternalObjectID

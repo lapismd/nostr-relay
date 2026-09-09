@@ -230,7 +230,7 @@ func TestRelayReviewCommentReactionProjectsToGitHubAndDeletionRemovesIt(t *testi
 		ID: 9400, Content: "heart", CreatedAt: time.Now(),
 		User: githubWebhookUser{ID: 74, Login: "lapis-bot"},
 	}}
-	require.NoError(t, policy.syncExternalReviewCommentReactions(
+	require.NoError(t, policy.syncExternalCommentReactions(
 		context.Background(),
 		forge.Repository{Coordinate: coordinate, Announcement: repository},
 		githubWebhookDelivery{ConnectionID: connectionID, ReceivedAt: time.Now()},

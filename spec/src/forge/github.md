@@ -175,8 +175,9 @@ for them is a kind-1 `t=external-state` observation. GitHub reviews are
 kind-1 `t=external-review` observations with external reviewer, decision, URL,
 and reviewed `c`; they never impersonate a Nostr reviewer.
 
-Review-comment reactions use NIP-25 `kind:7` events addressed to the mapped
-comment with matching `e`, `p`, `k`, and repository `a` tags. The GitHub
+Pull-request conversation and inline-review comment reactions use NIP-25
+`kind:7` events addressed to the mapped comment with matching `e`, `p`, `k`,
+and repository `a` tags. The GitHub
 adapter accepts only GitHub's eight reaction values and maps them as follows:
 `+1` to 👍, `-1` to 👎, `laugh` to 😄, `confused` to 😕, `heart` to ❤️,
 `hooray` to 🎉, `rocket` to 🚀, and `eyes` to 👀. A relay-authored reaction is
@@ -187,12 +188,13 @@ never sent to GitHub.
 
 GitHub does not publish a reaction webhook for pull-request review comments.
 Each periodic reconciliation therefore snapshots the newest bounded set of up
-to 500 repository review comments and their reactions. Additions become
+to 500 repository pull-request conversation and inline-review comments and
+their reactions. Additions become
 bridge-signed `kind:7` observations with external provenance. A missing
 previously imported provider reaction becomes a bridge-signed NIP-09 deletion;
 relay-authored reactions are not removed from this provider snapshot. The
-source/collaboration GitHub App needs Pull requests read permission to list
-these reactions and write permission to create or delete them.
+source/collaboration GitHub App needs Issues and Pull requests read permission
+to list these reactions and write permission to create or delete them.
 
 Initial import is explicit with `POST .../import`. It is bounded to open issues
 and PRs, an update window of 90 days, at most 1,000 roots, and at most 500

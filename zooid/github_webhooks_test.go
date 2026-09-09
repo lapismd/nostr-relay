@@ -138,7 +138,7 @@ func TestGitHubExternalReviewCannotBecomeNativeApproval(t *testing.T) {
 	require.Empty(t, state.Approvals, "stock Buzz reduction must not trust an external-review observation")
 }
 
-func TestGitHubReviewCommentReactionSnapshotProjectsAddsAndRemovals(t *testing.T) {
+func TestGitHubCommentReactionSnapshotsProjectAddsAndRemovals(t *testing.T) {
 	policy, store, _, repository := configureWebhookTest(t)
 	head := strings.Repeat("a", 40)
 	process := func(delivery githubWebhookDelivery) {
@@ -195,6 +195,37 @@ func TestGitHubReviewCommentReactionSnapshotProjectsAddsAndRemovals(t *testing.T
 	process(githubWebhookDelivery{EventType: "pull_request_review_comment_reactions", Action: "synchronize", ExternalObjectID: "9300", Payload: emptyPayload})
 	deletions := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindDeletion}, Tags: nostr.TagMap{"e": {reactions[0].ID.Hex()}}})
 	require.Len(t, deletions, 1)
+
+	conversationPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42}, "issue": map[string]any{"id": 9100},
+		"comment": map[string]any{
+			"id": 9301, "body": "Conversation note",
+			"html_url": "https://github.com/lapis/notes/pull/18#issuecomment-9301", "user": map[string]any{"id": 75, "login": "commenter"},
+		},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "issue_comment", Action: "created", ExternalObjectID: "9301", Payload: conversationPayload})
+	conversationReactionPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42}, "comment": map[string]any{"id": 9301},
+		"reactions": []map[string]any{{
+			"id": 9401, "content": "eyes", "created_at": "2026-09-09T10:02:00Z",
+			"user": map[string]any{"id": 76, "login": "watcher"},
+		}},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "issue_comment_reactions", Action: "synchronize", ExternalObjectID: "9301", Payload: conversationReactionPayload})
+	allReactions := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindReaction}})
+	require.Len(t, allReactions, 2)
+	var conversationReaction *nostr.Event
+	for index := range allReactions {
+		if tag := allReactions[index].Tags.Find("external-id"); len(tag) > 1 && tag[1] == "9401" {
+			conversationReaction = &allReactions[index]
+			break
+		}
+	}
+	require.NotNil(t, conversationReaction)
+	require.Equal(t, "👀", conversationReaction.Content)
+
 	bridge, err := policy.bridgeSecretForConnection(context.Background(), "connection")
 	require.NoError(t, err)
 	require.Equal(t, bridge.Public(), deletions[0].PubKey)

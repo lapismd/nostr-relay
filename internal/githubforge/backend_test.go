@@ -220,6 +220,13 @@ func TestGitHubReconcileSnapshotsReviewCommentReactions(t *testing.T) {
 				"id": 77, "content": "heart", "created_at": "2026-09-09T10:00:00Z",
 				"user": map[string]any{"id": 55, "login": "octocat"},
 			}})
+		case "/repos/lapis/notes/issues/comments":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 45, "reactions": map[string]any{"total_count": 1}}})
+		case "/repos/lapis/notes/issues/comments/45/reactions":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id": 78, "content": "eyes", "created_at": "2026-09-09T10:01:00Z",
+				"user": map[string]any{"id": 56, "login": "hubot"},
+			}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -229,7 +236,7 @@ func TestGitHubReconcileSnapshotsReviewCommentReactions(t *testing.T) {
 		UpdatedSince: time.Now().Add(-10 * time.Minute), MaximumRoots: 10, MaximumComments: 10,
 	})
 	require.NoError(t, err)
-	require.Len(t, result.Events, 1)
+	require.Len(t, result.Events, 2)
 	event := result.Events[0]
 	require.Equal(t, "pull_request_review_comment_reactions", event.EventType)
 	require.Equal(t, "synchronize", event.Action)
@@ -245,6 +252,8 @@ func TestGitHubReconcileSnapshotsReviewCommentReactions(t *testing.T) {
 	require.Equal(t, int64(44), payload.Comment.ID)
 	require.Equal(t, int64(77), payload.Reactions[0].ID)
 	require.Equal(t, "heart", payload.Reactions[0].Content)
+	require.Equal(t, "issue_comment_reactions", result.Events[1].EventType)
+	require.Equal(t, "45", result.Events[1].ExternalObjectID)
 }
 
 func TestGitHubBlobAndCompareUseNormalizedV1Shapes(t *testing.T) {
