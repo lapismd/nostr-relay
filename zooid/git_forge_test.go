@@ -83,6 +83,8 @@ func TestGitForgeReconcilesHostedRepositoryIdempotently(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, "walgit", integration.GitBackend)
+	require.Equal(t, "walgit", integration.GitAuthorityBackend)
+	require.Equal(t, "walgit", integration.ContentBackend)
 	require.Equal(t, "relay", integration.CollaborationBackend)
 	require.Equal(t, "legacy-default", integration.ConfigurationSource)
 	require.Equal(t, "ready", integration.HealthState)
@@ -169,8 +171,12 @@ func TestGitForgeDoesNotProvisionExternalOrTaskAnchor(t *testing.T) {
 		require.Equal(t, "ready", integration.HealthState)
 		if event.Tags.GetD() == "external" {
 			require.Equal(t, "unmanaged", integration.GitBackend)
+			require.Equal(t, "unmanaged", integration.GitAuthorityBackend)
+			require.Equal(t, "unmanaged", integration.ContentBackend)
 		} else {
 			require.Equal(t, "none", integration.GitBackend)
+			require.Equal(t, "none", integration.GitAuthorityBackend)
+			require.Equal(t, "none", integration.ContentBackend)
 		}
 	}
 }

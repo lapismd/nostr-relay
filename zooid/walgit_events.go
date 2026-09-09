@@ -190,24 +190,42 @@ func (policy *GitForgePolicy) storeWalGitEvents(ctx context.Context, events []no
 		return err
 	}
 	defer tx.Rollback()
+	type replicationRequest struct {
+		coordinate projecttask.RepositoryCoordinate
+		generation int64
+		sequence   string
+	}
+	replications := make(map[string]replicationRequest)
 	for _, event := range events {
 		var desiredClass string
+		var replicaConnection string
+		var replicationTarget string
+		var integrationGeneration int64
 		err := tx.QueryRowContext(queryCtx, policy.Events.Schema.Render(`
-			SELECT desired_class FROM {{.Name}}__git_repository_intents WHERE owner = $1 AND repo = $2`),
-			event.Coordinate.Owner.Hex(), event.Coordinate.ID).Scan(&desiredClass)
-		if err == sql.ErrNoRows || desiredClass != string(gitforge.RepositoryHosted) {
+			SELECT i.desired_class, COALESCE(g.connection_id, ''),
+			       COALESCE(r.git_replication_target_backend, ''), COALESCE(r.generation, 0)
+			FROM {{.Name}}__git_repository_intents i
+			LEFT JOIN {{.Name}}__git_replicas g ON g.owner = i.owner AND g.repo = i.repo
+			LEFT JOIN {{.Name}}__repository_integrations r ON r.owner = i.owner AND r.repo = i.repo
+			WHERE i.owner = $1 AND i.repo = $2`),
+			event.Coordinate.Owner.Hex(), event.Coordinate.ID).Scan(&desiredClass, &replicaConnection, &replicationTarget, &integrationGeneration)
+		if err == sql.ErrNoRows {
 			continue
 		}
 		if err != nil {
 			return err
 		}
+		replicaGenerated := replicaConnection != "" && event.Pusher == replicaPrincipal(replicaConnection)
+		if desiredClass != string(gitforge.RepositoryHosted) && !replicaGenerated {
+			continue
+		}
 		result, err := tx.ExecContext(queryCtx, policy.Events.Schema.Render(`
 			INSERT INTO {{.Name}}__walgit_ref_events
-			  (owner, repo, sequence, ref_name, action, old_oid, new_oid, pusher, correlation_id)
-			VALUES ($1, $2, $3::numeric, $4, $5, $6, $7, $8, $9)
+			  (owner, repo, sequence, ref_name, action, old_oid, new_oid, pusher, correlation_id, replica_generated)
+			VALUES ($1, $2, $3::numeric, $4, $5, $6, $7, $8, $9, $10)
 			ON CONFLICT (owner, repo, sequence, ref_name) DO NOTHING`),
 			event.Coordinate.Owner.Hex(), event.Coordinate.ID, event.Sequence, event.RefName,
-			event.Action, event.Old, event.New, event.Pusher, event.CorrelationID)
+			event.Action, event.Old, event.New, event.Pusher, event.CorrelationID, replicaGenerated)
 		if err != nil {
 			return err
 		}
@@ -218,7 +236,20 @@ func (policy *GitForgePolicy) storeWalGitEvents(ctx context.Context, events []no
 			}
 			continue
 		}
-		if event.Action == "delete" {
+		if replicaGenerated {
+			if event.Action == "delete" {
+				_, err = tx.ExecContext(queryCtx, policy.Events.Schema.Render(`
+					UPDATE {{.Name}}__git_replica_refs SET replica_oid = '', verified_at = NULL
+					WHERE owner = $1 AND repo = $2 AND ref_name = $3`),
+					event.Coordinate.Owner.Hex(), event.Coordinate.ID, event.RefName)
+			} else {
+				_, err = tx.ExecContext(queryCtx, policy.Events.Schema.Render(`
+					UPDATE {{.Name}}__git_replica_refs SET replica_oid = $4,
+					    verified_at = CASE WHEN authority_oid = $4 THEN NOW() ELSE NULL END
+					WHERE owner = $1 AND repo = $2 AND ref_name = $3`),
+					event.Coordinate.Owner.Hex(), event.Coordinate.ID, event.RefName, event.New)
+			}
+		} else if event.Action == "delete" {
 			_, err = tx.ExecContext(queryCtx, policy.Events.Schema.Render(`
 				DELETE FROM {{.Name}}__walgit_refs
 				WHERE owner = $1 AND repo = $2 AND ref_name = $3 AND sequence < $4::numeric`),
@@ -235,8 +266,20 @@ func (policy *GitForgePolicy) storeWalGitEvents(ctx context.Context, events []no
 		if err != nil {
 			return err
 		}
+		if !replicaGenerated && replicationTarget != "" {
+			key := event.Coordinate.String() + ":" + event.Sequence
+			replications[key] = replicationRequest{coordinate: event.Coordinate, generation: integrationGeneration, sequence: event.Sequence}
+		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, request := range replications {
+		if err := policy.enqueueGitReplication(ctx, request.coordinate, request.generation, request.sequence, "walgit-ref"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (policy *GitForgePolicy) currentRef(ctx context.Context, coordinate projecttask.RepositoryCoordinate, ref string) (string, string, bool, error) {

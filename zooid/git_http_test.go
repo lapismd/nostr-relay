@@ -23,6 +23,7 @@ type recordingGitBackend struct {
 	apiCalls          []string
 	principal         string
 	resolveRevision   string
+	resolveRevisions  []string
 	resolveResult     string
 	comparison        gitforge.CompareResult
 	comparisonRequest gitforge.CompareRequest
@@ -52,6 +53,7 @@ func (backend *recordingGitBackend) Resolve(_ context.Context, _ gitforge.Reposi
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	backend.resolveRevision = revision
+	backend.resolveRevisions = append(backend.resolveRevisions, revision)
 	backend.principal = principal
 	return backend.resolveResult, nil
 }
@@ -232,7 +234,7 @@ func TestPullRequestDiffUsesReducerAndTargetBranchFallback(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	policy.ServePullRequestAPI(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-	require.Equal(t, "main", backend.resolveRevision)
+	require.Equal(t, []string{"main", base, head}, backend.resolveRevisions)
 	require.Equal(t, base, backend.comparisonRequest.Base)
 	require.Equal(t, head, backend.comparisonRequest.Head)
 	require.True(t, backend.comparisonRequest.UseMergeBase)

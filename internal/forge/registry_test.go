@@ -46,6 +46,16 @@ func (stubGitBackend) Commit(context.Context, Repository, RevisionRequest) (Comm
 func (stubGitBackend) Compare(context.Context, Repository, CompareRequest) (Diff, error) {
 	return Diff{}, nil
 }
+func (stubGitBackend) ReplicateRepository(context.Context, Repository, GitReplicationTarget, bool, bool) error {
+	return nil
+}
+
+type stubReplicationTarget struct{ name string }
+
+func (backend stubReplicationTarget) Name() string { return backend.name }
+func (stubReplicationTarget) GitReplicationTarget(context.Context, Repository) (GitReplicationTarget, error) {
+	return GitReplicationTarget{}, nil
+}
 
 func TestRegistryResolvesOnlyExplicitCapabilities(t *testing.T) {
 	registry := NewRegistry()
@@ -86,4 +96,19 @@ func TestRegistryRejectsDuplicateAndUnavailableBackends(t *testing.T) {
 	var backendError *Error
 	require.ErrorAs(t, err, &backendError)
 	require.Equal(t, "git_authority_backend_unavailable", backendError.Code)
+}
+
+func TestRegistryKeepsGitReplicationSeparateFromCollaborationMirror(t *testing.T) {
+	registry := NewRegistry()
+	require.NoError(t, registry.RegisterGit(stubGitBackend{name: BackendWalGit}))
+	require.NoError(t, registry.RegisterGitReplicationTarget(stubReplicationTarget{name: BackendGitHub}))
+	resolved, err := registry.Resolve(context.Background(), Repository{Integration: Integration{
+		GitAuthorityBackend: BackendWalGit, ContentBackend: BackendWalGit,
+		CollaborationBackend: BackendRelay, GitReplicationTargetBackend: BackendGitHub,
+	}})
+	require.NoError(t, err)
+	require.True(t, resolved.Capabilities.GitReplicationTarget)
+	require.False(t, resolved.Capabilities.Mirror)
+	require.Nil(t, resolved.Mirror)
+	require.NotNil(t, resolved.ReplicationTarget)
 }

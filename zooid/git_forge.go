@@ -188,6 +188,12 @@ func (policy *GitForgePolicy) Start() error {
 			ticker := time.NewTicker(policy.Config.GitHubWorkerInterval())
 			defer ticker.Stop()
 			for {
+				if err := policy.ProcessGitReplicaOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+					log.Printf("Git replica synchronization failed: %v", err)
+				}
+				if err := policy.ProcessGitReplicationOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+					log.Printf("Git outbound replication failed: %v", err)
+				}
 				if err := policy.ProcessForgeOutboxOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
 					log.Printf("Forge outbox operation failed: %v", err)
 				}
@@ -214,6 +220,12 @@ func (policy *GitForgePolicy) Start() error {
 				case <-policy.ctx.Done():
 					return
 				case <-ticker.C:
+					if err := policy.ReconcileGitReplicasOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+						log.Printf("Git replica reconciliation failed: %v", err)
+					}
+					if err := policy.ReconcileGitReplicationOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
+						log.Printf("Git outbound replication reconciliation failed: %v", err)
+					}
 					if err := policy.ReconcileGitHubOnce(policy.ctx); err != nil && policy.ctx.Err() == nil {
 						log.Printf("GitHub reconciliation failed: %v", err)
 					}

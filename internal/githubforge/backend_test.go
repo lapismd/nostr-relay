@@ -76,6 +76,26 @@ func TestGitHubCapabilitiesAreProviderNativeAndBounded(t *testing.T) {
 	require.True(t, capabilities.Limits.MayTruncateCompare)
 }
 
+func TestGitHubReplicationTargetUsesRepositoryNarrowedContentsWriteToken(t *testing.T) {
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/app/installations/99/access_tokens", r.URL.Path)
+		var request struct {
+			RepositoryIDs []int64           `json:"repository_ids"`
+			Permissions   map[string]string `json:"permissions"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		require.Equal(t, []int64{42}, request.RepositoryIDs)
+		require.Equal(t, map[string]string{"metadata": "read", "contents": "write"}, request.Permissions)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "opaque-replication-token", "expires_at": time.Now().Add(time.Hour).UTC()})
+	})
+	target, err := backend.GitReplicationTarget(context.Background(), repository)
+	require.NoError(t, err)
+	require.Equal(t, "https://github.com/lapis/notes.git", target.CloneURL)
+	require.Equal(t, "x-access-token", target.Username)
+	require.Equal(t, "opaque-replication-token", target.Password)
+}
+
 func TestGitHubRefsTranslateToWalGitV1(t *testing.T) {
 	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
 		if tokenResponse(t, w, r) {

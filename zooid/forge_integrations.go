@@ -24,8 +24,9 @@ func legacyIntegration(repository gitforge.Repository) forge.Integration {
 	return forge.Integration{
 		Coordinate: repository.Coordinate, AnnouncementID: repository.Announcement.ID.Hex(),
 		ConfigurationSource: forge.ConfigurationLegacyDefault,
-		GitBackend:          gitBackend, CollaborationBackend: forge.BackendRelay,
-		Generation: 1, HealthState: health,
+		GitAuthorityBackend: gitBackend, ContentBackend: gitBackend, GitBackend: gitBackend,
+		CollaborationBackend: forge.BackendRelay,
+		Generation:           1, HealthState: health,
 	}
 }
 
@@ -39,11 +40,14 @@ func (policy *GitForgePolicy) upsertLegacyIntegration(ctx context.Context, repos
 	_, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
 		INSERT INTO {{.Name}}__repository_integrations
 		  (owner, repo, announcement_id, configuration_source, git_backend,
-		   collaboration_backend, generation, health_state, health_detail, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 1, $7, '', NOW())
+		   git_authority_backend, content_backend, collaboration_backend,
+		   generation, health_state, health_detail, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, '', NOW())
 		ON CONFLICT (owner, repo) DO UPDATE SET
 		  announcement_id = EXCLUDED.announcement_id,
 		  git_backend = EXCLUDED.git_backend,
+		  git_authority_backend = EXCLUDED.git_authority_backend,
+		  content_backend = EXCLUDED.content_backend,
 		  collaboration_backend = EXCLUDED.collaboration_backend,
 		  generation = {{.Name}}__repository_integrations.generation + 1,
 		  health_state = EXCLUDED.health_state,
@@ -51,8 +55,8 @@ func (policy *GitForgePolicy) upsertLegacyIntegration(ctx context.Context, repos
 		  updated_at = NOW()
 		WHERE {{.Name}}__repository_integrations.configuration_source = 'legacy-default'`),
 		repository.Coordinate.Owner.Hex(), repository.Coordinate.ID, integration.AnnouncementID,
-		integration.ConfigurationSource, integration.GitBackend, integration.CollaborationBackend,
-		integration.HealthState)
+		integration.ConfigurationSource, integration.GitBackend, integration.GitAuthorityBackend,
+		integration.ContentBackend, integration.CollaborationBackend, integration.HealthState)
 	return err
 }
 
@@ -76,20 +80,31 @@ func (policy *GitForgePolicy) repositoryIntegration(ctx context.Context, coordin
 	defer cancel()
 	var integration forge.Integration
 	var mirrorBackend, ciBackend, connectionID, externalID, externalRepository string
+	var authorityBackend, contentBackend, replicationTarget string
 	var ciConnectionID, ciExternalID, ciExternalRepository, ciWorkflow string
+	var replicaEnabled, syncBranches, syncTags bool
+	var replicaDirection, replicaMode, readPolicy string
+	var waitMilliseconds int
 	err := GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
 		SELECT announcement_id, configuration_source, git_backend,
+		       git_authority_backend, content_backend, git_replication_target_backend,
 		       collaboration_backend, mirror_backend, ci_backend, connection_id,
 		       external_repository_id, external_repository, generation,
 		       health_state, health_detail, ci_connection_id,
-		       ci_external_repository_id, ci_external_repository, ci_workflow
+		       ci_external_repository_id, ci_external_repository, ci_workflow,
+		       replica_enabled, replica_direction, replica_sync_branches,
+		       replica_sync_tags, replica_mode, replica_read_policy,
+		       replica_wait_milliseconds
 		FROM {{.Name}}__repository_integrations
 		WHERE owner = $1 AND repo = $2`), coordinate.Owner.Hex(), coordinate.ID).Scan(
 		&integration.AnnouncementID, &integration.ConfigurationSource, &integration.GitBackend,
+		&authorityBackend, &contentBackend, &replicationTarget,
 		&integration.CollaborationBackend, &mirrorBackend, &ciBackend, &connectionID,
 		&externalID, &externalRepository, &integration.Generation,
 		&integration.HealthState, &integration.HealthDetail, &ciConnectionID,
-		&ciExternalID, &ciExternalRepository, &ciWorkflow)
+		&ciExternalID, &ciExternalRepository, &ciWorkflow,
+		&replicaEnabled, &replicaDirection, &syncBranches, &syncTags,
+		&replicaMode, &readPolicy, &waitMilliseconds)
 	if err == sql.ErrNoRows {
 		return forge.Integration{}, false, nil
 	}
@@ -97,6 +112,9 @@ func (policy *GitForgePolicy) repositoryIntegration(ctx context.Context, coordin
 		return forge.Integration{}, false, err
 	}
 	integration.Coordinate = coordinate
+	integration.GitAuthorityBackend = authorityBackend
+	integration.ContentBackend = contentBackend
+	integration.GitReplicationTargetBackend = replicationTarget
 	integration.MirrorBackend = mirrorBackend
 	integration.CIBackend = ciBackend
 	integration.ConnectionID = connectionID
@@ -106,6 +124,14 @@ func (policy *GitForgePolicy) repositoryIntegration(ctx context.Context, coordin
 	integration.CIExternalRepositoryID = ciExternalID
 	integration.CIExternalRepository = ciExternalRepository
 	integration.CIWorkflow = ciWorkflow
+	if replicaEnabled {
+		integration.Replica = &forge.ReplicaConfig{
+			Enabled: true, AuthorityBackend: authorityBackend, ReplicaBackend: contentBackend,
+			Direction: replicaDirection, SyncBranches: syncBranches, SyncTags: syncTags,
+			Mode: forge.ReplicaMode(replicaMode), ReadPolicy: forge.ReplicaReadPolicy(readPolicy),
+			WaitMilliseconds: waitMilliseconds,
+		}
+	}
 	return integration, true, nil
 }
 
@@ -149,6 +175,13 @@ func (policy *GitForgePolicy) ResolveIntegration(ctx context.Context, coordinate
 	resolved, err := policy.Registry.Resolve(ctx, forgeRepository(repository, integration))
 	if err != nil {
 		return forge.ResolvedRepository{}, false, err
+	}
+	if integration.Replica != nil && integration.Replica.Enabled {
+		if replica, exists, replicaErr := policy.loadGitReplica(ctx, coordinate); replicaErr != nil {
+			return forge.ResolvedRepository{}, false, replicaErr
+		} else if exists {
+			resolved.Capabilities.ReplicaState = replica.State
+		}
 	}
 	return resolved, true, nil
 }

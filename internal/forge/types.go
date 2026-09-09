@@ -36,11 +36,12 @@ const (
 // repository coordinate. AnnouncementID is an optimistic-concurrency guard;
 // changing this row never mutates the signed announcement.
 type Integration struct {
-	Coordinate          projecttask.RepositoryCoordinate `json:"-"`
-	AnnouncementID      string                           `json:"announcement_id"`
-	ConfigurationSource string                           `json:"configuration_source"`
-	GitAuthorityBackend string                           `json:"git_authority_backend"`
-	ContentBackend      string                           `json:"content_backend"`
+	Coordinate                  projecttask.RepositoryCoordinate `json:"-"`
+	AnnouncementID              string                           `json:"announcement_id"`
+	ConfigurationSource         string                           `json:"configuration_source"`
+	GitAuthorityBackend         string                           `json:"git_authority_backend"`
+	ContentBackend              string                           `json:"content_backend"`
+	GitReplicationTargetBackend string                           `json:"git_replication_target_backend,omitempty"`
 	// GitBackend is the legacy shorthand retained for old rows and clients.
 	// New code resolves authority and content independently.
 	GitBackend             string         `json:"git_backend"`
@@ -139,29 +140,31 @@ type ContentCapabilities struct {
 // Capabilities is intentionally explicit. A false value is meaningful and
 // prevents callers from inferring functionality from a provider name.
 type Capabilities struct {
-	GitAuthorityBackend  string                `json:"git_authority_backend"`
-	ContentBackend       string                `json:"content_backend"`
-	GitBackend           string                `json:"git_backend"`
-	CollaborationBackend string                `json:"collaboration_backend"`
-	MirrorBackend        string                `json:"mirror_backend,omitempty"`
-	CIBackend            string                `json:"ci_backend,omitempty"`
-	Clone                CloneDescriptor       `json:"clone"`
-	SmartHTTP            SmartHTTPCapabilities `json:"smart_http"`
-	Browse               bool                  `json:"browse"`
-	Compare              bool                  `json:"compare"`
-	RefEvents            bool                  `json:"ref_events"`
-	Provision            bool                  `json:"provision"`
-	Import               bool                  `json:"import"`
-	Issues               bool                  `json:"issues"`
-	PullRequests         bool                  `json:"pull_requests"`
-	Reviews              bool                  `json:"reviews"`
-	Merge                bool                  `json:"merge"`
-	Mirror               bool                  `json:"mirror"`
-	CI                   bool                  `json:"ci"`
-	LocalReplica         bool                  `json:"local_replica,omitempty"`
-	ReplicaState         string                `json:"replica_state,omitempty"`
-	Limits               ContentLimits         `json:"limits"`
-	CapabilityLimits     ContentLimits         `json:"capability_limits"`
+	GitAuthorityBackend         string                `json:"git_authority_backend"`
+	ContentBackend              string                `json:"content_backend"`
+	GitBackend                  string                `json:"git_backend"`
+	CollaborationBackend        string                `json:"collaboration_backend"`
+	MirrorBackend               string                `json:"mirror_backend,omitempty"`
+	GitReplicationTargetBackend string                `json:"git_replication_target_backend,omitempty"`
+	CIBackend                   string                `json:"ci_backend,omitempty"`
+	Clone                       CloneDescriptor       `json:"clone"`
+	SmartHTTP                   SmartHTTPCapabilities `json:"smart_http"`
+	Browse                      bool                  `json:"browse"`
+	Compare                     bool                  `json:"compare"`
+	RefEvents                   bool                  `json:"ref_events"`
+	Provision                   bool                  `json:"provision"`
+	Import                      bool                  `json:"import"`
+	Issues                      bool                  `json:"issues"`
+	PullRequests                bool                  `json:"pull_requests"`
+	Reviews                     bool                  `json:"reviews"`
+	Merge                       bool                  `json:"merge"`
+	Mirror                      bool                  `json:"mirror"`
+	GitReplicationTarget        bool                  `json:"git_replication_target,omitempty"`
+	CI                          bool                  `json:"ci"`
+	LocalReplica                bool                  `json:"local_replica,omitempty"`
+	ReplicaState                string                `json:"replica_state,omitempty"`
+	Limits                      ContentLimits         `json:"limits"`
+	CapabilityLimits            ContentLimits         `json:"capability_limits"`
 }
 
 // ResultMetadata is additive metadata shared by every repository-content
@@ -349,10 +352,57 @@ type ImportRequest struct {
 	SourceUsername       string `json:"-"`
 	SourcePassword       string `json:"-"`
 	DestinationPrincipal string `json:"-"`
+	SyncBranches         bool
+	SyncTags             bool
 }
 
 type ImportResult struct {
 	Refs map[string]string `json:"refs"`
+}
+
+type ImportObjectRequest struct {
+	SourceCloneURL       string
+	ObjectOID            string
+	SourceUsername       string `json:"-"`
+	SourcePassword       string `json:"-"`
+	DestinationPrincipal string `json:"-"`
+}
+
+type RepositoryObjectImporter interface {
+	ImportObject(context.Context, Repository, ImportObjectRequest) error
+}
+
+// GitReplicationTargetBackend supplies short-lived credentials for an
+// explicitly configured outbound Git replica. It is intentionally distinct
+// from MirrorBackend, which projects collaboration objects.
+type GitReplicationTargetBackend interface {
+	Name() string
+	GitReplicationTarget(context.Context, Repository) (GitReplicationTarget, error)
+}
+
+type GitReplicationTarget struct {
+	CloneURL string `json:"-"`
+	Username string `json:"-"`
+	Password string `json:"-"`
+}
+
+// GitReplicationSource transfers the source repository's complete managed
+// heads/tags to a target. Implementations must make this one directional.
+type GitReplicationSource interface {
+	ReplicateRepository(context.Context, Repository, GitReplicationTarget, bool, bool) error
+}
+
+type ReplicaSyncRequest struct {
+	DeliveryID string
+	RefName    string
+	TargetOID  string
+	Reason     string
+}
+
+type GitReplicaCoordinator interface {
+	Provision(context.Context, Repository) error
+	Sync(context.Context, Repository, ReplicaSyncRequest) error
+	Reconcile(context.Context, Repository) error
 }
 
 type AuthenticatedCloneSource interface {
@@ -507,11 +557,12 @@ type RepositoryIntegrationResolver interface {
 }
 
 type ResolvedRepository struct {
-	Repository    Repository
-	Capabilities  Capabilities
-	Authority     GitAuthorityBackend
-	Content       RepositoryContentBackend
-	Collaboration CollaborationBackend
-	Mirror        MirrorBackend
-	CI            CIBackend
+	Repository        Repository
+	Capabilities      Capabilities
+	Authority         GitAuthorityBackend
+	Content           RepositoryContentBackend
+	Collaboration     CollaborationBackend
+	Mirror            MirrorBackend
+	CI                CIBackend
+	ReplicationTarget GitReplicationTargetBackend
 }

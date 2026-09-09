@@ -116,22 +116,37 @@ func (policy *GitForgePolicy) processForgeMigration(ctx context.Context, resolve
 	if err != nil {
 		return err
 	}
-	cloneURL, username, password, err := cloneSource.CloneSource(ctx, resolved.Repository)
-	if err != nil {
-		return err
-	}
 	target := resolved.Repository
 	target.Classification = string(gitforge.RepositoryHosted)
 	target.CloneURL = strings.TrimRight(policy.Config.Git.PublicURL, "/") + "/git/" + target.Coordinate.Owner.Hex() + "/" + target.Coordinate.ID
 	target.Integration.GitBackend = forge.BackendWalGit
 	target.Integration.GitAuthorityBackend = forge.BackendWalGit
 	target.Integration.ContentBackend = forge.BackendWalGit
-	_, err = importer.ImportRepository(ctx, target, forge.ImportRequest{
-		SourceCloneURL: cloneURL, SourceUsername: username, SourcePassword: password,
-		ExpectedRefs: before,
-	})
-	password = ""
-	if err != nil {
+	reusedReplica := false
+	if replica, exists, replicaErr := policy.loadGitReplica(ctx, resolved.Repository.Coordinate); replicaErr != nil {
+		return replicaErr
+	} else if exists && replica.State == "current" {
+		replicaRefs, refsErr := policy.gitReplicaRefs(ctx, resolved.Repository.Coordinate)
+		if refsErr != nil {
+			return refsErr
+		}
+		reusedReplica = forgeRefMapsEqual(before, replicaRefs)
+	}
+	if !reusedReplica {
+		cloneURL, username, password, cloneErr := cloneSource.CloneSource(ctx, resolved.Repository)
+		if cloneErr != nil {
+			return cloneErr
+		}
+		_, err = importer.ImportRepository(ctx, target, forge.ImportRequest{
+			SourceCloneURL: cloneURL, SourceUsername: username, SourcePassword: password,
+			ExpectedRefs: before, SyncBranches: true, SyncTags: true,
+		})
+		password = ""
+		if err != nil {
+			return err
+		}
+	}
+	if err := policy.verifyMigrationReplicaObjects(ctx, resolved, target, before); err != nil {
 		return err
 	}
 	after, err := snapshotter.SnapshotRefs(ctx, resolved.Repository)
@@ -152,6 +167,47 @@ func (policy *GitForgePolicy) processForgeMigration(ctx context.Context, resolve
 		return err
 	}
 	return policy.finishForgeOperation(ctx, operation)
+}
+
+func (policy *GitForgePolicy) verifyMigrationReplicaObjects(ctx context.Context, source forge.ResolvedRepository, target forge.Repository, refs map[string]string) error {
+	content := policy.Registry.ContentBackend(forge.BackendWalGit)
+	if content == nil {
+		return &forge.Error{Status: http.StatusConflict, Code: "walgit_content_unavailable"}
+	}
+	oids := make(map[string]struct{}, len(refs))
+	for _, oid := range refs {
+		oids[strings.ToLower(oid)] = struct{}{}
+	}
+	filter := nostr.Filter{Kinds: []nostr.Kind{projecttask.KindPullRequest}, Tags: nostr.TagMap{"a": {source.Repository.Coordinate.String()}}, Limit: 2000}
+	for root := range policy.Events.QueryEventsBefore(ctx, filter, "", 2000) {
+		if policy.ProjectTasks.IsTombstoned(ctx, root) {
+			continue
+		}
+		state, err := projecttask.ReducePullRequest(root, source.Repository.Announcement, policy.pullRequestRelatedEvents(ctx, root.ID))
+		if err == nil && (state.Lifecycle == projecttask.PullRequestOpen || state.Lifecycle == projecttask.PullRequestDraft) {
+			for _, oid := range []string{state.CurrentCommit, state.MergeBase} {
+				if fullForgeObjectID(oid) {
+					oids[strings.ToLower(oid)] = struct{}{}
+				}
+			}
+		}
+	}
+	for oid := range oids {
+		_, err := content.Resolve(ctx, target, forge.RevisionRequest{Revision: oid, Principal: replicaPrincipal(source.Repository.Integration.ConnectionID)})
+		if err == nil {
+			continue
+		}
+		if !isGitObjectMissing(err) {
+			return err
+		}
+		if err := policy.ensureReplicaObject(ctx, source.Repository, oid); err != nil {
+			return err
+		}
+		if _, err := content.Resolve(ctx, target, forge.RevisionRequest{Revision: oid, Principal: replicaPrincipal(source.Repository.Integration.ConnectionID)}); err != nil {
+			return &forge.Error{Status: http.StatusUnprocessableEntity, Code: "migration_object_verification_failed", Retryable: true}
+		}
+	}
+	return nil
 }
 
 func (policy *GitForgePolicy) loadForgeMigration(ctx context.Context, operationID string) (forgeMigration, bool, error) {
@@ -288,6 +344,10 @@ func (policy *GitForgePolicy) activateForgeMigration(ctx context.Context, reposi
 	integration.AnnouncementID = expectedAnnouncementID
 	integration.ConfigurationSource = forge.ConfigurationExplicit
 	integration.GitBackend = forge.BackendWalGit
+	integration.GitAuthorityBackend = forge.BackendWalGit
+	integration.ContentBackend = forge.BackendWalGit
+	integration.GitReplicationTargetBackend = ""
+	integration.Replica = nil
 	integration.CollaborationBackend = forge.BackendRelay
 	integration.MirrorBackend = ""
 	integration.CIBackend = ""
@@ -298,7 +358,7 @@ func (policy *GitForgePolicy) activateForgeMigration(ctx context.Context, reposi
 		integration.CollaborationBackend = forge.BackendGitHub
 	}
 	if migration.RetainGitHubMirror {
-		integration.MirrorBackend = forge.BackendGitHub
+		integration.GitReplicationTargetBackend = forge.BackendGitHub
 	}
 	if !migration.KeepGitHubCollaboration && !migration.RetainGitHubMirror {
 		integration.ConnectionID, integration.ExternalRepositoryID, integration.ExternalRepository = "", "", ""
@@ -306,14 +366,17 @@ func (policy *GitForgePolicy) activateForgeMigration(ctx context.Context, reposi
 	_, err = tx.ExecContext(queryCtx, policy.Events.Schema.Render(`
 		UPDATE {{.Name}}__repository_integrations
 			SET announcement_id = $3, configuration_source = 'explicit', git_backend = 'walgit',
-			    collaboration_backend = $4, mirror_backend = $5, connection_id = $6,
-			    external_repository_id = $7, external_repository = $8,
+			    git_authority_backend = 'walgit', content_backend = 'walgit',
+			    git_replication_target_backend = $6,
+			    replica_enabled = FALSE, replica_direction = '', replica_mode = 'off',
+			    collaboration_backend = $4, mirror_backend = $5, connection_id = $7,
+			    external_repository_id = $8, external_repository = $9,
 			    ci_backend = '', ci_connection_id = '', ci_external_repository_id = '',
 			    ci_external_repository = '', ci_workflow = '',
 		    generation = generation + 1, health_state = 'ready', health_detail = '', updated_at = NOW()
 		WHERE owner = $1 AND repo = $2`), repository.Coordinate.Owner.Hex(), repository.Coordinate.ID,
 		expectedAnnouncementID, integration.CollaborationBackend, integration.MirrorBackend,
-		integration.ConnectionID, integration.ExternalRepositoryID, integration.ExternalRepository)
+		integration.GitReplicationTargetBackend, integration.ConnectionID, integration.ExternalRepositoryID, integration.ExternalRepository)
 	if err != nil {
 		return forge.Integration{}, err
 	}
@@ -333,6 +396,23 @@ func (policy *GitForgePolicy) activateForgeMigration(ctx context.Context, reposi
 	}
 	if err := tx.Commit(); err != nil {
 		return forge.Integration{}, err
+	}
+	queryCtx, cancel = context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	_, _ = GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		UPDATE {{.Name}}__git_replicas SET state = 'disabled', updated_at = NOW()
+		WHERE owner = $1 AND repo = $2`), repository.Coordinate.Owner.Hex(), repository.Coordinate.ID)
+	stored, found, loadErr := policy.repositoryIntegration(ctx, repository.Coordinate)
+	if loadErr != nil {
+		return forge.Integration{}, loadErr
+	}
+	if found {
+		integration = stored
+	}
+	if integration.GitReplicationTargetBackend != "" {
+		if err := policy.enqueueGitReplication(ctx, repository.Coordinate, integration.Generation, "", "migration-activation"); err != nil {
+			return forge.Integration{}, err
+		}
 	}
 	return integration, nil
 }

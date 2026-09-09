@@ -52,8 +52,13 @@ func (backend *WalGitBackend) ImportRepository(ctx context.Context, repository f
 	if err := runGit(ctx, gitPath, bare, sourceEnv, "remote", "add", "source", source.String()); err != nil {
 		return forge.ImportResult{}, err
 	}
-	if err := runGit(ctx, gitPath, bare, sourceEnv, "fetch", "--prune", "source",
-		"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
+	syncBranches, syncTags := request.SyncBranches, request.SyncTags
+	if !syncBranches && !syncTags {
+		syncBranches, syncTags = true, true
+	}
+	refspecs := replicaRefspecs(syncBranches, syncTags)
+	fetchArguments := append([]string{"fetch", "--prune", "source"}, refspecs...)
+	if err := runGit(ctx, gitPath, bare, sourceEnv, fetchArguments...); err != nil {
 		return forge.ImportResult{}, err
 	}
 	if err := runGit(ctx, gitPath, bare, sourceEnv, "lfs", "install", "--local"); err != nil {
@@ -92,7 +97,8 @@ func (backend *WalGitBackend) ImportRepository(ctx context.Context, repository f
 	if err := runGit(ctx, gitPath, bare, destinationEnv, "remote", "add", "destination", destination.String()); err != nil {
 		return forge.ImportResult{}, err
 	}
-	if err := runGit(ctx, gitPath, bare, destinationEnv, "push", "--mirror", "destination"); err != nil {
+	pushArguments := append([]string{"push", "--prune", "destination"}, refspecs...)
+	if err := runGit(ctx, gitPath, bare, destinationEnv, pushArguments...); err != nil {
 		return forge.ImportResult{}, err
 	}
 	if err := runGit(ctx, gitPath, bare, destinationEnv, "lfs", "push", "--all", "destination"); err != nil {
@@ -106,6 +112,17 @@ func (backend *WalGitBackend) ImportRepository(ctx context.Context, repository f
 		return forge.ImportResult{}, &forge.Error{Status: http.StatusUnprocessableEntity, Code: "import_destination_verification_failed"}
 	}
 	return forge.ImportResult{Refs: remoteRefs}, nil
+}
+
+func replicaRefspecs(branches, tags bool) []string {
+	result := make([]string, 0, 2)
+	if branches {
+		result = append(result, "+refs/heads/*:refs/heads/*")
+	}
+	if tags {
+		result = append(result, "+refs/tags/*:refs/tags/*")
+	}
+	return result
 }
 
 func runGit(ctx context.Context, gitPath, directory string, env []string, arguments ...string) error {

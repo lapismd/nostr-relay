@@ -74,19 +74,31 @@ func (policy *GitForgePolicy) saveGitHubConnection(ctx context.Context, connecti
 }
 
 func (policy *GitForgePolicy) setExplicitIntegration(ctx context.Context, integration forge.Integration, expectedAnnouncementID string) error {
+	if integration.GitAuthorityBackend == "" {
+		integration.GitAuthorityBackend = integration.GitBackend
+	}
+	if integration.ContentBackend == "" {
+		integration.ContentBackend = integration.GitBackend
+	}
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()
 	result, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
 		INSERT INTO {{.Name}}__repository_integrations
 		  (owner, repo, announcement_id, configuration_source, git_backend,
+		   git_authority_backend, content_backend, git_replication_target_backend,
 		   collaboration_backend, mirror_backend, ci_backend, connection_id,
 		   external_repository_id, external_repository, generation,
 		   health_state, health_detail, ci_connection_id, ci_external_repository_id,
-		   ci_external_repository, ci_workflow, updated_at)
-		VALUES ($1, $2, $3, 'explicit', $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, $13, $14, $15, $16, NOW())
+		   ci_external_repository, ci_workflow, replica_enabled, replica_direction,
+		   replica_sync_branches, replica_sync_tags, replica_mode,
+		   replica_read_policy, replica_wait_milliseconds, updated_at)
+		VALUES ($1, $2, $3, 'explicit', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, NOW())
 		ON CONFLICT (owner, repo) DO UPDATE SET
 		  announcement_id = EXCLUDED.announcement_id,
 		  configuration_source = 'explicit', git_backend = EXCLUDED.git_backend,
+		  git_authority_backend = EXCLUDED.git_authority_backend,
+		  content_backend = EXCLUDED.content_backend,
+		  git_replication_target_backend = EXCLUDED.git_replication_target_backend,
 		  collaboration_backend = EXCLUDED.collaboration_backend,
 		  mirror_backend = EXCLUDED.mirror_backend, ci_backend = EXCLUDED.ci_backend,
 		  connection_id = EXCLUDED.connection_id,
@@ -96,18 +108,28 @@ func (policy *GitForgePolicy) setExplicitIntegration(ctx context.Context, integr
 		  ci_external_repository_id = EXCLUDED.ci_external_repository_id,
 		  ci_external_repository = EXCLUDED.ci_external_repository,
 		  ci_workflow = EXCLUDED.ci_workflow,
+		  replica_enabled = EXCLUDED.replica_enabled,
+		  replica_direction = EXCLUDED.replica_direction,
+		  replica_sync_branches = EXCLUDED.replica_sync_branches,
+		  replica_sync_tags = EXCLUDED.replica_sync_tags,
+		  replica_mode = EXCLUDED.replica_mode,
+		  replica_read_policy = EXCLUDED.replica_read_policy,
+		  replica_wait_milliseconds = EXCLUDED.replica_wait_milliseconds,
 		  generation = {{.Name}}__repository_integrations.generation + 1,
 		  health_state = EXCLUDED.health_state, health_detail = EXCLUDED.health_detail,
 		  updated_at = NOW()
-		WHERE {{.Name}}__repository_integrations.announcement_id = $17`),
+		WHERE {{.Name}}__repository_integrations.announcement_id = $27`),
 		integration.Coordinate.Owner.Hex(), integration.Coordinate.ID,
-		integration.AnnouncementID, integration.GitBackend,
+		integration.AnnouncementID, integration.GitBackend, integration.GitAuthorityBackend,
+		integration.ContentBackend, integration.GitReplicationTargetBackend,
 		integration.CollaborationBackend, integration.MirrorBackend,
-		integration.CIBackend, integration.ConnectionID,
-		integration.ExternalRepositoryID, integration.ExternalRepository,
-		integration.HealthState, integration.HealthDetail, integration.CIConnectionID,
-		integration.CIExternalRepositoryID, integration.CIExternalRepository,
-		integration.CIWorkflow, expectedAnnouncementID)
+		integration.CIBackend, integration.ConnectionID, integration.ExternalRepositoryID,
+		integration.ExternalRepository, integration.HealthState, integration.HealthDetail,
+		integration.CIConnectionID, integration.CIExternalRepositoryID,
+		integration.CIExternalRepository, integration.CIWorkflow,
+		replicaEnabled(integration), replicaDirection(integration), replicaSyncBranches(integration),
+		replicaSyncTags(integration), replicaMode(integration), replicaReadPolicy(integration),
+		replicaWaitMilliseconds(integration), expectedAnnouncementID)
 	if err != nil {
 		return err
 	}
@@ -119,6 +141,40 @@ func (policy *GitForgePolicy) setExplicitIntegration(ctx context.Context, integr
 		return &forge.Error{Status: 409, Code: "announcement_changed"}
 	}
 	return nil
+}
+
+func replicaEnabled(integration forge.Integration) bool {
+	return integration.Replica != nil && integration.Replica.Enabled
+}
+func replicaDirection(integration forge.Integration) string {
+	if integration.Replica == nil {
+		return ""
+	}
+	return integration.Replica.Direction
+}
+func replicaSyncBranches(integration forge.Integration) bool {
+	return integration.Replica != nil && integration.Replica.SyncBranches
+}
+func replicaSyncTags(integration forge.Integration) bool {
+	return integration.Replica != nil && integration.Replica.SyncTags
+}
+func replicaMode(integration forge.Integration) string {
+	if integration.Replica == nil {
+		return string(forge.ReplicaModeOff)
+	}
+	return string(integration.Replica.Mode)
+}
+func replicaReadPolicy(integration forge.Integration) string {
+	if integration.Replica == nil {
+		return string(forge.ReplicaReadFallback)
+	}
+	return string(integration.Replica.ReadPolicy)
+}
+func replicaWaitMilliseconds(integration forge.Integration) int {
+	if integration.Replica == nil || integration.Replica.WaitMilliseconds <= 0 {
+		return 1500
+	}
+	return integration.Replica.WaitMilliseconds
 }
 
 func (policy *GitForgePolicy) updateIntegrationHealth(ctx context.Context, coordinate projecttask.RepositoryCoordinate, state, detail, externalRepository string) error {

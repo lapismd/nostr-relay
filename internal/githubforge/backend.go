@@ -23,6 +23,7 @@ const (
 )
 
 var gitReadPermissions = map[string]string{"metadata": "read", "contents": "read"}
+var gitWritePermissions = map[string]string{"metadata": "read", "contents": "write"}
 
 type Backend struct {
 	connections ConnectionLoader

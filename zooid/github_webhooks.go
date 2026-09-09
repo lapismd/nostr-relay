@@ -158,8 +158,11 @@ func (policy *GitForgePolicy) ProcessGitHubWebhookOnce(ctx context.Context) erro
 type githubWebhookPayload struct {
 	Action       string `json:"action"`
 	Ref          string `json:"ref"`
+	Before       string `json:"before"`
 	After        string `json:"after"`
+	Created      bool   `json:"created"`
 	Deleted      bool   `json:"deleted"`
+	Forced       bool   `json:"forced"`
 	Installation struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
@@ -516,27 +519,69 @@ func (policy *GitForgePolicy) recordGitHubPush(ctx context.Context, delivery git
 	if err != nil || !found {
 		return err
 	}
+	if payload.Ref == "" || (!strings.HasPrefix(payload.Ref, "refs/heads/") && !strings.HasPrefix(payload.Ref, "refs/tags/")) {
+		return &forge.Error{Status: http.StatusBadRequest, Code: "invalid_github_push"}
+	}
+	if repository.Integration.Replica != nil && repository.Integration.Replica.Enabled {
+		managed := repository.Integration.Replica.SyncBranches && strings.HasPrefix(payload.Ref, "refs/heads/") ||
+			repository.Integration.Replica.SyncTags && strings.HasPrefix(payload.Ref, "refs/tags/")
+		if !managed {
+			return nil
+		}
+	}
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()
-	if payload.Deleted || strings.Trim(payload.After, "0") == "" {
+	deleted := payload.Deleted || strings.Trim(payload.After, "0") == ""
+	if deleted {
 		_, err = GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
 			DELETE FROM {{.Name}}__forge_provider_refs
 			WHERE provider = 'github' AND connection_id = $1 AND owner = $2 AND repo = $3 AND ref_name = $4`),
 			delivery.ConnectionID, repository.Coordinate.Owner.Hex(), repository.Coordinate.ID, payload.Ref)
-		return err
-	}
-	if !fullForgeObjectID(payload.After) || payload.Ref == "" {
+	} else if !fullForgeObjectID(payload.After) {
 		return &forge.Error{Status: http.StatusBadRequest, Code: "invalid_github_push"}
-	}
-	_, err = GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+	} else {
+		_, err = GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
 		INSERT INTO {{.Name}}__forge_provider_refs
 		  (provider, connection_id, owner, repo, ref_name, commit_oid, observed_at)
 		VALUES ('github', $1, $2, $3, $4, $5, NOW())
 		ON CONFLICT (provider, connection_id, owner, repo, ref_name) DO UPDATE SET
 		  commit_oid = EXCLUDED.commit_oid, observed_at = NOW()`),
-		delivery.ConnectionID, repository.Coordinate.Owner.Hex(), repository.Coordinate.ID,
-		payload.Ref, strings.ToLower(payload.After))
-	return err
+			delivery.ConnectionID, repository.Coordinate.Owner.Hex(), repository.Coordinate.ID,
+			payload.Ref, strings.ToLower(payload.After))
+	}
+	if err != nil {
+		return err
+	}
+	if repository.Integration.Replica == nil || !repository.Integration.Replica.Enabled {
+		return nil
+	}
+	authorityOID := strings.ToLower(payload.After)
+	if deleted {
+		authorityOID = ""
+	}
+	_, err = GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
+		INSERT INTO {{.Name}}__git_replica_refs
+		  (owner, repo, ref_name, authority_oid, replica_oid, source_delivery_id, last_seen_at)
+		VALUES ($1, $2, $3, $4, '', $5, NOW())
+		ON CONFLICT (owner, repo, ref_name) DO UPDATE SET
+		  authority_oid = EXCLUDED.authority_oid,
+		  source_delivery_id = EXCLUDED.source_delivery_id, last_seen_at = NOW()`),
+		repository.Coordinate.Owner.Hex(), repository.Coordinate.ID, payload.Ref, authorityOID, delivery.DeliveryID)
+	if err != nil {
+		return err
+	}
+	if err := policy.setGitReplicaState(ctx, repository.Coordinate, "stale", "", false); err != nil {
+		return err
+	}
+	// On-demand replicas record authoritative drift but defer the transfer
+	// until a mutable read asks for it. Continuous replicas take the same
+	// durable path immediately.
+	if repository.Integration.Replica.Mode != forge.ReplicaModeContinuous {
+		return nil
+	}
+	return policy.enqueueGitReplicaSync(ctx, repository.Coordinate, repository.Integration.Generation, forge.ReplicaSyncRequest{
+		DeliveryID: delivery.DeliveryID, RefName: payload.Ref, TargetOID: authorityOID, Reason: "github-push",
+	})
 }
 
 func webhookCorrelationMarker(payload []byte) string {

@@ -52,6 +52,22 @@ func (backend *Backend) CloneSource(ctx context.Context, repository forge.Reposi
 	return descriptor.URL, "x-access-token", token, nil
 }
 
+func (backend *Backend) GitReplicationTarget(ctx context.Context, repository forge.Repository) (forge.GitReplicationTarget, error) {
+	connection, repositoryID, err := backend.connectionFor(ctx, repository)
+	if err != nil {
+		return forge.GitReplicationTarget{}, err
+	}
+	token, err := backend.tokens.installation(ctx, connection, repositoryID, gitWritePermissions)
+	if err != nil {
+		return forge.GitReplicationTarget{}, err
+	}
+	descriptor, err := backend.CloneDescriptor(ctx, repository)
+	if err != nil {
+		return forge.GitReplicationTarget{}, err
+	}
+	return forge.GitReplicationTarget{CloneURL: descriptor.URL, Username: "x-access-token", Password: token}, nil
+}
+
 func (backend *Backend) Project(ctx context.Context, projection forge.MirrorProjection) (forge.CollaborationResult, error) {
 	return backend.Execute(ctx, forge.CollaborationCommand{
 		OperationID: projection.OperationID, Kind: projection.Kind,
@@ -63,4 +79,5 @@ func (backend *Backend) Project(ctx context.Context, projection forge.MirrorProj
 
 var _ forge.GitAuthorityBackend = (*Backend)(nil)
 var _ forge.AuthenticatedCloneSource = (*Backend)(nil)
+var _ forge.GitReplicationTargetBackend = (*Backend)(nil)
 var _ forge.MirrorBackend = (*Backend)(nil)

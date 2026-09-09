@@ -9,12 +9,13 @@ import (
 // Registry owns process-local provider implementations. Durable attachment is
 // represented by Integration and resolved independently by Zooid.
 type Registry struct {
-	mu            sync.RWMutex
-	authority     map[string]GitAuthorityBackend
-	content       map[string]RepositoryContentBackend
-	collaboration map[string]CollaborationBackend
-	mirror        map[string]MirrorBackend
-	ci            map[string]CIBackend
+	mu                 sync.RWMutex
+	authority          map[string]GitAuthorityBackend
+	content            map[string]RepositoryContentBackend
+	collaboration      map[string]CollaborationBackend
+	mirror             map[string]MirrorBackend
+	ci                 map[string]CIBackend
+	replicationTargets map[string]GitReplicationTargetBackend
 }
 
 func NewRegistry() *Registry {
@@ -22,7 +23,27 @@ func NewRegistry() *Registry {
 		authority: make(map[string]GitAuthorityBackend), content: make(map[string]RepositoryContentBackend),
 		collaboration: make(map[string]CollaborationBackend),
 		mirror:        make(map[string]MirrorBackend), ci: make(map[string]CIBackend),
+		replicationTargets: make(map[string]GitReplicationTargetBackend),
 	}
+}
+
+func (registry *Registry) RegisterGitReplicationTarget(backend GitReplicationTargetBackend) error {
+	if backend == nil || backend.Name() == "" {
+		return fmt.Errorf("forge Git replication target requires a name")
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if _, exists := registry.replicationTargets[backend.Name()]; exists {
+		return fmt.Errorf("forge Git replication target %q is already registered", backend.Name())
+	}
+	registry.replicationTargets[backend.Name()] = backend
+	return nil
+}
+
+func (registry *Registry) GitReplicationTarget(name string) GitReplicationTargetBackend {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	return registry.replicationTargets[name]
 }
 
 // RegisterGit is a compatibility registration helper. Backends implement the
@@ -198,6 +219,18 @@ func (registry *Registry) Resolve(ctx context.Context, repository Repository) (R
 			return result, &Error{Status: 503, Code: "mirror_backend_unavailable", Retryable: true}
 		}
 		result.Capabilities.Mirror = true
+	}
+
+	result.Capabilities.GitReplicationTargetBackend = integration.GitReplicationTargetBackend
+	if integration.GitReplicationTargetBackend != "" && integration.GitReplicationTargetBackend != BackendNone {
+		result.ReplicationTarget = registry.replicationTargets[integration.GitReplicationTargetBackend]
+		if result.ReplicationTarget == nil {
+			return result, &Error{Status: 503, Code: "git_replication_target_unavailable", Retryable: true}
+		}
+		if _, ok := result.Authority.(GitReplicationSource); !ok {
+			return result, &Error{Status: 503, Code: "git_replication_source_unavailable", Retryable: true}
+		}
+		result.Capabilities.GitReplicationTarget = true
 	}
 
 	result.Capabilities.CIBackend = integration.CIBackend

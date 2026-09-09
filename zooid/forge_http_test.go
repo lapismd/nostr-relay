@@ -26,6 +26,7 @@ type fakeGitHubProvider struct {
 	cloneURL         string
 	cloneUsername    string
 	clonePassword    string
+	resolveRequests  []string
 	ciStarts         []forge.CIRequest
 	ciRun            forge.CIRun
 	ciStatus         forge.CIRun
@@ -78,7 +79,8 @@ func (*fakeGitHubProvider) DefaultBranch(context.Context, forge.Repository, stri
 func (*fakeGitHubProvider) Refs(context.Context, forge.Repository, forge.RefsRequest) (forge.RefPage, error) {
 	return forge.RefPage{}, nil
 }
-func (*fakeGitHubProvider) Resolve(_ context.Context, _ forge.Repository, request forge.RevisionRequest) (forge.Revision, error) {
+func (provider *fakeGitHubProvider) Resolve(_ context.Context, _ forge.Repository, request forge.RevisionRequest) (forge.Revision, error) {
+	provider.resolveRequests = append(provider.resolveRequests, request.Revision)
 	return forge.Revision{Ref: request.Revision, SHA: request.Revision, Kind: "commit"}, nil
 }
 func (*fakeGitHubProvider) Tree(context.Context, forge.Repository, forge.RevisionRequest) (forge.Tree, error) {
@@ -140,6 +142,9 @@ func (provider *fakeGitHubProvider) Cleanup(_ context.Context, _ forge.Repositor
 }
 func (*fakeGitHubProvider) MirrorTarget(context.Context, forge.Repository) (forge.CIMirrorTarget, error) {
 	return forge.CIMirrorTarget{CloneURL: "https://github.com/lapis/ci-mirror.git", Username: "x-access-token", Password: "opaque-ci-token"}, nil
+}
+func (*fakeGitHubProvider) GitReplicationTarget(context.Context, forge.Repository) (forge.GitReplicationTarget, error) {
+	return forge.GitReplicationTarget{CloneURL: "https://github.com/lapis/notes.git", Username: "x-access-token", Password: "opaque-replication-token"}, nil
 }
 
 type fakeCredentialStore map[string][]byte

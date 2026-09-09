@@ -16,9 +16,13 @@ import (
 
 type fakeWalGitImporter struct {
 	*fakeGitHubProvider
-	requests []forge.ImportRequest
-	mirrored []forge.CIRequest
-	targets  []forge.CIMirrorTarget
+	requests        []forge.ImportRequest
+	objectRequests  []forge.ImportObjectRequest
+	missingObjects  map[string]bool
+	resolveRequests []string
+	replications    []forge.GitReplicationTarget
+	mirrored        []forge.CIRequest
+	targets         []forge.CIMirrorTarget
 }
 
 func (backend *fakeWalGitImporter) MirrorCommit(_ context.Context, repository forge.Repository, commit string, target forge.CIMirrorTarget, mirrorRef string) error {
@@ -49,6 +53,25 @@ func (backend *fakeWalGitImporter) ImportRepository(_ context.Context, _ forge.R
 	return forge.ImportResult{Refs: refs}, nil
 }
 
+func (backend *fakeWalGitImporter) Resolve(_ context.Context, _ forge.Repository, request forge.RevisionRequest) (forge.Revision, error) {
+	backend.resolveRequests = append(backend.resolveRequests, request.Revision)
+	if backend.missingObjects[request.Revision] {
+		return forge.Revision{}, &forge.Error{Status: http.StatusNotFound, Code: "git_object_not_found"}
+	}
+	return forge.Revision{Ref: request.Revision, SHA: request.Revision, Kind: "commit"}, nil
+}
+
+func (backend *fakeWalGitImporter) ImportObject(_ context.Context, _ forge.Repository, request forge.ImportObjectRequest) error {
+	backend.objectRequests = append(backend.objectRequests, request)
+	delete(backend.missingObjects, request.ObjectOID)
+	return nil
+}
+
+func (backend *fakeWalGitImporter) ReplicateRepository(_ context.Context, _ forge.Repository, target forge.GitReplicationTarget, _, _ bool) error {
+	backend.replications = append(backend.replications, target)
+	return nil
+}
+
 func configureForgeMigrationTest(t *testing.T, snapshots []map[string]string) (*GitForgePolicy, *EventStore, *fakeGitHubProvider, *fakeWalGitImporter, nostr.SecretKey, nostr.Event) {
 	t.Helper()
 	policy, store := createGitForgeTestPolicy(t, nil)
@@ -64,6 +87,7 @@ func configureForgeMigrationTest(t *testing.T, snapshots []map[string]string) (*
 	require.NoError(t, policy.Registry.RegisterGit(provider))
 	require.NoError(t, policy.Registry.RegisterCollaboration(provider))
 	require.NoError(t, policy.Registry.RegisterMirror(provider))
+	require.NoError(t, policy.Registry.RegisterGitReplicationTarget(provider))
 	require.NoError(t, policy.Registry.RegisterGit(target))
 	policy.GitHub = provider
 
@@ -139,8 +163,21 @@ func TestGitHubToWalGitMigrationRequiresVerifiedImportAndOwnerAnnouncement(t *te
 	require.Equal(t, hosted.ID.Hex(), integration.AnnouncementID)
 	require.Equal(t, forge.BackendWalGit, integration.GitBackend)
 	require.Equal(t, forge.BackendGitHub, integration.CollaborationBackend)
-	require.Equal(t, forge.BackendGitHub, integration.MirrorBackend)
+	require.Empty(t, integration.MirrorBackend)
+	require.Equal(t, forge.BackendGitHub, integration.GitReplicationTargetBackend)
 	require.Equal(t, "ready", integration.HealthState)
+	require.NoError(t, policy.ProcessGitReplicationOnce(context.Background()))
+	require.Len(t, target.replications, 1)
+	require.Equal(t, "https://github.com/lapis/notes.git", target.replications[0].CloneURL)
+	require.Equal(t, "opaque-replication-token", target.replications[0].Password)
+	refEvent := normalizedRefEvent{
+		Coordinate: migration.Coordinate, Action: "update", RefName: "refs/heads/main",
+		Old: strings.Repeat("a", 40), New: strings.Repeat("c", 40),
+		Pusher: "nostr:" + owner.Public().Hex(), Sequence: "10",
+	}
+	require.NoError(t, policy.storeWalGitEvents(context.Background(), []normalizedRefEvent{refEvent}))
+	require.NoError(t, policy.ProcessGitReplicationOnce(context.Background()))
+	require.Len(t, target.replications, 2, "native WalGit refs drive the distinct outbound Git target")
 	migration, found, err = policy.loadForgeMigration(context.Background(), operationID)
 	require.NoError(t, err)
 	require.True(t, found)
@@ -193,7 +230,7 @@ func TestForgeMigrationActivationRejectsStaleProviderAnnouncement(t *testing.T) 
 	require.Equal(t, "canonical_walgit_announcement_required", backendError.Code)
 }
 
-func TestWalGitMirrorProjectsRelayRootWithoutChangingNostrAuthority(t *testing.T) {
+func TestRetainedGitMirrorDoesNotEnableCollaborationProjection(t *testing.T) {
 	refs := map[string]string{"refs/heads/main": strings.Repeat("a", 40)}
 	policy, store, provider, _, owner, repository := configureForgeMigrationTest(t, []map[string]string{refs, refs})
 	resolved, found, err := policy.ResolveIntegration(context.Background(), repositoryCoordinate(t, repository))
@@ -227,14 +264,11 @@ func TestWalGitMirrorProjectsRelayRootWithoutChangingNostrAuthority(t *testing.T
 	require.NoError(t, policy.Remember(context.Background(), issue))
 	provider.result = forge.CollaborationResult{ExternalID: "mirror-91", ExternalNumber: 91, ExternalURL: "https://github.com/lapis/notes/issues/91"}
 	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
-	require.Len(t, provider.commands, 1)
-	require.Equal(t, "create_issue", provider.commands[0].Kind)
+	require.Empty(t, provider.commands)
 	mapping, found, err := policy.loadMappingByNostrRoot(context.Background(), forge.BackendGitHub, "connection", issue.ID.Hex())
 	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, issue.ID.Hex(), mapping.NostrEventID)
-	require.Equal(t, "relay", mapping.Origin)
-	require.Equal(t, "relay", mapping.Authority)
+	require.False(t, found)
+	require.Empty(t, mapping.NostrEventID)
 	migration, found, err := policy.loadForgeMigration(context.Background(), operation.ID)
 	require.NoError(t, err)
 	require.True(t, found)

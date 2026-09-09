@@ -125,36 +125,139 @@ func (policy *GitForgePolicy) ServeRepositoryAPI(w http.ResponseWriter, r *http.
 }
 
 func (policy *GitForgePolicy) repositoryAPIResult(ctx context.Context, resolved forge.ResolvedRepository, subpath, principal string, query url.Values) (any, error) {
-	content := resolved.Content
 	switch {
 	case subpath == "" || subpath == "refs":
-		if resolved.Authority == nil {
-			return nil, &forge.Error{Status: http.StatusConflict, Code: "repository_refs_unavailable"}
-		}
-		return resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{Continuation: query.Get("continuation"), Principal: principal})
+		return policy.repositoryRefsForRead(ctx, resolved, "", query.Get("continuation"), principal)
 	case subpath == "refs/branches" || subpath == "refs/tags":
-		if resolved.Authority == nil {
-			return nil, &forge.Error{Status: http.StatusConflict, Code: "repository_refs_unavailable"}
-		}
 		kind := strings.TrimPrefix(subpath, "refs/")
-		return resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{Kind: kind, Continuation: query.Get("continuation"), Principal: principal})
+		return policy.repositoryRefsForRead(ctx, resolved, kind, query.Get("continuation"), principal)
 	case subpath == "resolve" || subpath == "resolve/":
-		return content.Resolve(ctx, resolved.Repository, forge.RevisionRequest{Revision: "HEAD", Principal: principal})
+		request := forge.RevisionRequest{Revision: "HEAD", Principal: principal}
+		return policy.repositoryContentRead(ctx, resolved, "HEAD", func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Resolve(ctx, resolved.Repository, request)
+		})
 	case strings.HasPrefix(subpath, "resolve/"):
-		return content.Resolve(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "resolve/"), Principal: principal})
+		revision := strings.TrimPrefix(subpath, "resolve/")
+		request := forge.RevisionRequest{Revision: revision, Principal: principal}
+		return policy.repositoryContentRead(ctx, resolved, revision, func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Resolve(ctx, resolved.Repository, request)
+		})
 	case strings.HasPrefix(subpath, "tree/"):
-		return content.Tree(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "tree/"), Principal: principal})
+		revision := strings.TrimPrefix(subpath, "tree/")
+		request := forge.RevisionRequest{Revision: revision, Principal: principal}
+		return policy.repositoryContentRead(ctx, resolved, revision, func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Tree(ctx, resolved.Repository, request)
+		})
 	case strings.HasPrefix(subpath, "blob/"):
-		return content.Blob(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "blob/"), Principal: principal})
+		revision := strings.TrimPrefix(subpath, "blob/")
+		request := forge.RevisionRequest{Revision: revision, Principal: principal}
+		return policy.repositoryContentRead(ctx, resolved, revision, func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Blob(ctx, resolved.Repository, request)
+		})
 	case subpath == "commits":
 		skip, _ := strconv.Atoi(query.Get("skip"))
 		limit, _ := strconv.Atoi(query.Get("n"))
-		return content.Commits(ctx, resolved.Repository, forge.CommitsRequest{Ref: query.Get("ref"), Path: query.Get("path"), Skip: skip, Limit: limit, Continuation: query.Get("continuation"), Principal: principal})
+		request := forge.CommitsRequest{Ref: query.Get("ref"), Path: query.Get("path"), Skip: skip, Limit: limit, Continuation: query.Get("continuation"), Principal: principal}
+		return policy.repositoryContentRead(ctx, resolved, request.Ref, func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Commits(ctx, resolved.Repository, request)
+		})
 	case strings.HasPrefix(subpath, "commit/"):
-		return content.Commit(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "commit/"), Principal: principal})
+		revision := strings.TrimPrefix(subpath, "commit/")
+		request := forge.RevisionRequest{Revision: revision, Principal: principal}
+		return policy.repositoryContentRead(ctx, resolved, revision, func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Commit(ctx, resolved.Repository, request)
+		})
 	default:
 		return nil, &forge.Error{Status: http.StatusNotFound, Code: "git_object_not_found"}
 	}
+}
+
+func (policy *GitForgePolicy) repositoryRefsForRead(ctx context.Context, resolved forge.ResolvedRepository, kind, continuation, principal string) (any, error) {
+	if resolved.Repository.Integration.Replica != nil && resolved.Repository.Integration.Replica.Enabled {
+		page, usable, err := policy.replicaRefPage(ctx, resolved.Repository, kind, continuation)
+		if err != nil {
+			return nil, err
+		}
+		if usable {
+			return page, nil
+		}
+		config := resolved.Repository.Integration.Replica
+		reason := "ref-read-" + strconv.FormatInt(time.Now().UTC().Unix()/5, 10)
+		_ = policy.enqueueGitReplicaSync(ctx, resolved.Repository.Coordinate,
+			resolved.Repository.Integration.Generation, forge.ReplicaSyncRequest{Reason: reason})
+		if config.WaitMilliseconds > 0 && (config.ReadPolicy == forge.ReplicaReadWait || config.ReadPolicy == forge.ReplicaReadFallback) {
+			deadline := time.Now().Add(time.Duration(config.WaitMilliseconds) * time.Millisecond)
+			for time.Now().Before(deadline) {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(50 * time.Millisecond):
+				}
+				page, usable, err = policy.replicaRefPage(ctx, resolved.Repository, kind, continuation)
+				if err != nil {
+					return nil, err
+				}
+				if usable {
+					return page, nil
+				}
+			}
+		}
+		if config.ReadPolicy == forge.ReplicaReadFallback && resolved.Authority != nil {
+			return resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{Kind: kind, Continuation: continuation, Principal: principal})
+		}
+		return nil, &forge.Error{Status: http.StatusServiceUnavailable, Code: "replica_stale", Retryable: true}
+	}
+	if resolved.Authority == nil {
+		return nil, &forge.Error{Status: http.StatusConflict, Code: "repository_refs_unavailable"}
+	}
+	return resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{Kind: kind, Continuation: continuation, Principal: principal})
+}
+
+// repositoryContentRead keeps the existing public API independent from the
+// selected provider. A configured replica is primary; immutable commits are
+// pinned into WalGit on first miss, and provider content is used only when the
+// explicit read policy permits fallback.
+func (policy *GitForgePolicy) repositoryContentRead(ctx context.Context, resolved forge.ResolvedRepository, address string, operation func(forge.RepositoryContentBackend) (any, error)) (any, error) {
+	primary, fallback, stale, err := policy.contentBackendsForRead(ctx, resolved, address)
+	if err != nil {
+		return nil, err
+	}
+	if primary == nil {
+		return nil, &forge.Error{Status: http.StatusConflict, Code: "repository_browse_unavailable"}
+	}
+	result, readErr := operation(primary)
+	if readErr == nil {
+		if stale {
+			result = markStaleResult(result)
+		}
+		return result, nil
+	}
+	if resolved.Repository.Integration.Replica != nil && resolved.Repository.Integration.Replica.Enabled &&
+		primary.Name() == forge.BackendWalGit && immutableAddress(address) && isGitObjectMissing(readErr) {
+		oid := strings.SplitN(strings.Trim(address, "/"), "/", 2)[0]
+		if importErr := policy.ensureReplicaObject(ctx, resolved.Repository, oid); importErr == nil {
+			if result, retryErr := operation(primary); retryErr == nil {
+				return result, nil
+			} else {
+				readErr = retryErr
+			}
+		} else {
+			readErr = importErr
+		}
+	}
+	if fallback != nil && fallback != primary {
+		return operation(fallback)
+	}
+	return nil, readErr
+}
+
+func isGitObjectMissing(err error) bool {
+	var forgeError *forge.Error
+	if errors.As(err, &forgeError) {
+		return forgeError.Status == http.StatusNotFound || forgeError.Code == "git_object_not_found"
+	}
+	var backendError *gitforge.BackendError
+	return errors.As(err, &backendError) && (backendError.Status == http.StatusNotFound || backendError.Code == "git_object_not_found")
 }
 
 func writeRepositoryResult(w http.ResponseWriter, method string, result any, limits forge.ContentLimits) {
@@ -343,22 +446,47 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		if target == "" {
 			target = "HEAD"
 		}
-		resolvedBase, resolveErr := resolved.Content.Resolve(r.Context(), resolved.Repository, forge.RevisionRequest{Revision: target, Principal: authEvent.PubKey.Hex()})
+		request := forge.RevisionRequest{Revision: target, Principal: authEvent.PubKey.Hex()}
+		baseResult, resolveErr := policy.repositoryContentRead(r.Context(), resolved, target, func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Resolve(r.Context(), resolved.Repository, request)
+		})
 		err = resolveErr
 		if err != nil {
 			writeGitBackendFailure(w, err)
 			return
 		}
+		resolvedBase, ok := baseResult.(forge.Revision)
+		if !ok || !fullForgeObjectID(resolvedBase.SHA) {
+			writeGitError(w, http.StatusBadGateway, "invalid_content_backend_response")
+			return
+		}
 		base = resolvedBase.SHA
 		useMergeBase = true
 	}
-	comparison, err := resolved.Content.Compare(r.Context(), resolved.Repository, forge.CompareRequest{
+	for _, oid := range []string{base, state.CurrentCommit} {
+		request := forge.RevisionRequest{Revision: oid, Principal: authEvent.PubKey.Hex()}
+		if _, err := policy.repositoryContentRead(r.Context(), resolved, oid, func(backend forge.RepositoryContentBackend) (any, error) {
+			return backend.Resolve(r.Context(), resolved.Repository, request)
+		}); err != nil {
+			writeGitBackendFailure(w, err)
+			return
+		}
+	}
+	compareRequest := forge.CompareRequest{
 		Base: base, Head: state.CurrentCommit, UseMergeBase: useMergeBase,
 		MaxFiles: policy.Config.Git.MaxDiffFiles, MaxPatchBytes: policy.Config.Git.MaxDiffBytes,
 		Principal: authEvent.PubKey.Hex(),
+	}
+	comparisonResult, err := policy.repositoryContentRead(r.Context(), resolved, state.CurrentCommit, func(backend forge.RepositoryContentBackend) (any, error) {
+		return backend.Compare(r.Context(), resolved.Repository, compareRequest)
 	})
 	if err != nil {
 		writeGitBackendFailure(w, err)
+		return
+	}
+	comparison, ok := comparisonResult.(forge.Diff)
+	if !ok {
+		writeGitError(w, http.StatusBadGateway, "invalid_content_backend_response")
 		return
 	}
 
@@ -371,6 +499,9 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		Files: comparison.Files, Patch: comparison.Patch,
 	}
 	response.ResultMetadata = comparison.ResultMetadata
+	if response.CapabilityLimits == nil {
+		response.CapabilityLimits = &resolved.Capabilities.CapabilityLimits
+	}
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return

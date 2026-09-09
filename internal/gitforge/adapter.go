@@ -66,6 +66,22 @@ func (adapter *WalGitAdapter) ImportRepository(ctx context.Context, repository f
 	return backend.ImportRepository(ctx, repository, request)
 }
 
+func (adapter *WalGitAdapter) ImportObject(ctx context.Context, repository forge.Repository, request forge.ImportObjectRequest) error {
+	backend, ok := adapter.legacy.(*WalGitBackend)
+	if !ok {
+		return &forge.Error{Status: http.StatusNotImplemented, Code: "repository_object_import_unavailable"}
+	}
+	return backend.ImportObject(ctx, repository, request)
+}
+
+func (adapter *WalGitAdapter) ReplicateRepository(ctx context.Context, repository forge.Repository, target forge.GitReplicationTarget, branches, tags bool) error {
+	backend, ok := adapter.legacy.(*WalGitBackend)
+	if !ok {
+		return &forge.Error{Status: http.StatusNotImplemented, Code: "git_replication_unavailable"}
+	}
+	return backend.ReplicateRepository(ctx, repository, target, branches, tags)
+}
+
 func (adapter *WalGitAdapter) MirrorCommit(ctx context.Context, repository forge.Repository, commit string, target forge.CIMirrorTarget, mirrorRef string) error {
 	backend, ok := adapter.legacy.(*WalGitBackend)
 	if !ok {
@@ -276,6 +292,8 @@ var (
 	_ forge.RepositoryContentBackend = (*WalGitAdapter)(nil)
 	_ forge.RepositoryProvisioner    = (*WalGitAdapter)(nil)
 	_ forge.RepositoryImporter       = (*WalGitAdapter)(nil)
+	_ forge.RepositoryObjectImporter = (*WalGitAdapter)(nil)
+	_ forge.GitReplicationSource     = (*WalGitAdapter)(nil)
 	_ forge.CommitMirrorSource       = (*WalGitAdapter)(nil)
 	_ forge.SmartHTTPBackend         = (*WalGitAdapter)(nil)
 )

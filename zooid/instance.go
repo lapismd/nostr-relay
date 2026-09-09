@@ -196,6 +196,10 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 				instance.Events.Close()
 				return nil, err
 			}
+			if err := forgeRegistry.RegisterGitReplicationTarget(backend); err != nil {
+				instance.Events.Close()
+				return nil, err
+			}
 			if err := forgeRegistry.RegisterCI(backend); err != nil {
 				instance.Events.Close()
 				return nil, err

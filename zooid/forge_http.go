@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -660,7 +661,7 @@ func (policy *GitForgePolicy) serveRepositoryHealth(w http.ResponseWriter, r *ht
 	state, detail := resolved.Repository.Integration.HealthState, resolved.Repository.Integration.HealthDetail
 	providerRepository := ""
 	ciRepository := ""
-	if resolved.Repository.Integration.GitBackend == forge.BackendGitHub {
+	if resolved.Repository.Integration.GitAuthorityBackend == forge.BackendGitHub || resolved.Repository.Integration.GitBackend == forge.BackendGitHub {
 		if policy.GitHub == nil {
 			state, detail = "disabled", "GitHub adapter is disabled"
 		} else {
@@ -675,6 +676,50 @@ func (policy *GitForgePolicy) serveRepositoryHealth(w http.ResponseWriter, r *ht
 					state, detail = "degraded", "signed clone/web URL is stale or does not match the attached GitHub repository"
 				}
 				_ = policy.updateIntegrationHealth(r.Context(), resolved.Repository.Coordinate, state, detail, metadata.FullName)
+			}
+		}
+	}
+	var replicaHealth any
+	if resolved.Repository.Integration.Replica != nil && resolved.Repository.Integration.Replica.Enabled {
+		replica, found, err := policy.loadGitReplica(r.Context(), resolved.Repository.Coordinate)
+		if err != nil {
+			state, detail = "degraded", "Git replica health is unavailable"
+		} else if !found {
+			state, detail = "degraded", "Git replica has not been provisioned"
+			replicaHealth = map[string]any{"state": "missing", "behind_refs": 0}
+		} else {
+			behind, countErr := policy.gitReplicaBehindRefs(r.Context(), resolved.Repository.Coordinate)
+			if countErr != nil {
+				state, detail = "degraded", "Git replica ref health is unavailable"
+			}
+			if replica.State != "current" && state != "disabled" {
+				state = "degraded"
+				if detail == "" {
+					detail = "Git replica is " + replica.State
+				}
+			}
+			replicaHealth = map[string]any{
+				"state": replica.State, "behind_refs": behind,
+				"last_sync_at":            nullableTime(replica.LastSyncAt),
+				"last_success_at":         nullableTime(replica.LastSuccessAt),
+				"last_authority_check_at": nullableTime(replica.LastAuthorityCheckAt),
+				"last_reconcile_at":       nullableTime(replica.LastReconcileAt),
+			}
+			if replica.LastError != "" {
+				replicaHealth.(map[string]any)["failure"] = replica.LastError
+			}
+		}
+	}
+	var replicationHealth any
+	if resolved.Repository.Integration.GitReplicationTargetBackend != "" {
+		if value, found, err := policy.gitReplicationHealth(r.Context(), resolved.Repository.Coordinate); err != nil {
+			state, detail = "degraded", "Git replication health is unavailable"
+		} else if found {
+			replicationHealth = value
+		} else {
+			replicationHealth = map[string]any{
+				"target_backend": resolved.Repository.Integration.GitReplicationTargetBackend,
+				"state":          "pending",
 			}
 		}
 	}
@@ -693,22 +738,37 @@ func (policy *GitForgePolicy) serveRepositoryHealth(w http.ResponseWriter, r *ht
 	writeForgeJSON(w, http.StatusOK, map[string]any{
 		"repository": resolved.Repository.Coordinate.String(), "state": state,
 		"detail": detail, "provider_repository": providerRepository, "ci_repository": ciRepository,
-		"generation": resolved.Repository.Integration.Generation,
+		"generation":      resolved.Repository.Integration.Generation,
+		"git_authority":   resolved.Repository.Integration.GitAuthorityBackend,
+		"content_backend": resolved.Repository.Integration.ContentBackend,
+		"replica":         replicaHealth,
+		"git_replication": replicationHealth,
 	})
+}
+
+func nullableTime(value sql.NullTime) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Time.UTC()
 }
 
 func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter, r *http.Request, repository forge.Repository, body []byte) {
 	var request struct {
-		ExpectedAnnouncementID string `json:"expected_announcement_id"`
-		GitBackend             string `json:"git_backend"`
-		CollaborationBackend   string `json:"collaboration_backend"`
-		MirrorBackend          string `json:"mirror_backend"`
-		CIBackend              string `json:"ci_backend"`
-		ConnectionID           string `json:"connection_id"`
-		ExternalRepositoryID   string `json:"external_repository_id"`
-		CIConnectionID         string `json:"ci_connection_id"`
-		CIExternalRepositoryID string `json:"ci_external_repository_id"`
-		CIWorkflow             string `json:"ci_workflow"`
+		ExpectedAnnouncementID      string               `json:"expected_announcement_id"`
+		GitBackend                  string               `json:"git_backend"`
+		GitAuthorityBackend         string               `json:"git_authority_backend"`
+		ContentBackend              string               `json:"content_backend"`
+		GitReplicationTargetBackend string               `json:"git_replication_target_backend"`
+		CollaborationBackend        string               `json:"collaboration_backend"`
+		MirrorBackend               string               `json:"mirror_backend"`
+		CIBackend                   string               `json:"ci_backend"`
+		ConnectionID                string               `json:"connection_id"`
+		ExternalRepositoryID        string               `json:"external_repository_id"`
+		CIConnectionID              string               `json:"ci_connection_id"`
+		CIExternalRepositoryID      string               `json:"ci_external_repository_id"`
+		CIWorkflow                  string               `json:"ci_workflow"`
+		Replica                     *forge.ReplicaConfig `json:"replica"`
 	}
 	if !decodeStrictJSON(body, &request) || request.ExpectedAnnouncementID == "" || request.ExpectedAnnouncementID != repository.Announcement.ID.Hex() {
 		writeGitError(w, http.StatusConflict, "announcement_changed")
@@ -716,6 +776,15 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 	}
 	if request.CollaborationBackend == "" {
 		request.CollaborationBackend = forge.BackendRelay
+	}
+	if request.GitAuthorityBackend == "" {
+		request.GitAuthorityBackend = request.GitBackend
+	}
+	if request.ContentBackend == "" {
+		request.ContentBackend = request.GitBackend
+	}
+	if request.GitBackend == "" {
+		request.GitBackend = request.GitAuthorityBackend
 	}
 	if request.MirrorBackend == forge.BackendNone {
 		request.MirrorBackend = ""
@@ -734,14 +803,41 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 	integration := forge.Integration{
 		Coordinate: repository.Coordinate, AnnouncementID: repository.Announcement.ID.Hex(),
 		ConfigurationSource: forge.ConfigurationExplicit,
-		GitBackend:          request.GitBackend, CollaborationBackend: request.CollaborationBackend,
-		MirrorBackend: request.MirrorBackend, CIBackend: request.CIBackend,
+		GitBackend:          request.GitBackend, GitAuthorityBackend: request.GitAuthorityBackend,
+		ContentBackend: request.ContentBackend, GitReplicationTargetBackend: request.GitReplicationTargetBackend,
+		CollaborationBackend: request.CollaborationBackend,
+		MirrorBackend:        request.MirrorBackend, CIBackend: request.CIBackend,
 		ConnectionID: request.ConnectionID, ExternalRepositoryID: request.ExternalRepositoryID,
 		CIConnectionID: request.CIConnectionID, CIExternalRepositoryID: request.CIExternalRepositoryID,
 		CIWorkflow:  request.CIWorkflow,
-		HealthState: "ready",
+		HealthState: "ready", Replica: request.Replica,
 	}
-	githubNeeded := request.GitBackend == forge.BackendGitHub || request.CollaborationBackend == forge.BackendGitHub || request.MirrorBackend == forge.BackendGitHub
+	if integration.Replica != nil && integration.Replica.Enabled {
+		if integration.Replica.AuthorityBackend == "" {
+			integration.Replica.AuthorityBackend = request.GitAuthorityBackend
+		}
+		if integration.Replica.ReplicaBackend == "" {
+			integration.Replica.ReplicaBackend = request.ContentBackend
+		}
+		if integration.Replica.Direction == "" {
+			integration.Replica.Direction = "authority-to-replica"
+		}
+		if integration.Replica.Mode == "" {
+			integration.Replica.Mode = forge.ReplicaModeContinuous
+		}
+		if integration.Replica.ReadPolicy == "" {
+			integration.Replica.ReadPolicy = forge.ReplicaReadFallback
+		}
+		if !integration.Replica.SyncBranches && !integration.Replica.SyncTags {
+			integration.Replica.SyncBranches = true
+			integration.Replica.SyncTags = true
+		}
+		if integration.Replica.WaitMilliseconds == 0 {
+			integration.Replica.WaitMilliseconds = 1500
+		}
+		integration.HealthState = "provisioning"
+	}
+	githubNeeded := request.GitAuthorityBackend == forge.BackendGitHub || request.ContentBackend == forge.BackendGitHub || request.CollaborationBackend == forge.BackendGitHub || request.MirrorBackend == forge.BackendGitHub || request.GitReplicationTargetBackend == forge.BackendGitHub
 	var providerMetadata githubforge.RepositoryMetadata
 	if githubNeeded {
 		if policy.GitHub == nil || request.CollaborationBackend != forge.BackendRelay && request.CollaborationBackend != forge.BackendGitHub {
@@ -776,13 +872,13 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 			return
 		}
 		integration.CIExternalRepository = ciMetadata.FullName
-		if request.GitBackend == forge.BackendGitHub &&
+		if request.GitAuthorityBackend == forge.BackendGitHub &&
 			(request.CIConnectionID != request.ConnectionID || request.CIExternalRepositoryID != request.ExternalRepositoryID) {
 			writeGitError(w, http.StatusConflict, "github_ci_repository_must_match_source")
 			return
 		}
 	}
-	switch request.GitBackend {
+	switch request.GitAuthorityBackend {
 	case forge.BackendGitHub:
 		if !githubAnnouncementMatches(repository.Announcement, providerMetadata) {
 			writeGitError(w, http.StatusConflict, "announcement_provider_mismatch")
@@ -809,6 +905,65 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 		writeGitError(w, http.StatusBadRequest, "unknown_git_backend")
 		return
 	}
+	switch request.ContentBackend {
+	case forge.BackendGitHub:
+		if request.GitAuthorityBackend != forge.BackendGitHub {
+			writeGitError(w, http.StatusConflict, "invalid_content_backend")
+			return
+		}
+	case forge.BackendWalGit:
+		if request.GitAuthorityBackend != forge.BackendWalGit && (integration.Replica == nil || !integration.Replica.Enabled) {
+			writeGitError(w, http.StatusConflict, "replica_configuration_required")
+			return
+		}
+	case forge.BackendUnmanaged:
+		if request.GitAuthorityBackend != forge.BackendUnmanaged {
+			writeGitError(w, http.StatusConflict, "invalid_content_backend")
+			return
+		}
+	case forge.BackendNone:
+		if request.GitAuthorityBackend != forge.BackendNone {
+			writeGitError(w, http.StatusConflict, "invalid_content_backend")
+			return
+		}
+	default:
+		writeGitError(w, http.StatusBadRequest, "unknown_content_backend")
+		return
+	}
+	if integration.Replica != nil && integration.Replica.Enabled {
+		if request.GitAuthorityBackend != forge.BackendGitHub || request.ContentBackend != forge.BackendWalGit ||
+			integration.Replica.AuthorityBackend != forge.BackendGitHub || integration.Replica.ReplicaBackend != forge.BackendWalGit ||
+			integration.Replica.Direction != "authority-to-replica" ||
+			(integration.Replica.Mode != forge.ReplicaModeContinuous && integration.Replica.Mode != forge.ReplicaModeOnDemand) ||
+			(!integration.Replica.SyncBranches && !integration.Replica.SyncTags) ||
+			(integration.Replica.ReadPolicy != forge.ReplicaReadFallback && integration.Replica.ReadPolicy != forge.ReplicaReadWait && integration.Replica.ReadPolicy != forge.ReplicaReadStale) ||
+			integration.Replica.WaitMilliseconds < 0 || integration.Replica.WaitMilliseconds > 10000 {
+			writeGitError(w, http.StatusConflict, "invalid_replica_configuration")
+			return
+		}
+		if _, ok := policy.Registry.ContentBackend(forge.BackendWalGit).(forge.RepositoryImporter); !ok {
+			writeGitError(w, http.StatusConflict, "walgit_replica_unavailable")
+			return
+		}
+	}
+	if request.GitReplicationTargetBackend != "" && request.GitReplicationTargetBackend != forge.BackendGitHub {
+		writeGitError(w, http.StatusBadRequest, "unknown_git_replication_target")
+		return
+	}
+	if request.GitReplicationTargetBackend != "" && request.GitAuthorityBackend != forge.BackendWalGit {
+		writeGitError(w, http.StatusConflict, "git_replication_target_requires_walgit_authority")
+		return
+	}
+	if request.GitReplicationTargetBackend != "" {
+		if policy.Registry.GitReplicationTarget(request.GitReplicationTargetBackend) == nil {
+			writeGitError(w, http.StatusConflict, "git_replication_target_unavailable")
+			return
+		}
+		if _, ok := policy.Registry.AuthorityBackend(request.GitAuthorityBackend).(forge.GitReplicationSource); !ok {
+			writeGitError(w, http.StatusConflict, "git_replication_source_unavailable")
+			return
+		}
+	}
 	if !githubNeeded {
 		integration.ConnectionID, integration.ExternalRepositoryID, integration.ExternalRepository = "", "", ""
 	}
@@ -816,6 +971,10 @@ func (policy *GitForgePolicy) updateRepositoryIntegration(w http.ResponseWriter,
 		integration.CIConnectionID, integration.CIExternalRepositoryID, integration.CIExternalRepository, integration.CIWorkflow = "", "", "", ""
 	}
 	if err := policy.setExplicitIntegration(r.Context(), integration, request.ExpectedAnnouncementID); err != nil {
+		writeGitBackendFailure(w, err)
+		return
+	}
+	if err := policy.configureGitReplica(r.Context(), integration); err != nil {
 		writeGitBackendFailure(w, err)
 		return
 	}
