@@ -6,3 +6,6 @@ data
 .env.*
 !.env.example
 AGENTS.md
+
+# Generated mdBook output
+spec/book/

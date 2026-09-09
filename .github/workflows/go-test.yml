@@ -24,6 +24,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.4
+
       - name: Verify formatting
         run: |
           unformatted=$(gofmt -l -s .)
@@ -40,3 +45,6 @@ jobs:
           # and disabling avoids a class of intermittent CI flakes.
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: go test ./...
+
+      - name: Build specification
+        run: mdbook build spec

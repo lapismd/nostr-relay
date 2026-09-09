@@ -1,4 +1,4 @@
-# Project, task, and pull-request event model
+# Projects, tasks, and pull requests
 
 This relay stores ordinary signed Nostr events. Project/task support is a local
 policy and indexing extension around NIP-34, NIP-22, NIP-29, NIP-09, and Buzz's
@@ -145,9 +145,14 @@ WebSocket dispatcher may additionally remove stored target rows.
 - relay-side comment conversion
 - relay-side task status or assignment events
 - managed-owner/NIP-OA authorization in the first implementation
-- `kind:1617` patches, `kind:30618` repository-state projections, Git ref
-  verification, CI state, merge execution, automatic PR revisions, external
-  repository import/mirroring, or automatic channel creation
+- protocol-level `kind:1617` patch application or `kind:30618` repository-state
+  projections;
+- Git ref verification, merge execution, or automatic PR revisions inside the
+  event reducer; and
+- automatic group creation or conversion of provider observations into native
+  user-signed authority.
 
 Git smart HTTP, browser reads, and PR diffs are documented separately in
-`PROJECT_FORGE_MODEL.md` and `WALGIT_INTEGRATION.md`.
+the [forge model](../forge/model.md) and [WalGit integration](../forge/walgit.md).
+Provider import, mirroring, and CI are optional operational forge capabilities;
+they do not change this signed-event model.

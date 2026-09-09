@@ -135,5 +135,5 @@ build without externally observable route changes. New provider work must keep
 rerunning those lanes in addition to its own contract/Docker tests.
 
 The live architecture and update checklist are in
-[FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md); this file remains the historical
+[Capability-based forge architecture](../forge/capabilities.md); this file remains the historical
 pre-refactor characterization artifact.

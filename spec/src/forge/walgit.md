@@ -25,13 +25,13 @@ Nostr remains authoritative for `30621` projects, `30617` repository identity,
 `1621` tasks, `1618/1619` pull requests, comments, reviews and lifecycle.
 WalGit is authoritative only for Git objects, refs, pushes, LFS and its WAL.
 It is registered through the capability model described in
-[FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md); the existing
+[Capability-based forge architecture](capabilities.md); the existing
 `internal/gitforge` implementation is wrapped rather than rewritten.
 
 ## Deployment
 
 The complete base-stack, GitHub App, secret-mount, and local-test runbook is
-[FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md). This document records WalGit's
+[Forge deployment and local testing](../operations/deployment.md). This document records WalGit's
 specific storage and protocol contract.
 
 `docker-compose.yml` starts relay, PostgreSQL, WalGit, RustFS and an idempotent
@@ -67,12 +67,12 @@ private and configure these provider-neutral variables for Cloudflare R2. The
 base Compose file defaults them to local RustFS. Use `docker-compose.r2.yml` to
 remove that local service and initializer from the production topology.
 Complete R2 values, credential scope, and backup guidance are in
-[FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md#use-cloudflare-r2-in-production).
+[Forge deployment and local testing](../operations/deployment.md#use-cloudflare-r2-in-production).
 
 GitHub and its forge worker are optional. Their configuration, separate App
 permissions, secret references, private WalGit replica, and one-way CI mirror
-are documented in [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) and
-[GIT_REPLICAS.md](GIT_REPLICAS.md).
+are documented in [GitHub integration](github.md) and
+[Git repository replicas](replicas.md).
 
 The relay `[git]` configuration is:
 
@@ -182,7 +182,7 @@ authority.
 
 The remaining ref-policy, activity, automatic PR-revision, native merge, and
 repository-retirement work is tracked with its acceptance boundaries in
-[FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
+[Deferred forge work](../roadmap/deferred-forge-work.md).
 
 ## Failure and recovery
 

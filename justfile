@@ -9,3 +9,13 @@ test:
 
 fmt:
   gofmt -w -s .
+
+spec-build:
+  mdbook build spec
+
+spec-check:
+  go test ./internal/specdocs
+  mdbook build spec
+
+spec-serve:
+  mdbook serve spec

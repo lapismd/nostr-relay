@@ -14,7 +14,7 @@ The canonical identity is always `30617:<owner-pubkey>:<d>`. A repository's
 operational integration independently selects Git authority, repository
 content, collaboration, outbound Git replication, collaboration mirror, and CI
 backends; it never rewrites the signed announcement. See
-[FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md) for the interface and persistence
+[Capability-based forge architecture](capabilities.md) for the interface and persistence
 model.
 
 ## Repository classes and defaults
@@ -52,7 +52,7 @@ incomplete data, oversized objects, and capability limits.
 The additive NIP-98 `/api/forge` routes expose capability/health discovery,
 admin integration, durable provider commands, explicit import/migration, and
 CI operations. Provider commands return `202`; their durable operation state
-is read separately. [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) documents
+is read separately. [GitHub integration](github.md) documents
 the complete route and credential contract.
 
 Repository reads require NIP-29 access to `buzz-channel`; writes additionally
@@ -96,7 +96,7 @@ or review decisions. GitHub mirror mode imports no unrelated roots.
 A private Git replica remains independent of collaboration. GitHub can own
 clone/push and collaboration while WalGit serves content, or collaboration can
 remain relay-native. The GitHub clone locator stays signed in `30617`; users
-cannot clone or push the private replica. See [GIT_REPLICAS.md](GIT_REPLICAS.md).
+cannot clone or push the private replica. See [Git repository replicas](replicas.md).
 
 CI terminal results are bridge-signed `t=ci` activity bound to the exact
 commit. They remain historical when a PR tip changes and do not authorize a
@@ -112,4 +112,4 @@ token, trusted principal header, arbitrary provider API host, or bridge secret.
 
 Current unavailable behavior—including protected-ref compilation, automatic
 `1619` publication, and the WalGit merge coordinator—is tracked in
-[FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
+[Deferred forge work](../roadmap/deferred-forge-work.md).

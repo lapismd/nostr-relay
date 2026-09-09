@@ -1,4 +1,4 @@
-# Buzz Desktop project/task/pull-request compatibility
+# Buzz Desktop compatibility
 
 Audit target: Buzz Desktop `v0.5.23`, commit
 `3c7f288c60d67df78577b237e27c3dfc8831aaa1`.

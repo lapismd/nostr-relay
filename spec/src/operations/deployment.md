@@ -16,7 +16,7 @@ production PostgreSQL service, durable backups, and a secret manager.
 
 Collaboration is configured independently as `relay` or `github`. A private
 WalGit replica is never advertised as a clone URL and cannot be pushed by an
-application user. See [GIT_REPLICAS.md](GIT_REPLICAS.md) for freshness and
+application user. See [Git repository replicas](../forge/replicas.md) for freshness and
 authority-cutover semantics.
 
 ## Prepare the base deployment
@@ -32,7 +32,7 @@ The local stack contains:
 Only the relay publishes a host port. Keep PostgreSQL, WalGit, RustFS, and any
 external forge worker on private networking in production.
 
-Copy [.env.example](.env.example) to an ignored `.env` and replace every
+Copy [.env.example](../../../.env.example) to an ignored `.env` and replace every
 placeholder. The relay secret and the GitHub bridge secret are Nostr secret
 keys; their configured hexadecimal public keys must be derived from those exact
 keys. Generate the WalGit service token, webhook secret, and object-store
@@ -94,7 +94,7 @@ example `https://<account-id>.eu.r2.cloudflarestorage.com`. Cloudflare's
 [data-location](https://developers.cloudflare.com/r2/reference/data-location/)
 documentation are the source of truth for endpoint and region behavior.
 
-The optional [docker-compose.r2.yml](docker-compose.r2.yml) overlay removes
+The optional [docker-compose.r2.yml](../../../docker-compose.r2.yml) overlay removes
 the local RustFS dependency and bucket initializer while retaining the same
 WalGit image:
 
@@ -157,7 +157,7 @@ key remains a normal PEM file. Prefer the deployment platform's secret-writing
 mechanism; for a local fixture, use `printf %s` rather than `echo` for the two
 single-line secrets.
 
-The optional [docker-compose.github.yml](docker-compose.github.yml) override
+The optional [docker-compose.github.yml](../../../docker-compose.github.yml) override
 mounts those files read-only below `/run/secrets` and enables the GitHub
 adapter. Set the three `LAPIS_GITHUB_*_FILE` variables in `.env`, then start a
 fresh local project:
@@ -209,7 +209,7 @@ payload; the JSON examples below intentionally omit an `Authorization` header.
    the immutable GitHub repository ID.
 4. Attach the `30617` coordinate with the current announcement ID. For a
    private WalGit content replica, use the payload in
-   [GIT_REPLICAS.md](GIT_REPLICAS.md#configuration-and-lifecycle).
+   [Git repository replicas](../forge/replicas.md#configuration-and-lifecycle).
 5. Read the management-only health endpoint until the replica is `current`:
 
    ```text
@@ -275,5 +275,5 @@ secrets for this test.
   include WalGit recovery from an empty cache. The local recovery lane uses
   RustFS as its deterministic S3-compatible fixture.
 
-Upgrade checks are listed in [FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md) and
-[WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md#updating-walgit).
+Upgrade checks are listed in [Capability-based forge architecture](../forge/capabilities.md) and
+[WalGit integration](../forge/walgit.md#updating-walgit).

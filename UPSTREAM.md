@@ -67,18 +67,19 @@ live under `internal/khatru`. The local patch map is:
   boundary.
 
 The audited Buzz contract and refresh checklist live in
-`docs/BUZZ_PROJECT_COMPATIBILITY.md`. Update its pinned Buzz commit and contract
+`spec/src/compatibility/buzz-desktop.md`. Update its pinned Buzz commit and contract
 fixtures before adapting behavior to a newer Desktop release.
 
-The provider boundary and operator contract live in `FORGE_ABSTRACTION.md`,
-`GITHUB_INTEGRATION.md`, and `GIT_REPLICAS.md`. During an upstream update, keep GitHub host/API
+The provider boundary and operator contract live in
+`spec/src/forge/capabilities.md`, `spec/src/forge/github.md`, and
+`spec/src/forge/replicas.md`. During an upstream update, keep GitHub host/API
 selection fixed in `internal/githubforge`, signed-event authority and NIP-29 in
 Zooid, and callback registration in `internal/buzzcompat`. Never move provider
 or forge domain behavior under `internal/khatru`.
 
 WalGit is a separately updated upstream, pinned at the exact commit and archive
 checksum recorded in `third_party/walgit/UPSTREAM_VERSION`. Follow
-`WALGIT_INTEGRATION.md` when refreshing it: verify a clean archive, rebase the
+`spec/src/forge/walgit.md` when refreshing it: verify a clean archive, rebase the
 small patch stack, run upstream's focused Rust tests, and rerun the real
 object-store recovery lane. Do not copy WalGit sources into this fork or move
 its Git/storage semantics into Go.

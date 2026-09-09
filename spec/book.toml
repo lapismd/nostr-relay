@@ -1,0 +1,10 @@
+[book]
+authors = ["LapisMD contributors"]
+description = "The protocol, policy, forge, deployment, and compatibility specification for Lapis Relay."
+language = "en"
+src = "src"
+title = "Lapis Relay Specification"
+
+[build]
+build-dir = "book"
+create-missing = false

@@ -134,7 +134,7 @@ When using the Compose `external-forge-worker` profile, set
 `LAPIS_FORGE_WORKER_MODE=disabled` for the relay; the worker container is
 already fixed to `only`.
 
-See [GIT_REPLICAS.md](GIT_REPLICAS.md) for GitHub-authoritative WalGit read
+See [Git repository replicas](replicas.md) for GitHub-authoritative WalGit read
 replicas, freshness policy, PR object pinning, event-loop prevention, and the
 authority cutover path.
 

@@ -1,4 +1,4 @@
-# Git Replica Abstraction Audit
+# Git replica abstraction audit
 
 This audit records the pre-replica boundary at the capability/GitHub baseline
 (`e8eebe03`). It is a compatibility checklist, not signed Nostr authority.

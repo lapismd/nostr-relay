@@ -1,4 +1,9 @@
-# Production Migration — Step-by-Step
+# Legacy AWS production migration
+
+> Historical record: this runbook describes the previous AWS/ECS/RDS migration
+> path. It is not the current Lapis deployment guide. New deployments should
+> follow [Forge deployment and local testing](../operations/deployment.md),
+> including the provider-neutral S3 configuration used with Cloudflare R2.
 
 All commands assume you're in `~/work/unicity/sphere-infra/aws/`. Stack is `sphere-zooid-relay` in `me-central-1`.
 

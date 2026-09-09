@@ -27,7 +27,7 @@ the enable/interval/limit values with `LAPIS_` names and fixes the in-container
 credential directory to `/run/secrets`.
 
 For an end-to-end deployment sequence, secret-file mapping, and local Docker
-commands, see [FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md).
+commands, see [Forge deployment and local testing](../operations/deployment.md).
 
 ## GitHub App and credentials
 
@@ -120,7 +120,7 @@ replica:
 ```
 
 This does not change the owner-signed GitHub clone/web locators and does not
-enable relay Smart HTTP for users. See [GIT_REPLICAS.md](GIT_REPLICAS.md).
+enable relay Smart HTTP for users. See [Git repository replicas](replicas.md).
 
 For GitHub source, CI must target that same repository. For WalGit source, the
 CI fields instead identify a separately pre-provisioned private disposable
@@ -251,10 +251,10 @@ go test -tags github_integration ./zooid \
 
 It exercises attachment, initial Git replication into WalGit, authenticated
 local browsing, durable collaboration, webhook echo suppression, CI, and
-restart resolution. See [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md) for
+restart resolution. See [Deferred forge work](../roadmap/deferred-forge-work.md) for
 the deliberately unsupported provider and WalGit workflows.
 
 The fake service is test-only and injected without weakening the production
 adapter's fixed `github.com` boundary. The complete local test and optional
 real-App Compose workflows are in
-[FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md#test-locally-without-github-credentials).
+[Forge deployment and local testing](../operations/deployment.md#test-locally-without-github-credentials).
