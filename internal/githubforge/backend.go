@@ -71,19 +71,33 @@ type RepositoryMetadata struct {
 	} `json:"owner"`
 }
 
-func (backend *Backend) Capabilities(ctx context.Context, repository forge.Repository) (forge.Capabilities, error) {
+func (backend *Backend) AuthorityCapabilities(ctx context.Context, repository forge.Repository) (forge.GitAuthorityCapabilities, error) {
 	descriptor, err := backend.CloneDescriptor(ctx, repository)
+	if err != nil {
+		return forge.GitAuthorityCapabilities{}, err
+	}
+	return forge.GitAuthorityCapabilities{Clone: descriptor, RefEvents: true}, nil
+}
+
+func (*Backend) ContentCapabilities(context.Context, forge.Repository) (forge.ContentCapabilities, error) {
+	return forge.ContentCapabilities{Browse: true, Compare: true, Limits: forge.ContentLimits{
+		MaximumBlobBytes: 100 << 20, MaximumChangedFiles: 300, MaximumTreeEntries: 1000,
+		MayTruncateCompare: true, MayTruncateTree: true,
+	}}, nil
+}
+
+func (backend *Backend) Capabilities(ctx context.Context, repository forge.Repository) (forge.Capabilities, error) {
+	authority, err := backend.AuthorityCapabilities(ctx, repository)
 	if err != nil {
 		return forge.Capabilities{}, err
 	}
+	content, _ := backend.ContentCapabilities(ctx, repository)
 	return forge.Capabilities{
-		GitBackend: forge.BackendGitHub, Clone: descriptor,
-		Browse: true, Compare: true, RefEvents: true,
+		GitBackend: forge.BackendGitHub, GitAuthorityBackend: forge.BackendGitHub,
+		ContentBackend: forge.BackendGitHub, Clone: authority.Clone,
+		Browse: content.Browse, Compare: content.Compare, RefEvents: authority.RefEvents,
 		Issues: true, PullRequests: true, Reviews: true, Merge: true,
-		Limits: forge.Limits{
-			MaximumBlobBytes: 100 << 20, MaximumChangedFiles: 300, MaximumTreeEntries: 1000,
-			MayTruncateCompare: true, MayTruncateTree: true,
-		},
+		Limits: content.Limits, CapabilityLimits: content.Limits,
 	}, nil
 }
 
@@ -243,162 +257,192 @@ func (backend *Backend) ListRepositories(ctx context.Context, connection Connect
 	return results, nil
 }
 
-func (backend *Backend) Refs(ctx context.Context, repository forge.Repository, request forge.RefsRequest) (forge.Response, error) {
+func (backend *Backend) Refs(ctx context.Context, repository forge.Repository, request forge.RefsRequest) (forge.RefPage, error) {
 	if request.Kind == "" {
 		branch, err := backend.DefaultBranch(ctx, repository, request.Principal)
 		if err != nil {
-			return forge.Response{}, err
+			return forge.RefPage{}, err
 		}
 		var ref gitHubRef
 		response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/git/ref/heads/"+escapePath(branch), nil, gitReadPermissions)
 		if err != nil {
-			return forge.Response{}, err
+			return forge.RefPage{}, err
 		}
 		defer response.Body.Close()
 		if err := decodeGitHub(response, &ref, 2<<20); err != nil {
-			return forge.Response{}, err
+			return forge.RefPage{}, err
 		}
-		return jsonResponse(http.StatusOK, map[string]any{"head": normalizedRef(ref)}), nil
+		normalized := normalizedRef(ref)
+		return forge.RefPage{Head: &normalized}, nil
 	}
 	if request.Kind != "branches" && request.Kind != "tags" {
-		return forge.Response{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_ref_kind"}
+		return forge.RefPage{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_ref_kind"}
 	}
 	prefix := "heads/"
 	if request.Kind == "tags" {
 		prefix = "tags/"
 	}
-	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/git/matching-refs/"+prefix+"?per_page=100", nil, gitReadPermissions)
+	page := 1
+	if request.Continuation != "" {
+		parsed, parseErr := decodeContinuation(request.Continuation, request.Kind)
+		if parseErr != nil {
+			return forge.RefPage{}, parseErr
+		}
+		page = parsed
+	}
+	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/git/matching-refs/"+prefix+"?per_page=100&page="+strconv.Itoa(page), nil, gitReadPermissions)
 	if err != nil {
-		return forge.Response{}, err
+		return forge.RefPage{}, err
 	}
 	defer response.Body.Close()
 	var refs []gitHubRef
 	if err := decodeGitHub(response, &refs, 8<<20); err != nil {
-		return forge.Response{}, err
+		return forge.RefPage{}, err
 	}
-	normalized := make([]map[string]string, 0, len(refs))
+	normalized := make([]forge.Ref, 0, len(refs))
 	for _, ref := range refs {
 		normalized = append(normalized, normalizedRef(ref))
 	}
-	return jsonResponse(http.StatusOK, map[string]any{"refs": normalized, "more": len(refs) == 100}), nil
+	result := forge.RefPage{Refs: normalized, More: len(refs) == 100}
+	if result.More {
+		result.Continuation = encodeContinuation(request.Kind, page+1)
+	}
+	return result, nil
 }
 
-func (backend *Backend) Resolve(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (string, error) {
+func (backend *Backend) Resolve(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.Revision, error) {
 	revision := request.Revision
 	if revision == "" || revision == "HEAD" {
 		var err error
 		revision, err = backend.DefaultBranch(ctx, repository, request.Principal)
 		if err != nil {
-			return "", err
+			return forge.Revision{}, err
 		}
 	}
 	var commit gitHubCommit
 	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/commits/"+escapePath(revision), nil, gitReadPermissions)
 	if err != nil {
-		return "", err
+		return forge.Revision{}, err
 	}
 	defer response.Body.Close()
 	if err := decodeGitHub(response, &commit, 16<<20); err != nil {
-		return "", err
+		return forge.Revision{}, err
 	}
 	if !fullObjectID(commit.SHA) {
-		return "", &forge.Error{Status: http.StatusBadGateway, Code: "invalid_github_response"}
+		return forge.Revision{}, &forge.Error{Status: http.StatusBadGateway, Code: "invalid_github_response"}
 	}
-	return strings.ToLower(commit.SHA), nil
+	return forge.Revision{Ref: request.Revision, SHA: strings.ToLower(commit.SHA), Path: request.Path, Kind: "commit"}, nil
 }
 
-func (backend *Backend) Tree(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.Response, error) {
+func (backend *Backend) Tree(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.Tree, error) {
 	revision, commitSHA, path, err := backend.resolveAddress(ctx, repository, request)
 	if err != nil {
-		return forge.Response{}, err
+		return forge.Tree{}, err
 	}
-	entries := make([]treeEntry, 0)
+	entries := make([]forge.TreeEntry, 0)
 	truncated := false
 	if path == "" {
 		var commit gitHubCommit
 		response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/commits/"+escapePath(commitSHA), nil, gitReadPermissions)
 		if err != nil {
-			return forge.Response{}, err
+			return forge.Tree{}, err
 		}
 		if err := decodeAndClose(response, &commit, 16<<20); err != nil {
-			return forge.Response{}, err
+			return forge.Tree{}, err
 		}
 		var tree gitHubTree
 		response, err = backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/git/trees/"+escapePath(commit.Commit.Tree.SHA), nil, gitReadPermissions)
 		if err != nil {
-			return forge.Response{}, err
+			return forge.Tree{}, err
 		}
 		if err := decodeAndClose(response, &tree, 16<<20); err != nil {
-			return forge.Response{}, err
+			return forge.Tree{}, err
 		}
 		truncated = tree.Truncated
 		for _, item := range tree.Tree {
-			entries = append(entries, treeEntry{Name: item.Path, Type: normalizeGitHubTreeType(item.Type), Mode: item.Mode, Size: item.Size, SHA: item.SHA})
+			entries = append(entries, forge.TreeEntry{Name: item.Path, Type: normalizeGitHubTreeType(item.Type), Mode: item.Mode, Size: item.Size, SHA: item.SHA})
 		}
 	} else {
 		var contents []gitHubContent
 		response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/contents/"+escapePath(path)+"?ref="+url.QueryEscape(commitSHA), nil, gitReadPermissions)
 		if err != nil {
-			return forge.Response{}, err
+			return forge.Tree{}, err
 		}
 		if err := decodeAndClose(response, &contents, 16<<20); err != nil {
-			return forge.Response{}, err
+			return forge.Tree{}, err
 		}
 		truncated = len(contents) >= 1000
 		for _, item := range contents {
-			entries = append(entries, treeEntry{Name: item.Name, Type: normalizeContentType(item.Type), Mode: contentMode(item.Type), Size: item.Size, SHA: item.SHA})
+			entries = append(entries, forge.TreeEntry{Name: item.Name, Type: normalizeContentType(item.Type), Mode: contentMode(item.Type), Size: item.Size, SHA: item.SHA})
 		}
 	}
-	result := treeResult{Ref: revision, SHA: commitSHA, Path: path, Entries: entries}
-	response := jsonResponse(http.StatusOK, result)
+	limits, _ := backend.ContentCapabilities(ctx, repository)
+	result := forge.Tree{Ref: revision, SHA: commitSHA, Path: path, Entries: entries}
 	if truncated {
-		response.Header.Set("X-Lapis-Truncated", "tree")
+		result.Truncated = true
+		result.Incomplete = []string{"entries"}
+		result.LimitExceeded = &forge.LimitExceeded{Resource: "tree_entries", Limit: int64(limits.Limits.MaximumTreeEntries), Actual: int64(len(entries))}
 	}
-	return response, nil
+	result.CapabilityLimits = &limits.Limits
+	return result, nil
 }
 
-func (backend *Backend) Blob(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.Response, error) {
+func (backend *Backend) Blob(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.Blob, error) {
 	revision, commitSHA, path, err := backend.resolveAddress(ctx, repository, request)
 	if err != nil {
-		return forge.Response{}, err
+		return forge.Blob{}, err
 	}
 	if path == "" {
-		return forge.Response{}, &forge.Error{Status: http.StatusNotFound, Code: "github_object_not_found"}
+		return forge.Blob{}, &forge.Error{Status: http.StatusNotFound, Code: "github_object_not_found"}
 	}
 	var content gitHubContent
 	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/contents/"+escapePath(path)+"?ref="+url.QueryEscape(commitSHA), nil, gitReadPermissions)
 	if err != nil {
-		return forge.Response{}, err
+		return forge.Blob{}, err
 	}
 	if err := decodeAndClose(response, &content, maxGitHubResponse); err != nil {
-		return forge.Response{}, err
+		return forge.Blob{}, err
 	}
-	result := blobResult{Ref: revision, SHA: commitSHA, Path: path, Name: content.Name, Size: content.Size}
+	limits, _ := backend.ContentCapabilities(ctx, repository)
+	result := forge.Blob{Ref: revision, SHA: commitSHA, Path: path, Name: content.Name, Size: content.Size}
+	result.CapabilityLimits = &limits.Limits
 	if content.Size > maxBrowserBlob {
 		result.TooLarge = true
-		return jsonResponse(http.StatusOK, result), nil
+		result.LimitExceeded = &forge.LimitExceeded{Resource: "browser_blob_bytes", Limit: maxBrowserBlob, Actual: content.Size}
+		return result, nil
 	}
 	raw, err := decodeContent(content.Content, content.Encoding)
 	if err != nil {
-		return forge.Response{}, &forge.Error{Status: http.StatusBadGateway, Code: "invalid_github_response"}
+		return forge.Blob{}, &forge.Error{Status: http.StatusBadGateway, Code: "invalid_github_response"}
 	}
 	if bytes.IndexByte(raw, 0) >= 0 || !utf8.Valid(raw) {
 		result.Binary = true
 	} else {
 		result.Contents = string(raw)
 	}
-	return jsonResponse(http.StatusOK, result), nil
+	return result, nil
 }
 
-func (backend *Backend) Commits(ctx context.Context, repository forge.Repository, request forge.CommitsRequest) (forge.Response, error) {
+func (backend *Backend) Commits(ctx context.Context, repository forge.Repository, request forge.CommitsRequest) (forge.CommitPage, error) {
+	if request.Continuation != "" {
+		if request.Skip != 0 {
+			return forge.CommitPage{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_continuation"}
+		}
+		skip, err := decodeContinuation(request.Continuation, "commits")
+		if err != nil {
+			return forge.CommitPage{}, err
+		}
+		request.Skip = skip
+	}
 	reference := request.Ref
 	if reference == "" {
 		reference = "HEAD"
 	}
-	sha, err := backend.Resolve(ctx, repository, forge.RevisionRequest{Revision: reference, Principal: request.Principal})
+	resolved, err := backend.Resolve(ctx, repository, forge.RevisionRequest{Revision: reference, Principal: request.Principal})
 	if err != nil {
-		return forge.Response{}, err
+		return forge.CommitPage{}, err
 	}
+	sha := resolved.SHA
 	limit := request.Limit
 	if limit <= 0 {
 		limit = 35
@@ -419,11 +463,11 @@ func (backend *Backend) Commits(ctx context.Context, repository forge.Repository
 		}
 		response, err := backend.doRepository(ctx, repository, http.MethodGet, path, nil, gitReadPermissions)
 		if err != nil {
-			return forge.Response{}, err
+			return forge.CommitPage{}, err
 		}
 		var pageCommits []gitHubCommit
 		if err := decodeAndClose(response, &pageCommits, 16<<20); err != nil {
-			return forge.Response{}, err
+			return forge.CommitPage{}, err
 		}
 		commits = append(commits, pageCommits...)
 		if len(pageCommits) < perPage {
@@ -439,120 +483,80 @@ func (backend *Backend) Commits(ctx context.Context, repository forge.Repository
 	if more {
 		commits = commits[:limit]
 	}
-	normalized := make([]commitResult, 0, len(commits))
+	normalized := make([]forge.Commit, 0, len(commits))
 	for _, commit := range commits {
 		normalized = append(normalized, normalizeCommit(commit))
 	}
-	return jsonResponse(http.StatusOK, commitsResult{Ref: reference, SHA: sha, Commits: normalized, More: more}), nil
+	result := forge.CommitPage{Ref: reference, SHA: sha, Commits: normalized, More: more}
+	if more {
+		result.Continuation = encodeContinuation("commits", request.Skip+limit)
+	}
+	return result, nil
 }
 
-func (backend *Backend) Commit(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.Response, error) {
+func (backend *Backend) Commit(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.CommitDetail, error) {
 	var commit gitHubCommit
 	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/commits/"+escapePath(request.Revision)+"?per_page=100", nil, gitReadPermissions)
 	if err != nil {
-		return forge.Response{}, err
+		return forge.CommitDetail{}, err
 	}
 	if err := decodeAndClose(response, &commit, maxGitHubResponse); err != nil {
-		return forge.Response{}, err
+		return forge.CommitDetail{}, err
 	}
-	stats := make([]commitStat, 0, len(commit.Files))
+	stats := make([]forge.CommitStat, 0, len(commit.Files))
 	var patch strings.Builder
 	for _, file := range commit.Files {
-		stats = append(stats, commitStat{Path: file.Filename, Additions: file.Additions, Deletions: file.Deletions})
+		stats = append(stats, forge.CommitStat{Path: file.Filename, Additions: file.Additions, Deletions: file.Deletions})
 		appendPatch(&patch, file)
 	}
-	result := commitDetail{Commit: normalizeCommit(commit), Stats: stats, Patch: patch.String()}
-	responseResult := jsonResponse(http.StatusOK, result)
+	limits, _ := backend.ContentCapabilities(ctx, repository)
+	result := forge.CommitDetail{Commit: normalizeCommit(commit), Stats: stats, Patch: patch.String()}
+	result.CapabilityLimits = &limits.Limits
 	if len(commit.Files) >= 300 {
-		responseResult.Header.Set("X-Lapis-Truncated", "changed-files")
+		result.Truncated = true
+		result.Incomplete = []string{"stats", "patch"}
+		result.LimitExceeded = &forge.LimitExceeded{Resource: "changed_files", Limit: int64(limits.Limits.MaximumChangedFiles), Actual: int64(len(commit.Files))}
 	}
-	return responseResult, nil
+	return result, nil
 }
 
-func (backend *Backend) Compare(ctx context.Context, repository forge.Repository, request forge.CompareRequest) (forge.CompareResult, error) {
+func (backend *Backend) Compare(ctx context.Context, repository forge.Repository, request forge.CompareRequest) (forge.Diff, error) {
 	var comparison gitHubCompare
 	path := repoPath(repository) + "/compare/" + escapePath(request.Base) + "..." + escapePath(request.Head) + "?per_page=100&page=1"
 	response, err := backend.doRepository(ctx, repository, http.MethodGet, path, nil, gitReadPermissions)
 	if err != nil {
-		return forge.CompareResult{}, err
+		return forge.Diff{}, err
 	}
 	if err := decodeAndClose(response, &comparison, maxGitHubResponse); err != nil {
-		return forge.CompareResult{}, err
+		return forge.Diff{}, err
 	}
 	if len(comparison.Files) > request.MaxFiles {
-		return forge.CompareResult{}, &forge.Error{Status: http.StatusRequestEntityTooLarge, Code: "diff_too_large"}
+		return forge.Diff{}, &forge.Error{Status: http.StatusRequestEntityTooLarge, Code: "diff_too_large"}
 	}
-	files := make([]forge.CompareFile, 0, len(comparison.Files))
+	files := make([]forge.DiffFile, 0, len(comparison.Files))
 	var patch strings.Builder
 	for _, file := range comparison.Files {
-		files = append(files, forge.CompareFile{
+		files = append(files, forge.DiffFile{
 			Path: file.Filename, OldPath: file.PreviousFilename, Status: normalizeFileStatus(file.Status),
 			Additions: file.Additions, Deletions: file.Deletions, Binary: file.Patch == "" && file.Changes > 0,
 		})
 		appendPatch(&patch, file)
 		if int64(patch.Len()) > request.MaxPatchBytes {
-			return forge.CompareResult{}, &forge.Error{Status: http.StatusRequestEntityTooLarge, Code: "diff_too_large"}
+			return forge.Diff{}, &forge.Error{Status: http.StatusRequestEntityTooLarge, Code: "diff_too_large"}
 		}
 	}
-	result := forge.CompareResult{
+	limits, _ := backend.ContentCapabilities(ctx, repository)
+	result := forge.Diff{
 		Base: comparison.BaseCommit.SHA, Head: comparison.HeadCommit.SHA,
 		MergeBase: comparison.MergeBaseCommit.SHA, Files: files, Patch: patch.String(),
 	}
 	if len(comparison.Files) >= 300 {
 		result.Truncated = true
 		result.Incomplete = []string{"changed-files", "patch"}
+		result.LimitExceeded = &forge.LimitExceeded{Resource: "changed_files", Limit: int64(limits.Limits.MaximumChangedFiles), Actual: int64(len(comparison.Files))}
 	}
+	result.CapabilityLimits = &limits.Limits
 	return result, nil
-}
-
-func (backend *Backend) ServeRepositoryAPI(w http.ResponseWriter, r *http.Request, repository forge.Repository, subpath, principal string) {
-	var response forge.Response
-	var err error
-	query := r.URL.Query()
-	switch {
-	case subpath == "" || subpath == "refs":
-		response, err = backend.Refs(r.Context(), repository, forge.RefsRequest{Principal: principal})
-	case subpath == "refs/branches":
-		response, err = backend.Refs(r.Context(), repository, forge.RefsRequest{Kind: "branches", Principal: principal})
-	case subpath == "refs/tags":
-		response, err = backend.Refs(r.Context(), repository, forge.RefsRequest{Kind: "tags", Principal: principal})
-	case subpath == "resolve" || subpath == "resolve/":
-		response, err = backend.resolveResponse(r.Context(), repository, "HEAD", principal)
-	case strings.HasPrefix(subpath, "resolve/"):
-		response, err = backend.resolveResponse(r.Context(), repository, strings.TrimPrefix(subpath, "resolve/"), principal)
-	case strings.HasPrefix(subpath, "tree/"):
-		response, err = backend.Tree(r.Context(), repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "tree/"), Principal: principal})
-	case strings.HasPrefix(subpath, "blob/"):
-		response, err = backend.Blob(r.Context(), repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "blob/"), Principal: principal})
-	case subpath == "commits":
-		skip, _ := strconv.Atoi(query.Get("skip"))
-		limit, _ := strconv.Atoi(query.Get("n"))
-		response, err = backend.Commits(r.Context(), repository, forge.CommitsRequest{
-			Ref: query.Get("ref"), Path: query.Get("path"), Skip: skip, Limit: limit, Principal: principal,
-		})
-	case strings.HasPrefix(subpath, "commit/"):
-		response, err = backend.Commit(r.Context(), repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "commit/"), Principal: principal})
-	default:
-		err = &forge.Error{Status: http.StatusNotFound, Code: "github_object_not_found"}
-	}
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	defer response.Body.Close()
-	copyResponseHeaders(w.Header(), response.Header)
-	w.WriteHeader(response.Status)
-	if r.Method != http.MethodHead {
-		_, _ = io.Copy(w, response.Body)
-	}
-}
-
-func (backend *Backend) resolveResponse(ctx context.Context, repository forge.Repository, address, principal string) (forge.Response, error) {
-	revision, sha, path, err := backend.resolveAddress(ctx, repository, forge.RevisionRequest{Revision: address, Principal: principal})
-	if err != nil {
-		return forge.Response{}, err
-	}
-	return jsonResponse(http.StatusOK, resolvedResult{Ref: revision, SHA: sha, Path: path, Kind: "commit"}), nil
 }
 
 func (backend *Backend) resolveAddress(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (string, string, string, error) {
@@ -563,14 +567,14 @@ func (backend *Backend) resolveAddress(ctx context.Context, repository forge.Rep
 	if len(address) > 4096 {
 		return "", "", "", &forge.Error{Status: http.StatusBadRequest, Code: "invalid_revision"}
 	}
-	if sha, err := backend.Resolve(ctx, repository, forge.RevisionRequest{Revision: address, Principal: request.Principal}); err == nil {
-		return address, sha, "", nil
+	if resolved, err := backend.Resolve(ctx, repository, forge.RevisionRequest{Revision: address, Principal: request.Principal}); err == nil {
+		return address, resolved.SHA, "", nil
 	}
 	for index := strings.LastIndex(address, "/"); index > 0; index = strings.LastIndex(address[:index], "/") {
 		revision, path := address[:index], address[index+1:]
-		sha, err := backend.Resolve(ctx, repository, forge.RevisionRequest{Revision: revision, Principal: request.Principal})
+		resolved, err := backend.Resolve(ctx, repository, forge.RevisionRequest{Revision: revision, Principal: request.Principal})
 		if err == nil {
-			return revision, sha, path, nil
+			return revision, resolved.SHA, path, nil
 		}
 	}
 	return "", "", "", &forge.Error{Status: http.StatusNotFound, Code: "github_object_not_found"}
@@ -698,36 +702,6 @@ func decodeAndClose(response *http.Response, target any, limit int64) error {
 	return decodeGitHub(response, target, limit)
 }
 
-func jsonResponse(status int, value any) forge.Response {
-	body, _ := json.Marshal(value)
-	header := make(http.Header)
-	header.Set("Content-Type", "application/json")
-	header.Set("Cache-Control", "private, no-store")
-	return forge.Response{Status: status, Header: header, Body: io.NopCloser(bytes.NewReader(body))}
-}
-
-func copyResponseHeaders(destination, source http.Header) {
-	for _, name := range []string{"Content-Type", "Cache-Control", "ETag", "Last-Modified", "X-Lapis-Truncated"} {
-		if value := source.Get(name); value != "" {
-			destination.Set(name, value)
-		}
-	}
-	if destination.Get("Cache-Control") == "" {
-		destination.Set("Cache-Control", "private, no-store")
-	}
-}
-
-func writeError(w http.ResponseWriter, err error) {
-	status, code := http.StatusBadGateway, "github_request_failed"
-	if backendError, ok := err.(*forge.Error); ok {
-		status, code = backendError.Status, backendError.Code
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
-}
-
 func fullObjectID(value string) bool {
 	if len(value) != 40 && len(value) != 64 {
 		return false
@@ -747,8 +721,8 @@ type gitHubRef struct {
 	} `json:"object"`
 }
 
-func normalizedRef(ref gitHubRef) map[string]string {
-	return map[string]string{"name": ref.Ref, "sha": ref.Object.SHA}
+func normalizedRef(ref gitHubRef) forge.Ref {
+	return forge.Ref{Name: ref.Ref, SHA: strings.ToLower(ref.Object.SHA)}
 }
 
 type gitHubCommit struct {
@@ -812,83 +786,38 @@ type gitHubContent struct {
 	Content  string `json:"content"`
 }
 
-type resolvedResult struct {
-	Ref  string `json:"ref"`
-	SHA  string `json:"sha"`
-	Path string `json:"path"`
-	Kind string `json:"kind"`
-}
-
-type treeResult struct {
-	Ref     string      `json:"ref"`
-	SHA     string      `json:"sha"`
-	Path    string      `json:"path"`
-	Entries []treeEntry `json:"entries"`
-}
-
-type treeEntry struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-	Mode string `json:"mode"`
-	Size int64  `json:"size"`
-	SHA  string `json:"sha"`
-}
-
-type blobResult struct {
-	Ref      string `json:"ref"`
-	SHA      string `json:"sha"`
-	Path     string `json:"path"`
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Contents string `json:"contents,omitempty"`
-	Binary   bool   `json:"binary,omitempty"`
-	TooLarge bool   `json:"too_large,omitempty"`
-}
-
-type commitResult struct {
-	SHA         string   `json:"sha"`
-	Parents     []string `json:"parents"`
-	Author      string   `json:"author"`
-	AuthorEmail string   `json:"author_email"`
-	AuthorDate  string   `json:"author_date"`
-	Committer   string   `json:"committer"`
-	CommitDate  string   `json:"commit_date"`
-	Subject     string   `json:"subject"`
-	Body        string   `json:"body"`
-	Trailers    []any    `json:"trailers"`
-}
-
-type commitsResult struct {
-	Ref     string         `json:"ref"`
-	SHA     string         `json:"sha"`
-	Commits []commitResult `json:"commits"`
-	More    bool           `json:"more"`
-}
-
-type commitStat struct {
-	Path      string `json:"path"`
-	Additions int64  `json:"additions"`
-	Deletions int64  `json:"deletions"`
-}
-
-type commitDetail struct {
-	Commit commitResult `json:"commit"`
-	Stats  []commitStat `json:"stats"`
-	Patch  string       `json:"patch"`
-}
-
-func normalizeCommit(commit gitHubCommit) commitResult {
+func normalizeCommit(commit gitHubCommit) forge.Commit {
 	subject, body, _ := strings.Cut(commit.Commit.Message, "\n")
 	parents := make([]string, 0, len(commit.Parents))
 	for _, parent := range commit.Parents {
 		parents = append(parents, parent.SHA)
 	}
-	return commitResult{
+	return forge.Commit{
 		SHA: commit.SHA, Parents: parents, Author: commit.Commit.Author.Name,
 		AuthorEmail: commit.Commit.Author.Email, AuthorDate: commit.Commit.Author.Date,
 		Committer: commit.Commit.Committer.Name, CommitDate: commit.Commit.Committer.Date,
 		Subject: subject, Body: strings.TrimSpace(body), Trailers: []any{},
 	}
+}
+
+func encodeContinuation(kind string, value int) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(kind + ":" + strconv.Itoa(value)))
+}
+
+func decodeContinuation(token, kind string) (int, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) > 64 {
+		return 0, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_continuation"}
+	}
+	prefix := kind + ":"
+	if !strings.HasPrefix(string(raw), prefix) {
+		return 0, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_continuation"}
+	}
+	value, err := strconv.Atoi(strings.TrimPrefix(string(raw), prefix))
+	if err != nil || value < 0 || value > 10000 {
+		return 0, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_continuation"}
+	}
+	return value, nil
 }
 
 func normalizeGitHubTreeType(kind string) string {
@@ -963,6 +892,6 @@ func decodeContent(content, encoding string) ([]byte, error) {
 }
 
 var (
-	_ forge.GitBackend           = (*Backend)(nil)
-	_ forge.RepositoryAPIBackend = (*Backend)(nil)
+	_ forge.GitAuthorityBackend      = (*Backend)(nil)
+	_ forge.RepositoryContentBackend = (*Backend)(nil)
 )

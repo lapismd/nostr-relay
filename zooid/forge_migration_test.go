@@ -29,13 +29,11 @@ func (backend *fakeWalGitImporter) MirrorCommit(_ context.Context, repository fo
 
 func (backend *fakeWalGitImporter) Name() string { return forge.BackendWalGit }
 
-func (*fakeWalGitImporter) Capabilities(context.Context, forge.Repository) (forge.Capabilities, error) {
-	return forge.Capabilities{
-		GitBackend: forge.BackendWalGit,
-		Clone:      forge.CloneDescriptor{Available: true, Auth: forge.CloneAuthNostr},
-		SmartHTTP:  forge.SmartHTTPCapabilities{Read: true, Write: true},
-		Browse:     true, Compare: true, RefEvents: true, Provision: true, Import: true,
-	}, nil
+func (*fakeWalGitImporter) AuthorityCapabilities(context.Context, forge.Repository) (forge.GitAuthorityCapabilities, error) {
+	return forge.GitAuthorityCapabilities{Clone: forge.CloneDescriptor{Available: true, Auth: forge.CloneAuthNostr}, SmartHTTP: forge.SmartHTTPCapabilities{Read: true, Write: true}, RefEvents: true, Provision: true, Import: true}, nil
+}
+func (*fakeWalGitImporter) ContentCapabilities(context.Context, forge.Repository) (forge.ContentCapabilities, error) {
+	return forge.ContentCapabilities{Browse: true, Compare: true}, nil
 }
 
 func (*fakeWalGitImporter) CloneDescriptor(context.Context, forge.Repository) (forge.CloneDescriptor, error) {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,7 +69,7 @@ func (policy *GitForgePolicy) ServeGitHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	backend, ok := resolved.Git.(forge.SmartHTTPBackend)
+	backend, ok := resolved.Authority.(forge.SmartHTTPBackend)
 	if !ok || (!resolved.Capabilities.SmartHTTP.Read && !*write) || (!resolved.Capabilities.SmartHTTP.Write && *write) {
 		writeGitError(w, http.StatusConflict, "provider_git_required")
 		return
@@ -76,8 +77,8 @@ func (policy *GitForgePolicy) ServeGitHTTP(w http.ResponseWriter, r *http.Reques
 	backend.ServeGitHTTP(w, r, resolved.Repository, subpath, authEvent.PubKey.Hex())
 }
 
-// ServeRepositoryAPI authorizes and streams WalGit's read-only repository API
-// so browser clients can browse source without local Git access.
+// ServeRepositoryAPI serializes provider-neutral repository content results.
+// Adapters never own the public JSON contract.
 func (policy *GitForgePolicy) ServeRepositoryAPI(w http.ResponseWriter, r *http.Request) {
 	ownerText, repositoryText, subpath, ok := splitRepositoryPath(r.URL.Path, "/api/git/")
 	if !ok || !repositoryAPIPathAllowed(r.Method, subpath) {
@@ -111,12 +112,138 @@ func (policy *GitForgePolicy) ServeRepositoryAPI(w http.ResponseWriter, r *http.
 		return
 	}
 
-	backend, ok := resolved.Git.(forge.RepositoryAPIBackend)
-	if !ok || !resolved.Capabilities.Browse {
+	if resolved.Content == nil || !resolved.Capabilities.Browse {
 		writeGitError(w, http.StatusConflict, "repository_browse_unavailable")
 		return
 	}
-	backend.ServeRepositoryAPI(w, r, resolved.Repository, subpath, authEvent.PubKey.Hex())
+	result, err := policy.repositoryAPIResult(r.Context(), resolved, subpath, authEvent.PubKey.Hex(), r.URL.Query())
+	if err != nil {
+		writeGitBackendFailure(w, err)
+		return
+	}
+	writeRepositoryResult(w, r.Method, result, resolved.Capabilities.CapabilityLimits)
+}
+
+func (policy *GitForgePolicy) repositoryAPIResult(ctx context.Context, resolved forge.ResolvedRepository, subpath, principal string, query url.Values) (any, error) {
+	content := resolved.Content
+	switch {
+	case subpath == "" || subpath == "refs":
+		if resolved.Authority == nil {
+			return nil, &forge.Error{Status: http.StatusConflict, Code: "repository_refs_unavailable"}
+		}
+		return resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{Continuation: query.Get("continuation"), Principal: principal})
+	case subpath == "refs/branches" || subpath == "refs/tags":
+		if resolved.Authority == nil {
+			return nil, &forge.Error{Status: http.StatusConflict, Code: "repository_refs_unavailable"}
+		}
+		kind := strings.TrimPrefix(subpath, "refs/")
+		return resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{Kind: kind, Continuation: query.Get("continuation"), Principal: principal})
+	case subpath == "resolve" || subpath == "resolve/":
+		return content.Resolve(ctx, resolved.Repository, forge.RevisionRequest{Revision: "HEAD", Principal: principal})
+	case strings.HasPrefix(subpath, "resolve/"):
+		return content.Resolve(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "resolve/"), Principal: principal})
+	case strings.HasPrefix(subpath, "tree/"):
+		return content.Tree(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "tree/"), Principal: principal})
+	case strings.HasPrefix(subpath, "blob/"):
+		return content.Blob(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "blob/"), Principal: principal})
+	case subpath == "commits":
+		skip, _ := strconv.Atoi(query.Get("skip"))
+		limit, _ := strconv.Atoi(query.Get("n"))
+		return content.Commits(ctx, resolved.Repository, forge.CommitsRequest{Ref: query.Get("ref"), Path: query.Get("path"), Skip: skip, Limit: limit, Continuation: query.Get("continuation"), Principal: principal})
+	case strings.HasPrefix(subpath, "commit/"):
+		return content.Commit(ctx, resolved.Repository, forge.RevisionRequest{Revision: strings.TrimPrefix(subpath, "commit/"), Principal: principal})
+	default:
+		return nil, &forge.Error{Status: http.StatusNotFound, Code: "git_object_not_found"}
+	}
+}
+
+func writeRepositoryResult(w http.ResponseWriter, method string, result any, limits forge.ContentLimits) {
+	result = applyResultLimits(result, limits)
+	metadata := repositoryResultMetadata(result)
+	w.Header().Set("Content-Type", "application/json")
+	cache := "private, no-store"
+	if metadata != nil {
+		if metadata.CacheControl != "" {
+			cache = metadata.CacheControl
+		}
+		if metadata.ETag != "" {
+			w.Header().Set("ETag", metadata.ETag)
+		}
+		if metadata.LastModified != "" {
+			w.Header().Set("Last-Modified", metadata.LastModified)
+		}
+		if metadata.Truncated {
+			w.Header().Set("X-Lapis-Truncated", "true")
+		}
+	}
+	w.Header().Set("Cache-Control", cache)
+	w.WriteHeader(http.StatusOK)
+	if method != http.MethodHead {
+		_ = json.NewEncoder(w).Encode(result)
+	}
+}
+
+func applyResultLimits(result any, limits forge.ContentLimits) any {
+	switch value := result.(type) {
+	case forge.Revision:
+		if value.CapabilityLimits == nil {
+			value.CapabilityLimits = &limits
+		}
+		return value
+	case forge.RefPage:
+		if value.CapabilityLimits == nil {
+			value.CapabilityLimits = &limits
+		}
+		return value
+	case forge.Tree:
+		if value.CapabilityLimits == nil {
+			value.CapabilityLimits = &limits
+		}
+		return value
+	case forge.Blob:
+		if value.CapabilityLimits == nil {
+			value.CapabilityLimits = &limits
+		}
+		return value
+	case forge.CommitPage:
+		if value.CapabilityLimits == nil {
+			value.CapabilityLimits = &limits
+		}
+		return value
+	case forge.CommitDetail:
+		if value.CapabilityLimits == nil {
+			value.CapabilityLimits = &limits
+		}
+		return value
+	case forge.Diff:
+		if value.CapabilityLimits == nil {
+			value.CapabilityLimits = &limits
+		}
+		return value
+	default:
+		return result
+	}
+}
+
+func repositoryResultMetadata(result any) *forge.ResultMetadata {
+	switch value := result.(type) {
+	case forge.Revision:
+		return &value.ResultMetadata
+	case forge.RefPage:
+		return &value.ResultMetadata
+	case forge.Tree:
+		return &value.ResultMetadata
+	case forge.Blob:
+		return &value.ResultMetadata
+	case forge.CommitPage:
+		return &value.ResultMetadata
+	case forge.CommitDetail:
+		return &value.ResultMetadata
+	case forge.Diff:
+		return &value.ResultMetadata
+	default:
+		return nil
+	}
 }
 
 type pullRequestDiffResponse struct {
@@ -128,8 +255,9 @@ type pullRequestDiffResponse struct {
 	Base         string                           `json:"base"`
 	Head         string                           `json:"head"`
 	MergeBase    string                           `json:"merge_base,omitempty"`
-	Files        []forge.CompareFile              `json:"files"`
+	Files        []forge.DiffFile                 `json:"files"`
 	Patch        string                           `json:"patch"`
+	forge.ResultMetadata
 }
 
 // ServePullRequestAPI provides the application-owned base-to-head diff needed
@@ -184,7 +312,7 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		http.NotFound(w, r)
 		return
 	}
-	if resolved.Git == nil || !resolved.Capabilities.Compare {
+	if resolved.Content == nil || !resolved.Capabilities.Compare {
 		writeGitError(w, http.StatusConflict, "repository_compare_unavailable")
 		return
 	}
@@ -215,14 +343,16 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		if target == "" {
 			target = "HEAD"
 		}
-		base, err = resolved.Git.Resolve(r.Context(), resolved.Repository, forge.RevisionRequest{Revision: target, Principal: authEvent.PubKey.Hex()})
+		resolvedBase, resolveErr := resolved.Content.Resolve(r.Context(), resolved.Repository, forge.RevisionRequest{Revision: target, Principal: authEvent.PubKey.Hex()})
+		err = resolveErr
 		if err != nil {
 			writeGitBackendFailure(w, err)
 			return
 		}
+		base = resolvedBase.SHA
 		useMergeBase = true
 	}
-	comparison, err := resolved.Git.Compare(r.Context(), resolved.Repository, forge.CompareRequest{
+	comparison, err := resolved.Content.Compare(r.Context(), resolved.Repository, forge.CompareRequest{
 		Base: base, Head: state.CurrentCommit, UseMergeBase: useMergeBase,
 		MaxFiles: policy.Config.Git.MaxDiffFiles, MaxPatchBytes: policy.Config.Git.MaxDiffBytes,
 		Principal: authEvent.PubKey.Hex(),
@@ -240,6 +370,7 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		Base: comparison.Base, Head: comparison.Head, MergeBase: comparison.MergeBase,
 		Files: comparison.Files, Patch: comparison.Patch,
 	}
+	response.ResultMetadata = comparison.ResultMetadata
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return

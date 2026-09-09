@@ -6,7 +6,6 @@ package forge
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"time"
 
@@ -37,23 +36,56 @@ const (
 // repository coordinate. AnnouncementID is an optimistic-concurrency guard;
 // changing this row never mutates the signed announcement.
 type Integration struct {
-	Coordinate             projecttask.RepositoryCoordinate `json:"-"`
-	AnnouncementID         string                           `json:"announcement_id"`
-	ConfigurationSource    string                           `json:"configuration_source"`
-	GitBackend             string                           `json:"git_backend"`
-	CollaborationBackend   string                           `json:"collaboration_backend"`
-	MirrorBackend          string                           `json:"mirror_backend,omitempty"`
-	CIBackend              string                           `json:"ci_backend,omitempty"`
-	ConnectionID           string                           `json:"connection_id,omitempty"`
-	ExternalRepositoryID   string                           `json:"external_repository_id,omitempty"`
-	ExternalRepository     string                           `json:"external_repository,omitempty"`
-	CIConnectionID         string                           `json:"ci_connection_id,omitempty"`
-	CIExternalRepositoryID string                           `json:"ci_external_repository_id,omitempty"`
-	CIExternalRepository   string                           `json:"ci_external_repository,omitempty"`
-	CIWorkflow             string                           `json:"ci_workflow,omitempty"`
-	Generation             int64                            `json:"generation"`
-	HealthState            string                           `json:"health_state"`
-	HealthDetail           string                           `json:"health_detail,omitempty"`
+	Coordinate          projecttask.RepositoryCoordinate `json:"-"`
+	AnnouncementID      string                           `json:"announcement_id"`
+	ConfigurationSource string                           `json:"configuration_source"`
+	GitAuthorityBackend string                           `json:"git_authority_backend"`
+	ContentBackend      string                           `json:"content_backend"`
+	// GitBackend is the legacy shorthand retained for old rows and clients.
+	// New code resolves authority and content independently.
+	GitBackend             string         `json:"git_backend"`
+	CollaborationBackend   string         `json:"collaboration_backend"`
+	MirrorBackend          string         `json:"mirror_backend,omitempty"`
+	CIBackend              string         `json:"ci_backend,omitempty"`
+	ConnectionID           string         `json:"connection_id,omitempty"`
+	ExternalRepositoryID   string         `json:"external_repository_id,omitempty"`
+	ExternalRepository     string         `json:"external_repository,omitempty"`
+	CIConnectionID         string         `json:"ci_connection_id,omitempty"`
+	CIExternalRepositoryID string         `json:"ci_external_repository_id,omitempty"`
+	CIExternalRepository   string         `json:"ci_external_repository,omitempty"`
+	CIWorkflow             string         `json:"ci_workflow,omitempty"`
+	Generation             int64          `json:"generation"`
+	HealthState            string         `json:"health_state"`
+	HealthDetail           string         `json:"health_detail,omitempty"`
+	Replica                *ReplicaConfig `json:"replica,omitempty"`
+}
+
+type ReplicaMode string
+
+const (
+	ReplicaModeOff        ReplicaMode = "off"
+	ReplicaModeOnDemand   ReplicaMode = "on-demand"
+	ReplicaModeContinuous ReplicaMode = "continuous"
+)
+
+type ReplicaReadPolicy string
+
+const (
+	ReplicaReadWait     ReplicaReadPolicy = "wait"
+	ReplicaReadFallback ReplicaReadPolicy = "fallback"
+	ReplicaReadStale    ReplicaReadPolicy = "stale"
+)
+
+type ReplicaConfig struct {
+	Enabled          bool              `json:"enabled"`
+	AuthorityBackend string            `json:"authority_backend"`
+	ReplicaBackend   string            `json:"replica_backend"`
+	Direction        string            `json:"direction"`
+	SyncBranches     bool              `json:"sync_branches"`
+	SyncTags         bool              `json:"sync_tags"`
+	Mode             ReplicaMode       `json:"mode"`
+	ReadPolicy       ReplicaReadPolicy `json:"read_policy"`
+	WaitMilliseconds int               `json:"wait_milliseconds,omitempty"`
 }
 
 type Repository struct {
@@ -77,7 +109,7 @@ type SmartHTTPCapabilities struct {
 	Write bool `json:"write"`
 }
 
-type Limits struct {
+type ContentLimits struct {
 	MaximumBlobBytes    int64 `json:"maximum_blob_bytes,omitempty"`
 	MaximumChangedFiles int   `json:"maximum_changed_files,omitempty"`
 	MaximumTreeEntries  int   `json:"maximum_tree_entries,omitempty"`
@@ -86,9 +118,29 @@ type Limits struct {
 	MayTruncateTree     bool  `json:"may_truncate_tree,omitempty"`
 }
 
+// Limits remains an internal source-compatibility alias. ContentLimits is the
+// provider-neutral contract used by new code and exposed as capability_limits.
+type Limits = ContentLimits
+
+type GitAuthorityCapabilities struct {
+	Clone     CloneDescriptor       `json:"clone"`
+	SmartHTTP SmartHTTPCapabilities `json:"smart_http"`
+	RefEvents bool                  `json:"ref_events"`
+	Provision bool                  `json:"provision"`
+	Import    bool                  `json:"import"`
+}
+
+type ContentCapabilities struct {
+	Browse  bool          `json:"browse"`
+	Compare bool          `json:"compare"`
+	Limits  ContentLimits `json:"capability_limits"`
+}
+
 // Capabilities is intentionally explicit. A false value is meaningful and
 // prevents callers from inferring functionality from a provider name.
 type Capabilities struct {
+	GitAuthorityBackend  string                `json:"git_authority_backend"`
+	ContentBackend       string                `json:"content_backend"`
 	GitBackend           string                `json:"git_backend"`
 	CollaborationBackend string                `json:"collaboration_backend"`
 	MirrorBackend        string                `json:"mirror_backend,omitempty"`
@@ -106,18 +158,37 @@ type Capabilities struct {
 	Merge                bool                  `json:"merge"`
 	Mirror               bool                  `json:"mirror"`
 	CI                   bool                  `json:"ci"`
-	Limits               Limits                `json:"limits"`
+	LocalReplica         bool                  `json:"local_replica,omitempty"`
+	ReplicaState         string                `json:"replica_state,omitempty"`
+	Limits               ContentLimits         `json:"limits"`
+	CapabilityLimits     ContentLimits         `json:"capability_limits"`
 }
 
-type Response struct {
-	Status int
-	Header http.Header
-	Body   io.ReadCloser
+// ResultMetadata is additive metadata shared by every repository-content
+// result. Continuation is opaque to callers. A missing continuation on a
+// truncated result means the provider cannot retrieve the omitted portion.
+type ResultMetadata struct {
+	Truncated        bool           `json:"truncated,omitempty"`
+	Continuation     string         `json:"continuation,omitempty"`
+	Incomplete       []string       `json:"incomplete,omitempty"`
+	LimitExceeded    *LimitExceeded `json:"limit_exceeded,omitempty"`
+	CapabilityLimits *ContentLimits `json:"capability_limits,omitempty"`
+
+	CacheControl string `json:"-"`
+	ETag         string `json:"-"`
+	LastModified string `json:"-"`
+}
+
+type LimitExceeded struct {
+	Resource string `json:"resource"`
+	Limit    int64  `json:"limit"`
+	Actual   int64  `json:"actual,omitempty"`
 }
 
 type RefsRequest struct {
-	Kind      string
-	Principal string
+	Kind         string
+	Continuation string
+	Principal    string
 }
 
 type RevisionRequest struct {
@@ -127,11 +198,12 @@ type RevisionRequest struct {
 }
 
 type CommitsRequest struct {
-	Ref       string
-	Path      string
-	Skip      int
-	Limit     int
-	Principal string
+	Ref          string
+	Path         string
+	Skip         int
+	Limit        int
+	Continuation string
+	Principal    string
 }
 
 type CompareRequest struct {
@@ -143,7 +215,89 @@ type CompareRequest struct {
 	Principal     string
 }
 
-type CompareFile struct {
+type Revision struct {
+	Ref  string `json:"ref"`
+	SHA  string `json:"sha"`
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	ResultMetadata
+}
+
+type Ref struct {
+	Name string `json:"name"`
+	SHA  string `json:"sha"`
+}
+
+type RefPage struct {
+	Head *Ref  `json:"head,omitempty"`
+	Refs []Ref `json:"refs,omitempty"`
+	More bool  `json:"more,omitempty"`
+	ResultMetadata
+}
+
+type TreeEntry struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Mode string `json:"mode"`
+	Size int64  `json:"size"`
+	SHA  string `json:"sha"`
+}
+
+type Tree struct {
+	Ref     string      `json:"ref"`
+	SHA     string      `json:"sha"`
+	Path    string      `json:"path"`
+	Entries []TreeEntry `json:"entries"`
+	ResultMetadata
+}
+
+type Blob struct {
+	Ref      string `json:"ref"`
+	SHA      string `json:"sha"`
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	Contents string `json:"contents,omitempty"`
+	Binary   bool   `json:"binary,omitempty"`
+	TooLarge bool   `json:"too_large,omitempty"`
+	ResultMetadata
+}
+
+type Commit struct {
+	SHA         string   `json:"sha"`
+	Parents     []string `json:"parents"`
+	Author      string   `json:"author"`
+	AuthorEmail string   `json:"author_email"`
+	AuthorDate  string   `json:"author_date"`
+	Committer   string   `json:"committer"`
+	CommitDate  string   `json:"commit_date"`
+	Subject     string   `json:"subject"`
+	Body        string   `json:"body"`
+	Trailers    []any    `json:"trailers"`
+}
+
+type CommitPage struct {
+	Ref     string   `json:"ref"`
+	SHA     string   `json:"sha"`
+	Commits []Commit `json:"commits"`
+	More    bool     `json:"more"`
+	ResultMetadata
+}
+
+type CommitStat struct {
+	Path      string `json:"path"`
+	Additions int64  `json:"additions"`
+	Deletions int64  `json:"deletions"`
+}
+
+type CommitDetail struct {
+	Commit Commit       `json:"commit"`
+	Stats  []CommitStat `json:"stats"`
+	Patch  string       `json:"patch"`
+	ResultMetadata
+}
+
+type DiffFile struct {
 	Path      string `json:"path"`
 	OldPath   string `json:"old_path,omitempty"`
 	Status    string `json:"status"`
@@ -152,28 +306,33 @@ type CompareFile struct {
 	Binary    bool   `json:"binary,omitempty"`
 }
 
-type CompareResult struct {
-	Base       string        `json:"base"`
-	Head       string        `json:"head"`
-	MergeBase  string        `json:"merge_base,omitempty"`
-	Files      []CompareFile `json:"files"`
-	Patch      string        `json:"patch"`
-	Truncated  bool          `json:"truncated,omitempty"`
-	Incomplete []string      `json:"incomplete,omitempty"`
+type Diff struct {
+	Base      string     `json:"base"`
+	Head      string     `json:"head"`
+	MergeBase string     `json:"merge_base,omitempty"`
+	Files     []DiffFile `json:"files"`
+	Patch     string     `json:"patch"`
+	ResultMetadata
 }
 
-type GitBackend interface {
+type GitAuthorityBackend interface {
 	Name() string
-	Capabilities(context.Context, Repository) (Capabilities, error)
+	AuthorityCapabilities(context.Context, Repository) (GitAuthorityCapabilities, error)
 	CloneDescriptor(context.Context, Repository) (CloneDescriptor, error)
 	DefaultBranch(context.Context, Repository, string) (string, error)
-	Refs(context.Context, Repository, RefsRequest) (Response, error)
-	Resolve(context.Context, Repository, RevisionRequest) (string, error)
-	Tree(context.Context, Repository, RevisionRequest) (Response, error)
-	Blob(context.Context, Repository, RevisionRequest) (Response, error)
-	Commits(context.Context, Repository, CommitsRequest) (Response, error)
-	Commit(context.Context, Repository, RevisionRequest) (Response, error)
-	Compare(context.Context, Repository, CompareRequest) (CompareResult, error)
+	Refs(context.Context, Repository, RefsRequest) (RefPage, error)
+	SnapshotRefs(context.Context, Repository) (map[string]string, error)
+}
+
+type RepositoryContentBackend interface {
+	Name() string
+	ContentCapabilities(context.Context, Repository) (ContentCapabilities, error)
+	Resolve(context.Context, Repository, RevisionRequest) (Revision, error)
+	Tree(context.Context, Repository, RevisionRequest) (Tree, error)
+	Blob(context.Context, Repository, RevisionRequest) (Blob, error)
+	Commits(context.Context, Repository, CommitsRequest) (CommitPage, error)
+	Commit(context.Context, Repository, RevisionRequest) (CommitDetail, error)
+	Compare(context.Context, Repository, CompareRequest) (Diff, error)
 }
 
 type RepositoryProvisioner interface {
@@ -185,18 +344,15 @@ type RepositoryImporter interface {
 }
 
 type ImportRequest struct {
-	SourceCloneURL string
-	ExpectedRefs   map[string]string
-	SourceUsername string `json:"-"`
-	SourcePassword string `json:"-"`
+	SourceCloneURL       string
+	ExpectedRefs         map[string]string
+	SourceUsername       string `json:"-"`
+	SourcePassword       string `json:"-"`
+	DestinationPrincipal string `json:"-"`
 }
 
 type ImportResult struct {
 	Refs map[string]string `json:"refs"`
-}
-
-type RefSnapshotter interface {
-	SnapshotRefs(context.Context, Repository) (map[string]string, error)
 }
 
 type AuthenticatedCloneSource interface {
@@ -205,13 +361,6 @@ type AuthenticatedCloneSource interface {
 
 type SmartHTTPBackend interface {
 	ServeGitHTTP(http.ResponseWriter, *http.Request, Repository, string, string)
-}
-
-// RepositoryAPIBackend preserves the normalized v1 streaming contract. It is
-// optional because a backend may expose Git objects without offering the
-// relay's browser route shape.
-type RepositoryAPIBackend interface {
-	ServeRepositoryAPI(http.ResponseWriter, *http.Request, Repository, string, string)
 }
 
 type CollaborationCommand struct {
@@ -360,7 +509,8 @@ type RepositoryIntegrationResolver interface {
 type ResolvedRepository struct {
 	Repository    Repository
 	Capabilities  Capabilities
-	Git           GitBackend
+	Authority     GitAuthorityBackend
+	Content       RepositoryContentBackend
 	Collaboration CollaborationBackend
 	Mirror        MirrorBackend
 	CI            CIBackend

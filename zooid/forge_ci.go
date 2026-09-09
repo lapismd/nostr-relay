@@ -52,8 +52,8 @@ func (policy *GitForgePolicy) enqueueForgeCI(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	request.Commit = strings.ToLower(request.Commit)
-	resolvedCommit, err := resolved.Git.Resolve(r.Context(), resolved.Repository, forge.RevisionRequest{Revision: request.Commit, Principal: actor.Hex()})
-	if err != nil || !strings.EqualFold(resolvedCommit, request.Commit) {
+	resolvedCommit, err := resolved.Content.Resolve(r.Context(), resolved.Repository, forge.RevisionRequest{Revision: request.Commit, Principal: actor.Hex()})
+	if err != nil || !strings.EqualFold(resolvedCommit.SHA, request.Commit) {
 		writeGitError(w, http.StatusConflict, "ci_commit_not_found")
 		return
 	}
@@ -130,8 +130,8 @@ func (policy *GitForgePolicy) processForgeCIStart(ctx context.Context, resolved 
 	}); err != nil {
 		return err
 	}
-	if resolved.Repository.Integration.GitBackend == forge.BackendWalGit {
-		source, ok := resolved.Git.(forge.CommitMirrorSource)
+	if resolved.Repository.Integration.GitAuthorityBackend == forge.BackendWalGit || resolved.Repository.Integration.GitBackend == forge.BackendWalGit {
+		source, ok := resolved.Content.(forge.CommitMirrorSource)
 		if !ok {
 			return &forge.Error{Status: http.StatusConflict, Code: "ci_mirror_unavailable"}
 		}

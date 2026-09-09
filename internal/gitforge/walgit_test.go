@@ -168,28 +168,27 @@ func TestWalGitAdapterReportsOnlyLandedCapabilities(t *testing.T) {
 	legacy := &recordingLegacyBackend{}
 	adapter := NewWalGitAdapter(legacy)
 	repository := testRepository(t)
-	capabilities, err := adapter.Capabilities(context.Background(), forge.Repository{
+	capabilities, err := adapter.AuthorityCapabilities(context.Background(), forge.Repository{
 		Coordinate: repository.Coordinate, Classification: string(repository.Class),
 		CloneURL: "https://relay.example/git/owner/notes",
 	})
 	require.NoError(t, err)
-	require.Equal(t, forge.BackendWalGit, capabilities.GitBackend)
 	require.Equal(t, forge.CloneAuthNostr, capabilities.Clone.Auth)
 	require.True(t, capabilities.SmartHTTP.Read)
 	require.True(t, capabilities.SmartHTTP.Write)
-	require.True(t, capabilities.Browse)
-	require.True(t, capabilities.Compare)
 	require.True(t, capabilities.RefEvents)
 	require.True(t, capabilities.Provision)
 	require.False(t, capabilities.Import)
-	require.False(t, capabilities.Merge)
-	require.False(t, capabilities.CI)
+	content, err := adapter.ContentCapabilities(context.Background(), forge.Repository{})
+	require.NoError(t, err)
+	require.True(t, content.Browse)
+	require.True(t, content.Compare)
 }
 
 func TestProductionWalGitAdapterReportsRepositoryImport(t *testing.T) {
 	backend, err := NewWalGitBackend("http://walgit:8080", "service-secret")
 	require.NoError(t, err)
-	capabilities, err := NewWalGitAdapter(backend).Capabilities(context.Background(), forge.Repository{})
+	capabilities, err := NewWalGitAdapter(backend).AuthorityCapabilities(context.Background(), forge.Repository{})
 	require.NoError(t, err)
 	require.True(t, capabilities.Import)
 }

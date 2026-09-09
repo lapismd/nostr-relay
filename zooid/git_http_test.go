@@ -175,6 +175,7 @@ func TestRepositoryAPIAuthorizesBeforeProxyAndRejectsAdminSurface(t *testing.T) 
 	policy.ServeRepositoryAPI(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, []string{"tree/main"}, backend.apiCalls)
+	require.Contains(t, recorder.Body.String(), `"capability_limits"`)
 
 	adminTarget := "https://relay.example/api/git/" + repository.PubKey.Hex() + "/notes/settings"
 	request = httptest.NewRequest(http.MethodGet, adminTarget, nil)

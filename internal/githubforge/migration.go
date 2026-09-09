@@ -61,6 +61,6 @@ func (backend *Backend) Project(ctx context.Context, projection forge.MirrorProj
 	})
 }
 
-var _ forge.RefSnapshotter = (*Backend)(nil)
+var _ forge.GitAuthorityBackend = (*Backend)(nil)
 var _ forge.AuthenticatedCloneSource = (*Backend)(nil)
 var _ forge.MirrorBackend = (*Backend)(nil)

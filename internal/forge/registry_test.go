@@ -10,8 +10,11 @@ import (
 type stubGitBackend struct{ name string }
 
 func (backend stubGitBackend) Name() string { return backend.name }
-func (stubGitBackend) Capabilities(context.Context, Repository) (Capabilities, error) {
-	return Capabilities{GitBackend: BackendWalGit, Browse: true, Compare: true}, nil
+func (stubGitBackend) AuthorityCapabilities(context.Context, Repository) (GitAuthorityCapabilities, error) {
+	return GitAuthorityCapabilities{Clone: CloneDescriptor{Available: true, Auth: CloneAuthNostr}}, nil
+}
+func (stubGitBackend) ContentCapabilities(context.Context, Repository) (ContentCapabilities, error) {
+	return ContentCapabilities{Browse: true, Compare: true}, nil
 }
 func (stubGitBackend) CloneDescriptor(context.Context, Repository) (CloneDescriptor, error) {
 	return CloneDescriptor{Available: true, Auth: CloneAuthNostr}, nil
@@ -19,26 +22,29 @@ func (stubGitBackend) CloneDescriptor(context.Context, Repository) (CloneDescrip
 func (stubGitBackend) DefaultBranch(context.Context, Repository, string) (string, error) {
 	return "main", nil
 }
-func (stubGitBackend) Refs(context.Context, Repository, RefsRequest) (Response, error) {
-	return Response{}, nil
+func (stubGitBackend) Refs(context.Context, Repository, RefsRequest) (RefPage, error) {
+	return RefPage{}, nil
 }
-func (stubGitBackend) Resolve(context.Context, Repository, RevisionRequest) (string, error) {
-	return "", nil
+func (stubGitBackend) SnapshotRefs(context.Context, Repository) (map[string]string, error) {
+	return map[string]string{}, nil
 }
-func (stubGitBackend) Tree(context.Context, Repository, RevisionRequest) (Response, error) {
-	return Response{}, nil
+func (stubGitBackend) Resolve(context.Context, Repository, RevisionRequest) (Revision, error) {
+	return Revision{}, nil
 }
-func (stubGitBackend) Blob(context.Context, Repository, RevisionRequest) (Response, error) {
-	return Response{}, nil
+func (stubGitBackend) Tree(context.Context, Repository, RevisionRequest) (Tree, error) {
+	return Tree{}, nil
 }
-func (stubGitBackend) Commits(context.Context, Repository, CommitsRequest) (Response, error) {
-	return Response{}, nil
+func (stubGitBackend) Blob(context.Context, Repository, RevisionRequest) (Blob, error) {
+	return Blob{}, nil
 }
-func (stubGitBackend) Commit(context.Context, Repository, RevisionRequest) (Response, error) {
-	return Response{}, nil
+func (stubGitBackend) Commits(context.Context, Repository, CommitsRequest) (CommitPage, error) {
+	return CommitPage{}, nil
 }
-func (stubGitBackend) Compare(context.Context, Repository, CompareRequest) (CompareResult, error) {
-	return CompareResult{}, nil
+func (stubGitBackend) Commit(context.Context, Repository, RevisionRequest) (CommitDetail, error) {
+	return CommitDetail{}, nil
+}
+func (stubGitBackend) Compare(context.Context, Repository, CompareRequest) (Diff, error) {
+	return Diff{}, nil
 }
 
 func TestRegistryResolvesOnlyExplicitCapabilities(t *testing.T) {
@@ -49,7 +55,8 @@ func TestRegistryResolvesOnlyExplicitCapabilities(t *testing.T) {
 	}}
 	resolved, err := registry.Resolve(context.Background(), repository)
 	require.NoError(t, err)
-	require.NotNil(t, resolved.Git)
+	require.NotNil(t, resolved.Authority)
+	require.NotNil(t, resolved.Content)
 	require.True(t, resolved.Capabilities.Browse)
 	require.True(t, resolved.Capabilities.Compare)
 	require.False(t, resolved.Capabilities.Merge)
@@ -64,7 +71,8 @@ func TestRegistryKeepsUnmanagedCloneProviderNative(t *testing.T) {
 		Integration: Integration{GitBackend: BackendUnmanaged, CollaborationBackend: BackendRelay},
 	})
 	require.NoError(t, err)
-	require.Nil(t, resolved.Git)
+	require.Nil(t, resolved.Authority)
+	require.Nil(t, resolved.Content)
 	require.True(t, resolved.Capabilities.Clone.Available)
 	require.Equal(t, CloneAuthProvider, resolved.Capabilities.Clone.Auth)
 	require.Equal(t, "https://github.com/lapis/notes.git", resolved.Capabilities.Clone.URL)
@@ -77,5 +85,5 @@ func TestRegistryRejectsDuplicateAndUnavailableBackends(t *testing.T) {
 	_, err := registry.Resolve(context.Background(), Repository{Integration: Integration{GitBackend: BackendGitHub}})
 	var backendError *Error
 	require.ErrorAs(t, err, &backendError)
-	require.Equal(t, "git_backend_unavailable", backendError.Code)
+	require.Equal(t, "git_authority_backend_unavailable", backendError.Code)
 }

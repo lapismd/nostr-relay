@@ -76,8 +76,15 @@ func (backend *WalGitBackend) ImportRepository(ctx context.Context, repository f
 	destination := *backend.base
 	destination.Path = "/" + repository.Coordinate.Owner.Hex() + "/" + url.PathEscape(repository.Coordinate.ID) + ".git"
 	configPath := filepath.Join(directory, "destination.gitconfig")
+	principal := strings.TrimSpace(request.DestinationPrincipal)
+	if principal == "" {
+		principal = repository.Coordinate.Owner.Hex()
+	}
+	if strings.ContainsAny(principal, "\x00\r\n") || len(principal) > 1024 {
+		return forge.ImportResult{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_destination_principal"}
+	}
 	config := fmt.Sprintf("[http \"%s\"]\n\textraHeader = Authorization: Bearer %s\n\textraHeader = X-Walgit-Principal: %s\n",
-		escapeGitConfig(destination.String()), escapeGitConfig(backend.token), repository.Coordinate.Owner.Hex())
+		escapeGitConfig(destination.String()), escapeGitConfig(backend.token), escapeGitConfig(principal))
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return forge.ImportResult{}, &forge.Error{Status: http.StatusServiceUnavailable, Code: "import_workspace_unavailable"}
 	}

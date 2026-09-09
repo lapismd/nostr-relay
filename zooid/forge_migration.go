@@ -96,15 +96,15 @@ func (policy *GitForgePolicy) processForgeMigration(ctx context.Context, resolve
 	if migration.State == "awaiting-owner-announcement" || migration.State == "complete" {
 		return policy.finishForgeOperation(ctx, operation)
 	}
-	snapshotter, ok := resolved.Git.(forge.RefSnapshotter)
-	if !ok {
+	snapshotter := resolved.Authority
+	if snapshotter == nil {
 		return &forge.Error{Status: http.StatusConflict, Code: "source_snapshot_unsupported"}
 	}
-	cloneSource, ok := resolved.Git.(forge.AuthenticatedCloneSource)
+	cloneSource, ok := resolved.Authority.(forge.AuthenticatedCloneSource)
 	if !ok {
 		return &forge.Error{Status: http.StatusConflict, Code: "source_clone_unsupported"}
 	}
-	targetBackend := policy.Registry.GitBackend(forge.BackendWalGit)
+	targetBackend := policy.Registry.ContentBackend(forge.BackendWalGit)
 	importer, ok := targetBackend.(forge.RepositoryImporter)
 	if !ok {
 		return &forge.Error{Status: http.StatusConflict, Code: "walgit_import_unavailable"}
@@ -124,6 +124,8 @@ func (policy *GitForgePolicy) processForgeMigration(ctx context.Context, resolve
 	target.Classification = string(gitforge.RepositoryHosted)
 	target.CloneURL = strings.TrimRight(policy.Config.Git.PublicURL, "/") + "/git/" + target.Coordinate.Owner.Hex() + "/" + target.Coordinate.ID
 	target.Integration.GitBackend = forge.BackendWalGit
+	target.Integration.GitAuthorityBackend = forge.BackendWalGit
+	target.Integration.ContentBackend = forge.BackendWalGit
 	_, err = importer.ImportRepository(ctx, target, forge.ImportRequest{
 		SourceCloneURL: cloneURL, SourceUsername: username, SourcePassword: password,
 		ExpectedRefs: before,

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"zooid/internal/forge"
 	"zooid/internal/projecttask"
 )
 
@@ -101,7 +100,13 @@ func (backend *WalGitBackend) Resolve(ctx context.Context, repository Repository
 	return strings.ToLower(result.SHA), nil
 }
 
-func (backend *WalGitBackend) repositoryResponse(ctx context.Context, repository Repository, subpath, principal string) (forge.Response, error) {
+type repositoryAPIResponse struct {
+	Status int
+	Header http.Header
+	Body   io.ReadCloser
+}
+
+func (backend *WalGitBackend) repositoryResponse(ctx context.Context, repository Repository, subpath, principal string) (repositoryAPIResponse, error) {
 	target := *backend.base
 	parts := strings.SplitN(subpath, "?", 2)
 	target.Path = "/" + repository.Coordinate.Owner.Hex() + "/" + url.PathEscape(repository.Coordinate.ID) + "/api"
@@ -113,12 +118,12 @@ func (backend *WalGitBackend) repositoryResponse(ctx context.Context, repository
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		return forge.Response{}, err
+		return repositoryAPIResponse{}, err
 	}
 	backend.authorize(request, principal)
 	response, err := backend.client.Do(request)
 	if err != nil {
-		return forge.Response{}, &BackendError{Status: http.StatusServiceUnavailable, Code: "walgit_unavailable"}
+		return repositoryAPIResponse{}, &BackendError{Status: http.StatusServiceUnavailable, Code: "walgit_unavailable"}
 	}
 	stripWalGitHeaders(response.Header)
 	response.Header.Del("Set-Cookie")
@@ -128,7 +133,7 @@ func (backend *WalGitBackend) repositoryResponse(ctx context.Context, repository
 	} else {
 		response.Header.Set("Cache-Control", privateCacheControl(cache))
 	}
-	return forge.Response{Status: response.StatusCode, Header: response.Header, Body: response.Body}, nil
+	return repositoryAPIResponse{Status: response.StatusCode, Header: response.Header, Body: response.Body}, nil
 }
 
 func (backend *WalGitBackend) proxy(w http.ResponseWriter, r *http.Request, path, principal string, privateCache bool) {

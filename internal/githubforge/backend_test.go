@@ -93,16 +93,9 @@ func TestGitHubRefsTranslateToWalGitV1(t *testing.T) {
 	})
 	response, err := backend.Refs(context.Background(), repository, forge.RefsRequest{})
 	require.NoError(t, err)
-	defer response.Body.Close()
-	var result struct {
-		Head struct {
-			Name string `json:"name"`
-			SHA  string `json:"sha"`
-		} `json:"head"`
-	}
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&result))
-	require.Equal(t, "refs/heads/main", result.Head.Name)
-	require.Equal(t, strings.Repeat("a", 40), result.Head.SHA)
+	require.NotNil(t, response.Head)
+	require.Equal(t, "refs/heads/main", response.Head.Name)
+	require.Equal(t, strings.Repeat("a", 40), response.Head.SHA)
 }
 
 func TestGitHubBlobAndCompareUseNormalizedV1Shapes(t *testing.T) {
@@ -134,10 +127,7 @@ func TestGitHubBlobAndCompareUseNormalizedV1Shapes(t *testing.T) {
 
 	response, err := backend.Blob(context.Background(), repository, forge.RevisionRequest{Revision: head + "/README.md"})
 	require.NoError(t, err)
-	defer response.Body.Close()
-	var blob map[string]any
-	require.NoError(t, json.NewDecoder(response.Body).Decode(&blob))
-	require.Equal(t, "# Notes", blob["contents"])
+	require.Equal(t, "# Notes", response.Contents)
 
 	comparison, err := backend.Compare(context.Background(), repository, forge.CompareRequest{
 		Base: base, Head: head, MaxFiles: 10, MaxPatchBytes: 1 << 20,
@@ -147,6 +137,30 @@ func TestGitHubBlobAndCompareUseNormalizedV1Shapes(t *testing.T) {
 	require.Equal(t, head, comparison.Head)
 	require.Len(t, comparison.Files, 1)
 	require.Contains(t, comparison.Patch, "diff --git")
+	require.Equal(t, 300, comparison.CapabilityLimits.MaximumChangedFiles)
+}
+
+func TestGitHubBlobTooLargeIsAUsableMetadataResult(t *testing.T) {
+	head := strings.Repeat("b", 40)
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(t, w, r) {
+			return
+		}
+		switch {
+		case r.URL.Path == "/repos/lapis/notes/commits/"+head:
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": head})
+		case r.URL.Path == "/repos/lapis/notes/contents/archive.bin":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "archive.bin", "path": "archive.bin", "type": "file", "size": maxBrowserBlob + 1, "sha": strings.Repeat("c", 40)})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	blob, err := backend.Blob(context.Background(), repository, forge.RevisionRequest{Revision: head + "/archive.bin"})
+	require.NoError(t, err)
+	require.True(t, blob.TooLarge)
+	require.Empty(t, blob.Contents)
+	require.Equal(t, "browser_blob_bytes", blob.LimitExceeded.Resource)
+	require.Equal(t, int64(maxBrowserBlob), blob.LimitExceeded.Limit)
 }
 
 func TestGitHubBackendRejectsArbitraryAPIBase(t *testing.T) {

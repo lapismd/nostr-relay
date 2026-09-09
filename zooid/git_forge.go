@@ -309,7 +309,7 @@ func (policy *GitForgePolicy) ReconcileOnce(ctx context.Context) error {
 		}
 		return policy.finishIntent(ctx, intent, resolveErr)
 	}
-	provisioner, ok := resolved.Git.(forge.RepositoryProvisioner)
+	provisioner, ok := resolved.Authority.(forge.RepositoryProvisioner)
 	if !ok {
 		return policy.finishIntent(ctx, intent, &forge.Error{Status: 409, Code: "repository_provisioning_unsupported"})
 	}

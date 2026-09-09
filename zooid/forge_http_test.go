@@ -47,6 +47,15 @@ func (provider *fakeGitHubProvider) RepositoryByID(context.Context, string, int6
 	return provider.repository, nil
 }
 func (*fakeGitHubProvider) Name() string { return forge.BackendGitHub }
+func (provider *fakeGitHubProvider) AuthorityCapabilities(_ context.Context, repository forge.Repository) (forge.GitAuthorityCapabilities, error) {
+	return forge.GitAuthorityCapabilities{
+		Clone:     forge.CloneDescriptor{Available: true, URL: "https://github.com/" + repository.Integration.ExternalRepository + ".git", Auth: forge.CloneAuthProvider, Provider: forge.BackendGitHub},
+		RefEvents: true,
+	}, nil
+}
+func (*fakeGitHubProvider) ContentCapabilities(context.Context, forge.Repository) (forge.ContentCapabilities, error) {
+	return forge.ContentCapabilities{Browse: true, Compare: true, Limits: forge.ContentLimits{MaximumBlobBytes: 100 << 20, MaximumChangedFiles: 300, MaximumTreeEntries: 1000, MayTruncateCompare: true, MayTruncateTree: true}}, nil
+}
 func (*fakeGitHubProvider) Capabilities(_ context.Context, repository forge.Repository) (forge.Capabilities, error) {
 	return forge.Capabilities{
 		GitBackend: forge.BackendGitHub,
@@ -66,26 +75,26 @@ func (*fakeGitHubProvider) CloneDescriptor(context.Context, forge.Repository) (f
 func (*fakeGitHubProvider) DefaultBranch(context.Context, forge.Repository, string) (string, error) {
 	return "main", nil
 }
-func (*fakeGitHubProvider) Refs(context.Context, forge.Repository, forge.RefsRequest) (forge.Response, error) {
-	return forge.Response{}, nil
+func (*fakeGitHubProvider) Refs(context.Context, forge.Repository, forge.RefsRequest) (forge.RefPage, error) {
+	return forge.RefPage{}, nil
 }
-func (*fakeGitHubProvider) Resolve(_ context.Context, _ forge.Repository, request forge.RevisionRequest) (string, error) {
-	return request.Revision, nil
+func (*fakeGitHubProvider) Resolve(_ context.Context, _ forge.Repository, request forge.RevisionRequest) (forge.Revision, error) {
+	return forge.Revision{Ref: request.Revision, SHA: request.Revision, Kind: "commit"}, nil
 }
-func (*fakeGitHubProvider) Tree(context.Context, forge.Repository, forge.RevisionRequest) (forge.Response, error) {
-	return forge.Response{}, nil
+func (*fakeGitHubProvider) Tree(context.Context, forge.Repository, forge.RevisionRequest) (forge.Tree, error) {
+	return forge.Tree{}, nil
 }
-func (*fakeGitHubProvider) Blob(context.Context, forge.Repository, forge.RevisionRequest) (forge.Response, error) {
-	return forge.Response{}, nil
+func (*fakeGitHubProvider) Blob(context.Context, forge.Repository, forge.RevisionRequest) (forge.Blob, error) {
+	return forge.Blob{}, nil
 }
-func (*fakeGitHubProvider) Commits(context.Context, forge.Repository, forge.CommitsRequest) (forge.Response, error) {
-	return forge.Response{}, nil
+func (*fakeGitHubProvider) Commits(context.Context, forge.Repository, forge.CommitsRequest) (forge.CommitPage, error) {
+	return forge.CommitPage{}, nil
 }
-func (*fakeGitHubProvider) Commit(context.Context, forge.Repository, forge.RevisionRequest) (forge.Response, error) {
-	return forge.Response{}, nil
+func (*fakeGitHubProvider) Commit(context.Context, forge.Repository, forge.RevisionRequest) (forge.CommitDetail, error) {
+	return forge.CommitDetail{}, nil
 }
-func (*fakeGitHubProvider) Compare(context.Context, forge.Repository, forge.CompareRequest) (forge.CompareResult, error) {
-	return forge.CompareResult{}, nil
+func (*fakeGitHubProvider) Compare(context.Context, forge.Repository, forge.CompareRequest) (forge.Diff, error) {
+	return forge.Diff{}, nil
 }
 func (provider *fakeGitHubProvider) SnapshotRefs(context.Context, forge.Repository) (map[string]string, error) {
 	if len(provider.refSnapshots) == 0 {

@@ -277,15 +277,11 @@ func (policy *GitForgePolicy) startForgeMigration(w http.ResponseWriter, r *http
 		writeGitError(w, http.StatusConflict, "announcement_changed")
 		return
 	}
-	if resolved.Repository.Integration.GitBackend != forge.BackendGitHub || resolved.Git == nil {
+	if resolved.Repository.Integration.GitAuthorityBackend != forge.BackendGitHub && resolved.Repository.Integration.GitBackend != forge.BackendGitHub || resolved.Authority == nil {
 		writeGitError(w, http.StatusConflict, "github_source_required")
 		return
 	}
-	if _, ok := resolved.Git.(forge.RefSnapshotter); !ok {
-		writeGitError(w, http.StatusConflict, "source_snapshot_unsupported")
-		return
-	}
-	if _, ok := policy.Registry.GitBackend(forge.BackendWalGit).(forge.RepositoryImporter); !ok {
+	if _, ok := policy.Registry.ContentBackend(forge.BackendWalGit).(forge.RepositoryImporter); !ok {
 		writeGitError(w, http.StatusConflict, "walgit_import_unavailable")
 		return
 	}
