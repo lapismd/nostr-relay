@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 	"github.com/stretchr/testify/require"
@@ -222,6 +223,20 @@ func TestRelayReviewCommentReactionProjectsToGitHubAndDeletionRemovesIt(t *testi
 	require.Equal(t, "9300", addPayload["external_comment_id"])
 	require.Equal(t, "pull_request_review_comment", addPayload["comment_type"])
 	require.Equal(t, "heart", addPayload["content"])
+
+	snapshot := githubWebhookPayload{}
+	snapshot.Comment.ID = 9300
+	snapshot.Reactions = []githubWebhookReaction{{
+		ID: 9400, Content: "heart", CreatedAt: time.Now(),
+		User: githubWebhookUser{ID: 74, Login: "lapis-bot"},
+	}}
+	require.NoError(t, policy.syncExternalReviewCommentReactions(
+		context.Background(),
+		forge.Repository{Coordinate: coordinate, Announcement: repository},
+		githubWebhookDelivery{ConnectionID: connectionID, ReceivedAt: time.Now()},
+		snapshot,
+	))
+	require.Len(t, collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindReaction}}), 1)
 
 	deletion := nostr.Event{Kind: nostr.KindDeletion, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"e", reaction.ID.Hex()}}}
 	require.NoError(t, deletion.Sign(actor))

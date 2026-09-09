@@ -969,6 +969,16 @@ func (policy *GitForgePolicy) syncExternalReviewCommentReactions(ctx context.Con
 		if _, mapped := byExternalID[externalID]; mapped {
 			continue
 		}
+		// A relay-authored reaction is mapped as soon as GitHub accepts it. The
+		// next reconciliation snapshot contains that same GitHub reaction, so
+		// retain the authored event instead of importing a bridge-authored copy.
+		_, mapped, err := policy.loadMappingByExternal(ctx, forge.BackendGitHub, delivery.ConnectionID, externalID, "reaction")
+		if err != nil {
+			return err
+		}
+		if mapped {
+			continue
+		}
 		at := reaction.CreatedAt
 		if at.IsZero() {
 			at = delivery.ReceivedAt
