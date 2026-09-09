@@ -49,6 +49,11 @@ configuration.
 GitHub clone and push remain provider-native and use the user's GitHub
 credentials. NIP-29 protects only the relay's application, browser, diff, and
 collaboration surfaces; it cannot grant or restrict direct GitHub traffic.
+GitHub repository reads pass through a bounded process-local cache after relay
+authorization and connection validation. Cache keys use stable provider
+repository identity, concurrent misses are coalesced, and provider writes or
+verified webhooks invalidate the affected repository without changing signed
+Nostr authority.
 
 See [Relay surfaces](relay/surfaces.md), [NIP-29 groups and
 policy](relay/groups-and-policy.md), [Plugin registry

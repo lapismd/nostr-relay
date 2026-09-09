@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,6 +120,89 @@ func TestGitHubRefsTranslateToWalGitV1(t *testing.T) {
 	require.Equal(t, strings.Repeat("a", 40), response.Head.SHA)
 }
 
+func TestGitHubRepositoryReadsAreCoalescedCachedAndInvalidated(t *testing.T) {
+	var repositoryReads atomic.Int32
+	firstReadStarted := make(chan struct{})
+	releaseFirstRead := make(chan struct{})
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(t, w, r) {
+			return
+		}
+		switch r.URL.Path {
+		case "/repositories/42":
+			if repositoryReads.Add(1) == 1 {
+				close(firstReadStarted)
+				<-releaseFirstRead
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "full_name": "lapis/notes", "default_branch": "main"})
+		case "/repos/lapis/notes/issues":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	now := time.Date(2026, time.September, 9, 12, 0, 0, 0, time.UTC)
+	backend.reads.now = func() time.Time { return now }
+
+	const callers = 8
+	var wait sync.WaitGroup
+	errors := make(chan error, callers)
+	wait.Add(callers)
+	for range callers {
+		go func() {
+			defer wait.Done()
+			_, err := backend.Repository(context.Background(), repository)
+			errors <- err
+		}()
+	}
+	<-firstReadStarted
+	close(releaseFirstRead)
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	require.Equal(t, int32(1), repositoryReads.Load())
+
+	_, err := backend.Repository(context.Background(), repository)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), repositoryReads.Load())
+
+	now = now.Add(githubReadCacheTTL + time.Millisecond)
+	_, err = backend.Repository(context.Background(), repository)
+	require.NoError(t, err)
+	require.Equal(t, int32(2), repositoryReads.Load())
+
+	response, err := backend.doRepository(context.Background(), repository, http.MethodPost, "/repos/lapis/notes/issues", strings.NewReader(`{}`), collaborationPermissions)
+	require.NoError(t, err)
+	response.Body.Close()
+	_, err = backend.Repository(context.Background(), repository)
+	require.NoError(t, err)
+	require.Equal(t, int32(3), repositoryReads.Load())
+}
+
+func TestGitHubRepositoryMissingReadsUseShortNegativeCache(t *testing.T) {
+	var reads atomic.Int32
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(t, w, r) {
+			return
+		}
+		if r.URL.Path == "/repos/lapis/notes/commits/missing" {
+			reads.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	for range 2 {
+		_, err := backend.Resolve(context.Background(), repository, forge.RevisionRequest{Revision: "missing"})
+		require.ErrorContains(t, err, "github_object_not_found")
+	}
+	require.Equal(t, int32(1), reads.Load())
+}
+
 func TestGitHubBlobAndCompareUseNormalizedV1Shapes(t *testing.T) {
 	head := strings.Repeat("b", 40)
 	base := strings.Repeat("a", 40)
@@ -148,6 +233,7 @@ func TestGitHubBlobAndCompareUseNormalizedV1Shapes(t *testing.T) {
 	response, err := backend.Blob(context.Background(), repository, forge.RevisionRequest{Revision: head + "/README.md"})
 	require.NoError(t, err)
 	require.Equal(t, "# Notes", response.Contents)
+	require.Equal(t, githubBrowserCacheControl, response.CacheControl)
 
 	comparison, err := backend.Compare(context.Background(), repository, forge.CompareRequest{
 		Base: base, Head: head, MaxFiles: 10, MaxPatchBytes: 1 << 20,

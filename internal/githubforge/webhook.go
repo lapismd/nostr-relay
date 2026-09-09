@@ -91,6 +91,9 @@ func (backend *Backend) VerifyAndDecode(ctx context.Context, headers http.Header
 	if envelope.Installation.ID != 0 && envelope.Installation.ID != matchedInstallation {
 		return nil, &forge.Error{Status: http.StatusUnauthorized, Code: "github_installation_mismatch"}
 	}
+	if envelope.Repository.ID > 0 && backend.reads != nil {
+		backend.reads.invalidate(matchedID, envelope.Repository.ID)
+	}
 	externalID := envelope.PullRequest.ID
 	if externalID == 0 {
 		externalID = envelope.Issue.ID

@@ -31,6 +31,7 @@ type Backend struct {
 	client      *http.Client
 	base        *url.URL
 	tokens      *tokenManager
+	reads       *githubReadCache
 }
 
 func New(connections ConnectionLoader, credentials CredentialStore, client *http.Client) (*Backend, error) {
@@ -50,7 +51,7 @@ func newBackend(connections ConnectionLoader, credentials CredentialStore, clien
 	}
 	return &Backend{
 		connections: connections, credentials: credentials, client: client, base: base,
-		tokens: newTokenManager(credentials, client, base),
+		tokens: newTokenManager(credentials, client, base), reads: newGitHubReadCache(),
 	}, nil
 }
 
@@ -141,25 +142,11 @@ func (backend *Backend) RepositoryByID(ctx context.Context, connectionID string,
 	if !found || validateConnection(connection) != nil || connection.Status != "active" {
 		return metadata, &forge.Error{Status: http.StatusServiceUnavailable, Code: "github_connection_unavailable", Retryable: true}
 	}
-	token, err := backend.tokens.installation(ctx, connection, repositoryID, gitReadPermissions)
+	response, err := backend.getRepositoryWithConnection(ctx, connection, repositoryID, "/repositories/"+strconv.FormatInt(repositoryID, 10), gitReadPermissions)
 	if err != nil {
 		return metadata, err
-	}
-	target := *backend.base
-	target.Path = "/repositories/" + strconv.FormatInt(repositoryID, 10)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-	if err != nil {
-		return metadata, err
-	}
-	setGitHubHeaders(request, token)
-	response, err := backend.client.Do(request)
-	if err != nil {
-		return metadata, &forge.Error{Status: http.StatusServiceUnavailable, Code: "github_unavailable", Retryable: true}
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return metadata, githubStatusError(response.StatusCode, response.Header)
-	}
 	if err := decodeGitHub(response, &metadata, 2<<20); err != nil {
 		return metadata, err
 	}
@@ -265,7 +252,7 @@ func (backend *Backend) Refs(ctx context.Context, repository forge.Repository, r
 			return forge.RefPage{}, err
 		}
 		var ref gitHubRef
-		response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/git/ref/heads/"+escapePath(branch), nil, gitReadPermissions)
+		response, err := backend.getRepository(ctx, repository, repoPath(repository)+"/git/ref/heads/"+escapePath(branch), gitReadPermissions)
 		if err != nil {
 			return forge.RefPage{}, err
 		}
@@ -274,7 +261,7 @@ func (backend *Backend) Refs(ctx context.Context, repository forge.Repository, r
 			return forge.RefPage{}, err
 		}
 		normalized := normalizedRef(ref)
-		return forge.RefPage{Head: &normalized}, nil
+		return forge.RefPage{Head: &normalized, ResultMetadata: githubResultMetadata()}, nil
 	}
 	if request.Kind != "branches" && request.Kind != "tags" {
 		return forge.RefPage{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_ref_kind"}
@@ -291,7 +278,7 @@ func (backend *Backend) Refs(ctx context.Context, repository forge.Repository, r
 		}
 		page = parsed
 	}
-	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/git/matching-refs/"+prefix+"?per_page=100&page="+strconv.Itoa(page), nil, gitReadPermissions)
+	response, err := backend.getRepository(ctx, repository, repoPath(repository)+"/git/matching-refs/"+prefix+"?per_page=100&page="+strconv.Itoa(page), gitReadPermissions)
 	if err != nil {
 		return forge.RefPage{}, err
 	}
@@ -304,7 +291,7 @@ func (backend *Backend) Refs(ctx context.Context, repository forge.Repository, r
 	for _, ref := range refs {
 		normalized = append(normalized, normalizedRef(ref))
 	}
-	result := forge.RefPage{Refs: normalized, More: len(refs) == 100}
+	result := forge.RefPage{Refs: normalized, More: len(refs) == 100, ResultMetadata: githubResultMetadata()}
 	if result.More {
 		result.Continuation = encodeContinuation(request.Kind, page+1)
 	}
@@ -321,7 +308,7 @@ func (backend *Backend) Resolve(ctx context.Context, repository forge.Repository
 		}
 	}
 	var commit gitHubCommit
-	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/commits/"+escapePath(revision), nil, gitReadPermissions)
+	response, err := backend.getRepository(ctx, repository, repoPath(repository)+"/commits/"+escapePath(revision), gitReadPermissions)
 	if err != nil {
 		return forge.Revision{}, err
 	}
@@ -332,7 +319,7 @@ func (backend *Backend) Resolve(ctx context.Context, repository forge.Repository
 	if !fullObjectID(commit.SHA) {
 		return forge.Revision{}, &forge.Error{Status: http.StatusBadGateway, Code: "invalid_github_response"}
 	}
-	return forge.Revision{Ref: request.Revision, SHA: strings.ToLower(commit.SHA), Path: request.Path, Kind: "commit"}, nil
+	return forge.Revision{Ref: request.Revision, SHA: strings.ToLower(commit.SHA), Path: request.Path, Kind: "commit", ResultMetadata: githubResultMetadata()}, nil
 }
 
 func (backend *Backend) Tree(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.Tree, error) {
@@ -344,7 +331,7 @@ func (backend *Backend) Tree(ctx context.Context, repository forge.Repository, r
 	truncated := false
 	if path == "" {
 		var commit gitHubCommit
-		response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/commits/"+escapePath(commitSHA), nil, gitReadPermissions)
+		response, err := backend.getRepository(ctx, repository, repoPath(repository)+"/commits/"+escapePath(commitSHA), gitReadPermissions)
 		if err != nil {
 			return forge.Tree{}, err
 		}
@@ -352,7 +339,7 @@ func (backend *Backend) Tree(ctx context.Context, repository forge.Repository, r
 			return forge.Tree{}, err
 		}
 		var tree gitHubTree
-		response, err = backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/git/trees/"+escapePath(commit.Commit.Tree.SHA), nil, gitReadPermissions)
+		response, err = backend.getRepository(ctx, repository, repoPath(repository)+"/git/trees/"+escapePath(commit.Commit.Tree.SHA), gitReadPermissions)
 		if err != nil {
 			return forge.Tree{}, err
 		}
@@ -365,7 +352,7 @@ func (backend *Backend) Tree(ctx context.Context, repository forge.Repository, r
 		}
 	} else {
 		var contents []gitHubContent
-		response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/contents/"+escapePath(path)+"?ref="+url.QueryEscape(commitSHA), nil, gitReadPermissions)
+		response, err := backend.getRepository(ctx, repository, repoPath(repository)+"/contents/"+escapePath(path)+"?ref="+url.QueryEscape(commitSHA), gitReadPermissions)
 		if err != nil {
 			return forge.Tree{}, err
 		}
@@ -378,7 +365,7 @@ func (backend *Backend) Tree(ctx context.Context, repository forge.Repository, r
 		}
 	}
 	limits, _ := backend.ContentCapabilities(ctx, repository)
-	result := forge.Tree{Ref: revision, SHA: commitSHA, Path: path, Entries: entries}
+	result := forge.Tree{Ref: revision, SHA: commitSHA, Path: path, Entries: entries, ResultMetadata: githubResultMetadata()}
 	if truncated {
 		result.Truncated = true
 		result.Incomplete = []string{"entries"}
@@ -397,7 +384,7 @@ func (backend *Backend) Blob(ctx context.Context, repository forge.Repository, r
 		return forge.Blob{}, &forge.Error{Status: http.StatusNotFound, Code: "github_object_not_found"}
 	}
 	var content gitHubContent
-	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/contents/"+escapePath(path)+"?ref="+url.QueryEscape(commitSHA), nil, gitReadPermissions)
+	response, err := backend.getRepository(ctx, repository, repoPath(repository)+"/contents/"+escapePath(path)+"?ref="+url.QueryEscape(commitSHA), gitReadPermissions)
 	if err != nil {
 		return forge.Blob{}, err
 	}
@@ -405,7 +392,7 @@ func (backend *Backend) Blob(ctx context.Context, repository forge.Repository, r
 		return forge.Blob{}, err
 	}
 	limits, _ := backend.ContentCapabilities(ctx, repository)
-	result := forge.Blob{Ref: revision, SHA: commitSHA, Path: path, Name: content.Name, Size: content.Size}
+	result := forge.Blob{Ref: revision, SHA: commitSHA, Path: path, Name: content.Name, Size: content.Size, ResultMetadata: githubResultMetadata()}
 	result.CapabilityLimits = &limits.Limits
 	if content.Size > maxBrowserBlob {
 		result.TooLarge = true
@@ -462,7 +449,7 @@ func (backend *Backend) Commits(ctx context.Context, repository forge.Repository
 		if request.Path != "" {
 			path += "&path=" + url.QueryEscape(request.Path)
 		}
-		response, err := backend.doRepository(ctx, repository, http.MethodGet, path, nil, gitReadPermissions)
+		response, err := backend.getRepository(ctx, repository, path, gitReadPermissions)
 		if err != nil {
 			return forge.CommitPage{}, err
 		}
@@ -488,7 +475,7 @@ func (backend *Backend) Commits(ctx context.Context, repository forge.Repository
 	for _, commit := range commits {
 		normalized = append(normalized, normalizeCommit(commit))
 	}
-	result := forge.CommitPage{Ref: reference, SHA: sha, Commits: normalized, More: more}
+	result := forge.CommitPage{Ref: reference, SHA: sha, Commits: normalized, More: more, ResultMetadata: githubResultMetadata()}
 	if more {
 		result.Continuation = encodeContinuation("commits", request.Skip+limit)
 	}
@@ -497,7 +484,7 @@ func (backend *Backend) Commits(ctx context.Context, repository forge.Repository
 
 func (backend *Backend) Commit(ctx context.Context, repository forge.Repository, request forge.RevisionRequest) (forge.CommitDetail, error) {
 	var commit gitHubCommit
-	response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/commits/"+escapePath(request.Revision)+"?per_page=100", nil, gitReadPermissions)
+	response, err := backend.getRepository(ctx, repository, repoPath(repository)+"/commits/"+escapePath(request.Revision)+"?per_page=100", gitReadPermissions)
 	if err != nil {
 		return forge.CommitDetail{}, err
 	}
@@ -511,7 +498,7 @@ func (backend *Backend) Commit(ctx context.Context, repository forge.Repository,
 		appendPatch(&patch, file)
 	}
 	limits, _ := backend.ContentCapabilities(ctx, repository)
-	result := forge.CommitDetail{Commit: normalizeCommit(commit), Stats: stats, Patch: patch.String()}
+	result := forge.CommitDetail{Commit: normalizeCommit(commit), Stats: stats, Patch: patch.String(), ResultMetadata: githubResultMetadata()}
 	result.CapabilityLimits = &limits.Limits
 	if len(commit.Files) >= 300 {
 		result.Truncated = true
@@ -524,7 +511,7 @@ func (backend *Backend) Commit(ctx context.Context, repository forge.Repository,
 func (backend *Backend) Compare(ctx context.Context, repository forge.Repository, request forge.CompareRequest) (forge.Diff, error) {
 	var comparison gitHubCompare
 	path := repoPath(repository) + "/compare/" + escapePath(request.Base) + "..." + escapePath(request.Head) + "?per_page=100&page=1"
-	response, err := backend.doRepository(ctx, repository, http.MethodGet, path, nil, gitReadPermissions)
+	response, err := backend.getRepository(ctx, repository, path, gitReadPermissions)
 	if err != nil {
 		return forge.Diff{}, err
 	}
@@ -549,7 +536,7 @@ func (backend *Backend) Compare(ctx context.Context, repository forge.Repository
 	limits, _ := backend.ContentCapabilities(ctx, repository)
 	result := forge.Diff{
 		Base: comparison.BaseCommit.SHA, Head: comparison.HeadCommit.SHA,
-		MergeBase: comparison.MergeBaseCommit.SHA, Files: files, Patch: patch.String(),
+		MergeBase: comparison.MergeBaseCommit.SHA, Files: files, Patch: patch.String(), ResultMetadata: githubResultMetadata(),
 	}
 	if len(comparison.Files) >= 300 {
 		result.Truncated = true
@@ -586,6 +573,32 @@ func (backend *Backend) doRepository(ctx context.Context, repository forge.Repos
 	if err != nil {
 		return nil, err
 	}
+	response, err := backend.doRepositoryWithConnection(ctx, connection, repositoryID, method, path, body, permissions)
+	if err == nil && method != http.MethodGet {
+		backend.reads.invalidate(connection.ID, repositoryID)
+	}
+	return response, err
+}
+
+func (backend *Backend) getRepository(ctx context.Context, repository forge.Repository, path string, permissions map[string]string) (*http.Response, error) {
+	connection, repositoryID, err := backend.connectionFor(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
+	return backend.getRepositoryWithConnection(ctx, connection, repositoryID, path, permissions)
+}
+
+func (backend *Backend) getRepositoryWithConnection(ctx context.Context, connection Connection, repositoryID int64, path string, permissions map[string]string) (*http.Response, error) {
+	key := githubReadCacheKey{
+		githubReadCacheScope: githubReadCacheScope{connectionID: connection.ID, repositoryID: repositoryID},
+		path:                 path,
+	}
+	return backend.reads.load(ctx, key, func() (*http.Response, error) {
+		return backend.doRepositoryWithConnection(ctx, connection, repositoryID, http.MethodGet, path, nil, permissions)
+	})
+}
+
+func (backend *Backend) doRepositoryWithConnection(ctx context.Context, connection Connection, repositoryID int64, method, path string, body io.Reader, permissions map[string]string) (*http.Response, error) {
 	token, err := backend.tokens.installation(ctx, connection, repositoryID, permissions)
 	if err != nil {
 		return nil, err

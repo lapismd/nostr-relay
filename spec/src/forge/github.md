@@ -54,6 +54,16 @@ by that operation.
 GitHub installation tokens are treated as opaque values and refreshed before
 their [one-hour expiry](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
 
+Repository metadata and browser-content GET responses use a relay-local,
+in-memory read-through cache keyed by connection, stable repository ID, and
+canonical GitHub API path. Concurrent misses are coalesced. Successful results
+remain fresh for 30 seconds; not-found probes remain fresh for five seconds so
+full-ref/path resolution does not repeat known-invalid candidates. The cache is
+limited to 256 entries, 64 MiB in total, and 4 MiB per retained response.
+Successful repository writes and verified repository webhooks invalidate every
+entry for that repository. Browser-facing repository results may be retained
+privately for 15 seconds and MUST NOT be stored by shared caches.
+
 Register a connection with relay-admin NIP-98 authentication:
 
 ```json
