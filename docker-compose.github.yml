@@ -1,0 +1,24 @@
+services:
+  relay:
+    environment:
+      GITHUB_ENABLED: "true"
+    secrets:
+      - github_app_private_key
+      - github_webhook_secret
+      - github_bridge_secret
+
+  forge-worker:
+    environment:
+      GITHUB_ENABLED: "true"
+    secrets:
+      - github_app_private_key
+      - github_webhook_secret
+      - github_bridge_secret
+
+secrets:
+  github_app_private_key:
+    file: ${LAPIS_GITHUB_APP_KEY_FILE:?set the GitHub App private-key file}
+  github_webhook_secret:
+    file: ${LAPIS_GITHUB_WEBHOOK_SECRET_FILE:?set the GitHub webhook-secret file}
+  github_bridge_secret:
+    file: ${LAPIS_GITHUB_BRIDGE_SECRET_FILE:?set the Nostr bridge-secret file}

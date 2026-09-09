@@ -28,6 +28,10 @@ It is registered through the capability model described in
 
 ## Deployment
 
+The complete base-stack, GitHub App, secret-mount, and local-test runbook is
+[FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md). This document records WalGit's
+specific storage and protocol contract.
+
 `docker-compose.yml` starts relay, PostgreSQL, WalGit, RustFS and an idempotent
 bucket initializer. WalGit and helper images are digest-pinned. Its source is
 pinned in `third_party/walgit/UPSTREAM_VERSION`; the image downloads and

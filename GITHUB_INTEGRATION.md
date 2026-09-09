@@ -26,6 +26,9 @@ The equivalent container variables are `GITHUB_ENABLED`,
 the enable/interval/limit values with `LAPIS_` names and fixes the in-container
 credential directory to `/run/secrets`.
 
+For an end-to-end deployment sequence, secret-file mapping, and local Docker
+commands, see [FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md).
+
 ## GitHub App and credentials
 
 Use separate least-privilege GitHub App installations when source
@@ -250,3 +253,8 @@ It exercises attachment, initial Git replication into WalGit, authenticated
 local browsing, durable collaboration, webhook echo suppression, CI, and
 restart resolution. See [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md) for
 the deliberately unsupported provider and WalGit workflows.
+
+The fake service is test-only and injected without weakening the production
+adapter's fixed `github.com` boundary. The complete local test and optional
+real-App Compose workflows are in
+[FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md#test-locally-without-github-credentials).

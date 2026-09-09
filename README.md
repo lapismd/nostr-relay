@@ -86,6 +86,10 @@ deployment/recovery contract remains in
 deferred after both forge plans is tracked in
 [FORGE_DEFERRED_WORK.md](FORGE_DEFERRED_WORK.md).
 
+Deployment, GitHub App registration, secret mounting, integration attachment,
+and credential-free local Docker tests are covered step by step in
+[FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md).
+
 ## Lapis container
 
 Build the local image:
