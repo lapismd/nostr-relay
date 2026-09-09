@@ -53,6 +53,8 @@ func (policy *GitForgePolicy) ServeForgeAPI(w http.ResponseWriter, r *http.Reque
 	switch {
 	case r.Method == http.MethodPost && path == "connections/github":
 		policy.createGitHubConnection(w, r, authEvent.PubKey, body)
+	case r.Method == http.MethodGet && path == "connections/github":
+		policy.listGitHubConnections(w, r, authEvent.PubKey)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "connections/github/") && strings.HasSuffix(path, "/repositories"):
 		policy.listGitHubRepositories(w, r, authEvent.PubKey, path)
 	case strings.HasPrefix(path, "repositories/"):
@@ -173,6 +175,27 @@ func publicGitHubConnection(connection githubforge.Connection) map[string]any {
 		"account_login": connection.AccountLogin, "bridge_pubkey": connection.BridgePubkey,
 		"status": connection.Status,
 	}
+}
+
+func (policy *GitForgePolicy) listGitHubConnections(w http.ResponseWriter, r *http.Request, actor nostr.PubKey) {
+	if !policy.Config.CanManage(actor) {
+		writeGitError(w, http.StatusForbidden, "relay_admin_required")
+		return
+	}
+	if policy.GitHub == nil {
+		writeGitError(w, http.StatusServiceUnavailable, "github_disabled")
+		return
+	}
+	connections, err := policy.ListGitHubConnections(r.Context())
+	if err != nil {
+		writeGitError(w, http.StatusServiceUnavailable, "connection_store_failed")
+		return
+	}
+	public := make([]map[string]any, 0, len(connections))
+	for _, connection := range connections {
+		public = append(public, publicGitHubConnection(connection))
+	}
+	writeForgeJSON(w, http.StatusOK, map[string]any{"connections": public})
 }
 
 func (policy *GitForgePolicy) listGitHubRepositories(w http.ResponseWriter, r *http.Request, actor nostr.PubKey, path string) {

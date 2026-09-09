@@ -20,6 +20,42 @@ type githubAdministration interface {
 	RepositoryByID(context.Context, string, int64) (githubforge.RepositoryMetadata, error)
 }
 
+func (policy *GitForgePolicy) ListGitHubConnections(ctx context.Context) ([]githubforge.Connection, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	rows, err := GetDb().QueryContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT id, host, app_id, installation_id, bridge_pubkey,
+		       account_id, account_login, status
+		FROM {{.Name}}__forge_connections
+		WHERE provider = 'github'
+		ORDER BY account_login, id`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	connections := make([]githubforge.Connection, 0)
+	for rows.Next() {
+		var connection githubforge.Connection
+		var installationID string
+		if err := rows.Scan(
+			&connection.ID, &connection.Host, &connection.AppID, &installationID,
+			&connection.BridgePubkey,
+			&connection.AccountID, &connection.AccountLogin, &connection.Status,
+		); err != nil {
+			return nil, err
+		}
+		connection.InstallationID, err = strconv.ParseInt(installationID, 10, 64)
+		if err != nil || connection.InstallationID <= 0 {
+			return nil, fmt.Errorf("invalid stored GitHub installation")
+		}
+		connections = append(connections, connection)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return connections, nil
+}
+
 func (policy *GitForgePolicy) LoadGitHubConnection(ctx context.Context, id string) (githubforge.Connection, bool, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()

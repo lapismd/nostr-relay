@@ -205,6 +205,19 @@ func TestForgeGitHubConnectionAttachCapabilitiesAndHealth(t *testing.T) {
 	require.NotContains(t, recorder.Body.String(), "APP_KEY")
 	require.NotContains(t, recorder.Body.String(), bridge.Hex())
 
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodGet, connectionURL, nil, admin))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	var connections struct {
+		Connections []map[string]any `json:"connections"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &connections))
+	require.Len(t, connections.Connections, 1)
+	require.Equal(t, connectionID, connections.Connections[0]["id"])
+	require.Equal(t, "lapis", connections.Connections[0]["account_login"])
+	require.NotContains(t, recorder.Body.String(), "APP_KEY")
+	require.NotContains(t, recorder.Body.String(), bridge.Hex())
+
 	owner := nostr.Generate()
 	announcement := gitForgeRepositoryEvent(t, owner, "notes",
 		nostr.Tag{"clone", "https://github.com/lapis/notes.git"},
@@ -249,6 +262,10 @@ func TestForgeConnectionRegistrationRequiresRelayAdmin(t *testing.T) {
 	target := "https://relay.example/api/forge/connections/github"
 	recorder := httptest.NewRecorder()
 	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPost, target, body, nostr.Generate()))
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodGet, target, nil, nostr.Generate()))
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 }
 

@@ -68,9 +68,10 @@ POST /api/forge/connections/github
 }
 ```
 
-`GET /api/forge/connections/github/<id>/repositories` lists repositories
-available to the installation. Connection registration and discovery are
-relay-admin-only.
+`GET /api/forge/connections/github` lists configured connections without
+credential references or secrets. `GET
+/api/forge/connections/github/<id>/repositories` lists repositories available
+to one installation. Connection registration and discovery are relay-admin-only.
 
 ## Repository attachment
 
