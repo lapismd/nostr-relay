@@ -110,6 +110,10 @@ list and tagged recovery test, and
 [GITHUB_INTEGRATION.md](GITHUB_INTEGRATION.md) for GitHub secret references and
 the deterministic fake-provider lane.
 
+RustFS is the local S3-compatible fixture. Production WalGit storage targets a
+private Cloudflare R2 bucket through provider-neutral `LAPIS_S3_*` variables;
+see [FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md#use-cloudflare-r2-in-production).
+
 ## Fresh deployment and data bootstrap
 
 A clean deployment does not load application fixtures or create a default

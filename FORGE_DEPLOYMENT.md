@@ -2,8 +2,9 @@
 
 This is the operator runbook for the relay, WalGit, and the optional GitHub
 App integration. The checked-in Compose stack is a reproducible local/reference
-deployment. Production must additionally provide TLS, a production PostgreSQL
-service, durable backups, and a secret manager.
+deployment backed by RustFS. The production storage target is Cloudflare R2
+through its S3-compatible API. Production must additionally provide TLS, a
+production PostgreSQL service, durable backups, and a secret manager.
 
 ## Choose a repository topology
 
@@ -34,8 +35,8 @@ external forge worker on private networking in production.
 Copy [.env.example](.env.example) to an ignored `.env` and replace every
 placeholder. The relay secret and the GitHub bridge secret are Nostr secret
 keys; their configured hexadecimal public keys must be derived from those exact
-keys. Generate the WalGit service token, webhook secret, and RustFS credentials
-independently. Never reuse a signing key as a service credential.
+keys. Generate the WalGit service token, webhook secret, and object-store
+credentials independently. Never reuse a signing key as a service credential.
 
 Validate and start the reference stack:
 
@@ -58,10 +59,63 @@ deployment, update the persisted/operator-managed configuration and restart,
 or start a new Compose project with a fresh configuration volume.
 
 For production, also replace the Compose development PostgreSQL password,
-back up PostgreSQL and the RustFS data volume, test restore procedures, and pin
-all externally supplied secret/config paths through the deployment platform.
-WalGit's cache volume is reconstructable; RustFS is the durable Git source when
-WalGit is authoritative.
+back up PostgreSQL and the R2 bucket, test restore procedures, and pin all
+externally supplied secret/config paths through the deployment platform.
+WalGit's cache volume is reconstructable; the configured object store is the
+durable Git source when WalGit is authoritative.
+
+## Use Cloudflare R2 in production
+
+The deployment-facing object-store variables are provider-neutral. WalGit can
+therefore use Cloudflare R2 without presenting the storage provider as AWS or
+RustFS:
+
+```dotenv
+LAPIS_S3_ENDPOINT=https://<cloudflare-account-id>.r2.cloudflarestorage.com
+LAPIS_S3_REGION=auto
+LAPIS_S3_BUCKET=lapis-walgit-production
+LAPIS_S3_PREFIX=
+LAPIS_S3_FORCE_PATH_STYLE=true
+LAPIS_S3_ACCESS_KEY_ID=<r2-access-key-id>
+LAPIS_S3_SECRET_ACCESS_KEY=<r2-secret-access-key>
+```
+
+Create the bucket before starting WalGit and issue an R2 S3 API token with
+Object Read & Write access restricted to that bucket. Keep the bucket private;
+application users access repository content through the relay, never directly
+through R2. Store both credential values in the deployment secret manager, not
+in a committed `.env` file.
+
+R2 uses an account endpoint and the `auto` S3 region. If the bucket has a
+jurisdictional restriction, use its jurisdiction-specific endpoint, for
+example `https://<account-id>.eu.r2.cloudflarestorage.com`. Cloudflare's
+[S3 setup](https://developers.cloudflare.com/r2/get-started/s3/),
+[API compatibility](https://developers.cloudflare.com/r2/api/s3/api/), and
+[data-location](https://developers.cloudflare.com/r2/reference/data-location/)
+documentation are the source of truth for endpoint and region behavior.
+
+The optional [docker-compose.r2.yml](docker-compose.r2.yml) overlay removes
+the local RustFS dependency and bucket initializer while retaining the same
+WalGit image:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.r2.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.r2.yml up --build -d
+```
+
+When GitHub is enabled as well, compose the independent overlays together:
+
+```sh
+docker compose -f docker-compose.yml \
+  -f docker-compose.r2.yml -f docker-compose.github.yml \
+  up --build -d
+```
+
+This overlay demonstrates the production storage topology; the deployment
+platform should still provide production PostgreSQL, TLS, backups, and secret
+injection. The `AWS_*` names visible inside the local bucket initializer belong
+only to the AWS CLI's S3-compatible client interface. They are not part of the
+Lapis deployment contract or required in the WalGit container.
 
 ## Configure a GitHub App
 
@@ -218,8 +272,9 @@ secrets for this test.
   `current`; periodic reconciliation repairs missed deliveries.
 - Relay and worker logs contain sanitized failure codes, never installation
   tokens, private keys, bridge secrets, or WalGit service credentials.
-- Backups cover PostgreSQL and RustFS, and restore tests include WalGit recovery
-  from an empty cache.
+- Backups cover PostgreSQL and Cloudflare R2 in production, and restore tests
+  include WalGit recovery from an empty cache. The local recovery lane uses
+  RustFS as its deterministic S3-compatible fixture.
 
 Upgrade checks are listed in [FORGE_ABSTRACTION.md](FORGE_ABSTRACTION.md) and
 [WALGIT_INTEGRATION.md](WALGIT_INTEGRATION.md#updating-walgit).

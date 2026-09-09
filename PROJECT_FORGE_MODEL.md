@@ -104,7 +104,8 @@ merge.
 
 ## Deliberate boundaries
 
-WalGit is private to the relay and its object store is the durable Git backing;
+WalGit is private to the relay and its S3-compatible object store is the
+durable Git backing. Production uses Cloudflare R2 and local tests use RustFS;
 GitHub is accessed only through its fixed public API. Provider credentials and
 types remain inside the GitHub adapter. No client can supply a WalGit service
 token, trusted principal header, arbitrary provider API host, or bridge secret.

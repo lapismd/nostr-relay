@@ -60,10 +60,11 @@ live under `internal/khatru`. The local patch map is:
   outbound Git replication state/jobs.
 - `third_party/walgit`: exact upstream pin, reproducible archive verification,
   image recipe, deployment configuration, and the short bounded-compare patch.
-- `cmd/forge-worker`, `Dockerfile`, and `docker-compose.yml`: private WalGit plus
-  RustFS deployment and the optional worker-only forge process. Neither
-  WalGit, RustFS, nor the worker publishes a host port; only the relay is a
-  client-facing policy boundary.
+- `cmd/forge-worker`, `Dockerfile`, `docker-compose.yml`, and the storage
+  overlays: private WalGit, local RustFS, production Cloudflare R2, and the
+  optional worker-only forge process. Neither WalGit, local object storage, nor
+  the worker publishes a host port; only the relay is a client-facing policy
+  boundary.
 
 The audited Buzz contract and refresh checklist live in
 `docs/BUZZ_PROJECT_COMPATIBILITY.md`. Update its pinned Buzz commit and contract

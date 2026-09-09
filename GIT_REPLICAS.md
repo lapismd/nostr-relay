@@ -121,7 +121,9 @@ directions cannot be enabled together.
 
 Deleting the WalGit replica loses no canonical Git state while GitHub remains
 authority: provisioning can repeat from GitHub. Once WalGit is authority, its
-RustFS object store is the durable source and normal WalGit recovery applies.
+configured S3-compatible object store is the durable source and normal WalGit
+recovery applies. Production uses Cloudflare R2; the Docker test lanes use
+RustFS as a deterministic local fixture.
 
 The focused Go fixtures cover provisioning, ref scope, force/delete/tag
 changes, delivery deduplication, out-of-order events, reconciliation,

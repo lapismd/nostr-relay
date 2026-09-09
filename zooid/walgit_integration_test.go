@@ -161,8 +161,8 @@ func startWalGit(t *testing.T, ctx context.Context, net *testcontainers.DockerNe
 			Env: map[string]string{
 				"WALGIT_RELAY_TOKEN":             walgitServiceToken,
 				"WALGIT__EVENTS__WEBHOOK_SECRET": "integration-test-webhook-secret",
-				"AWS_ACCESS_KEY_ID":              rustfsAccessKey,
-				"AWS_SECRET_ACCESS_KEY":          rustfsSecretKey,
+				"S3_ACCESS_KEY_ID":               rustfsAccessKey,
+				"S3_SECRET_ACCESS_KEY":           rustfsSecretKey,
 			},
 			Networks: []string{net.Name},
 			WaitingFor: wait.ForHTTP("/readyz").WithPort(nat.Port("8080/tcp")).

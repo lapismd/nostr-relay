@@ -116,8 +116,13 @@ services:
       WALGIT_RELAY_TOKEN: ${LAPIS_WALGIT_RELAY_TOKEN:?set a random local relay-to-WalGit token}
       WALGIT__EVENTS__WEBHOOK_SECRET: ${LAPIS_WALGIT_WEBHOOK_SECRET:?set a random local WalGit webhook secret}
       WALGIT__SERVER__PUBLIC_URL: ${LAPIS_GIT_PUBLIC_URL:-http://localhost:8281}
-      AWS_ACCESS_KEY_ID: ${LAPIS_RUSTFS_ACCESS_KEY:?set a random local RustFS access key}
-      AWS_SECRET_ACCESS_KEY: ${LAPIS_RUSTFS_SECRET_KEY:?set a random local RustFS secret key}
+      WALGIT__STORE__BUCKET: ${LAPIS_S3_BUCKET:-lapis-walgit}
+      WALGIT__STORE__PREFIX: ${LAPIS_S3_PREFIX:-}
+      WALGIT__STORE__S3__ENDPOINT: ${LAPIS_S3_ENDPOINT:-http://rustfs:9000}
+      WALGIT__STORE__S3__REGION: ${LAPIS_S3_REGION:-us-east-1}
+      WALGIT__STORE__S3__FORCE_PATH_STYLE: ${LAPIS_S3_FORCE_PATH_STYLE:-true}
+      S3_ACCESS_KEY_ID: ${LAPIS_S3_ACCESS_KEY_ID:?set an S3-compatible object-store access key ID}
+      S3_SECRET_ACCESS_KEY: ${LAPIS_S3_SECRET_ACCESS_KEY:?set an S3-compatible object-store secret access key}
     volumes:
       - walgit-cache:/var/lib/walgit
     depends_on:
@@ -128,8 +133,8 @@ services:
   rustfs:
     image: rustfs/rustfs@sha256:b7014e0ce2bc703c1316b3ef760e29dfae61fe4a50d1a66fa89638e0f8ea211f
     environment:
-      RUSTFS_ACCESS_KEY: ${LAPIS_RUSTFS_ACCESS_KEY:?set a random local RustFS access key}
-      RUSTFS_SECRET_KEY: ${LAPIS_RUSTFS_SECRET_KEY:?set a random local RustFS secret key}
+      RUSTFS_ACCESS_KEY: ${LAPIS_S3_ACCESS_KEY_ID:?set a random local object-store access key ID}
+      RUSTFS_SECRET_KEY: ${LAPIS_S3_SECRET_ACCESS_KEY:?set a random local object-store secret access key}
       RUSTFS_ADDRESS: 0.0.0.0:9000
       RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
       RUSTFS_VOLUMES: /data
@@ -148,14 +153,16 @@ services:
       rustfs:
         condition: service_healthy
     environment:
-      AWS_ACCESS_KEY_ID: ${LAPIS_RUSTFS_ACCESS_KEY:?set a random local RustFS access key}
-      AWS_SECRET_ACCESS_KEY: ${LAPIS_RUSTFS_SECRET_KEY:?set a random local RustFS secret key}
-      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${LAPIS_S3_ACCESS_KEY_ID:?set a random local object-store access key ID}
+      AWS_SECRET_ACCESS_KEY: ${LAPIS_S3_SECRET_ACCESS_KEY:?set a random local object-store secret access key}
+      AWS_DEFAULT_REGION: ${LAPIS_S3_REGION:-us-east-1}
+      S3_ENDPOINT: ${LAPIS_S3_ENDPOINT:-http://rustfs:9000}
+      S3_BUCKET: ${LAPIS_S3_BUCKET:-lapis-walgit}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket lapis-walgit
-        || aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket lapis-walgit
+        aws --endpoint-url "$$S3_ENDPOINT" s3api head-bucket --bucket "$$S3_BUCKET"
+        || aws --endpoint-url "$$S3_ENDPOINT" s3api create-bucket --bucket "$$S3_BUCKET"
     restart: "no"
 
   postgres:

@@ -1,0 +1,11 @@
+services:
+  # Production WalGit persists directly to Cloudflare R2. The base Compose
+  # file remains the local/reference stack and supplies RustFS instead.
+  walgit:
+    depends_on: !reset {}
+
+  rustfs:
+    profiles: ["local-object-store"]
+
+  create-walgit-bucket:
+    profiles: ["local-object-store"]

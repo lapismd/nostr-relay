@@ -3,8 +3,9 @@
 WalGit runs as a private sidecar. It is the canonical Git engine for hosted
 repositories and may also be the private content replica for a
 GitHub-authoritative repository. The relay is the only public policy boundary;
-RustFS provides the initial local S3-compatible durable store and WalGit's disk
-directory is a reconstructable cache.
+Cloudflare R2 is the production S3-compatible durable store, RustFS provides
+the deterministic local equivalent, and WalGit's disk directory is a
+reconstructable cache.
 
 ```text
 web / desktop / Git credential helper
@@ -16,7 +17,8 @@ web / desktop / Git credential helper
                  |
               WalGit
                  |
-          RustFS object store
+       S3-compatible object store
+        R2 prod / RustFS local
 ```
 
 Nostr remains authoritative for `30621` projects, `30617` repository identity,
@@ -38,7 +40,7 @@ pinned in `third_party/walgit/UPSTREAM_VERSION`; the image downloads and
 checksums that source, applies the local patch stack, builds the web assets and
 Rust binaries, and exposes only port 8080 on the Compose network.
 
-Required local variables are:
+The local deployment variables are:
 
 ```text
 LAPIS_RELAY_SECRET
@@ -46,14 +48,26 @@ LAPIS_RELAY_OWNER_PUBKEY
 LAPIS_RELAY_ADMIN_PUBKEYS
 LAPIS_WALGIT_RELAY_TOKEN
 LAPIS_WALGIT_WEBHOOK_SECRET
-LAPIS_RUSTFS_ACCESS_KEY
-LAPIS_RUSTFS_SECRET_KEY
+LAPIS_S3_ENDPOINT
+LAPIS_S3_REGION
+LAPIS_S3_BUCKET
+LAPIS_S3_PREFIX
+LAPIS_S3_FORCE_PATH_STYLE
+LAPIS_S3_ACCESS_KEY_ID
+LAPIS_S3_SECRET_ACCESS_KEY
 ```
+
+The signing/service values and both S3 credentials are required. Endpoint,
+region, bucket, prefix, and path-style behavior have the local defaults shown
+in `.env.example` and must be set explicitly for production.
 
 Use independently generated values. Never reuse the relay signing key as a
 service or object-store credential. Production deployments should keep WalGit
-and object storage on private networking and replace the local RustFS choices
-with normal secret injection, backup and lifecycle controls.
+private and configure these provider-neutral variables for Cloudflare R2. The
+base Compose file defaults them to local RustFS. Use `docker-compose.r2.yml` to
+remove that local service and initializer from the production topology.
+Complete R2 values, credential scope, and backup guidance are in
+[FORGE_DEPLOYMENT.md](FORGE_DEPLOYMENT.md#use-cloudflare-r2-in-production).
 
 GitHub and its forge worker are optional. Their configuration, separate App
 permissions, secret references, private WalGit replica, and one-way CI mirror
@@ -179,7 +193,7 @@ backup. Protect and back up the bucket instead.
 
 The tagged recovery test pushes a real repository, verifies the complete read
 surface, destroys the first WalGit container/cache, starts a fresh sidecar on
-the same RustFS store, and repeats API and clone checks:
+the same local RustFS fixture, and repeats API and clone checks:
 
 ```sh
 go test -tags walgit_integration ./zooid \
