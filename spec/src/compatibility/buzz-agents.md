@@ -131,7 +131,9 @@ can query or receive it. Clients cannot forge these relay events.
 Agent discovery composes existing event families: kind `0` for identity,
 `10100` for agent metadata, `30177` for managed-agent records, and NIP-29
 `39002` for actual channel membership. Directory metadata does not create
-membership or roles.
+membership or roles. Membership snapshots advance monotonically per group,
+including multiple changes within one second, so the Community agent Channels
+view can apply ordinary NIP-01 replacement ordering.
 
 ## NIP-AO observer frames
 

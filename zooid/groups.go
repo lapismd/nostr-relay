@@ -104,6 +104,10 @@ type GroupStore struct {
 	// DB query path. Issue #25 follow-up review.
 	membershipFullyLoaded sync.Map // map[string]struct{} (key = group h)
 
+	// Serialize snapshot read/sign/store per group so same-second updates cannot
+	// lose to NIP-01 replacement ordering. Other groups remain independent.
+	memberSnapshotLocks sync.Map // map[string]*sync.Mutex
+
 	// DebounceDelay coalesces rapid bursts of kind-39002 / kind-39000 rewrites
 	// for the same group into a single publish, scheduled DebounceDelay after
 	// the first scheduled trigger in a burst. NIP-29 requires republishing the
@@ -845,6 +849,20 @@ func (g *GroupStore) UpdateMembersList(h string) error {
 		return nil
 	}
 
+	lock, _ := g.memberSnapshotLocks.LoadOrStore(h, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	createdAt := nostr.Now()
+	for previous := range g.Events.QueryEvents(nostr.Filter{
+		Kinds:   []nostr.Kind{nostr.KindSimpleGroupMembers},
+		Authors: []nostr.PubKey{g.Config.GetSelf()},
+		Tags:    nostr.TagMap{"d": []string{h}},
+	}, 1) {
+		createdAt = nextTimestamp(previous.CreatedAt, createdAt)
+	}
+
 	tags := nostr.Tags{
 		nostr.Tag{"-"},
 		nostr.Tag{"d", h},
@@ -877,7 +895,7 @@ func (g *GroupStore) UpdateMembersList(h string) error {
 
 	event := nostr.Event{
 		Kind:      nostr.KindSimpleGroupMembers,
-		CreatedAt: nostr.Now(),
+		CreatedAt: createdAt,
 		Tags:      tags,
 	}
 

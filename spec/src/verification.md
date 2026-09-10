@@ -6,6 +6,7 @@ in proportion to the affected boundary.
 | Area | Evidence |
 | --- | --- |
 | Specification | `just spec-check` builds the linked mdBook and validates local Markdown targets; the Go CI workflow installs mdBook 0.5.4 and rebuilds it. |
+| Member snapshot ordering | `TestGroupStore_MembersSnapshotAdvancesTimestamp` verifies same-second and backwards-clock replacement; the Community Docker agent contract covers discovery, Follow, channel membership and encrypted owner-only observer capture. |
 | Go unit and package behavior | Focused package tests, followed by `go test ./...`. |
 | Buzz project and pull-request behavior | Relevant tagged project/PR Docker integration lane. |
 | WalGit storage and recovery | Tagged WalGit object-store recovery lane and local WalGit image build. |

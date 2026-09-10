@@ -33,7 +33,11 @@ before reacting.
 
 Roles are carried by kind `9000` put-user events, for example
 `["p", "<pubkey>", "writer"]`, and appear on the group's kind `39002` member
-snapshot. Only relay administrators may create a write-restricted group or
+snapshot. Each new member snapshot advances beyond the previous stored
+relay-signed snapshot timestamp, with per-group serialization. This preserves
+NIP-01 replacement ordering across rapid updates and backwards clock movement,
+so clients cannot retain a stale list after a successful membership change.
+Only relay administrators may create a write-restricted group or
 add that flag later.
 
 ## Retention

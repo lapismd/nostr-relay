@@ -610,3 +610,47 @@ func TestGroupStore_WarmCaches_StaysPreWarmWhenSnapshotReadsEmpty(t *testing.T) 
 		t.Errorf("cachesWarmed unexpectedly true: metadata has groups but no membership snapshots were read; should stay in pre-warm mode so IsMember falls back to DB")
 	}
 }
+
+// Membership snapshots must replace their predecessor even when several
+// changes arrive in one second, or after a relay clock moves backwards.
+func TestGroupStore_MembersSnapshotAdvancesTimestamp(t *testing.T) {
+	inst := createTestInstance()
+	const groupID = "snapshot-ordering"
+	member := nostr.Generate().Public()
+	previous := nostr.Event{
+		Kind:      nostr.KindSimpleGroupMembers,
+		CreatedAt: nostr.Now() + 30,
+		Tags:      nostr.Tags{{"d", groupID}},
+	}
+	if err := previous.Sign(inst.Config.secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Events.StoreEvent(previous); err != nil {
+		t.Fatal(err)
+	}
+	inst.Groups.cachesWarmed = true
+	inst.Groups.membershipFullyLoaded.Store(groupID, struct{}{})
+	inst.Groups.membershipCache.Store(groupID, &memberSet{members: map[nostr.PubKey]struct{}{member: {}}})
+	for i := 0; i < 3; i++ {
+		if err := inst.Groups.UpdateMembersList(groupID); err != nil {
+			t.Fatal(err)
+		}
+		var current nostr.Event
+		for event := range inst.Events.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{nostr.KindSimpleGroupMembers}, Authors: []nostr.PubKey{inst.Config.GetSelf()}, Tags: nostr.TagMap{"d": []string{groupID}}}, 1) {
+			current = event
+		}
+		if current.CreatedAt <= previous.CreatedAt {
+			t.Fatalf("snapshot did not advance: got %d, previous %d", current.CreatedAt, previous.CreatedAt)
+		}
+		found := false
+		for _, tag := range current.Tags {
+			if len(tag) >= 2 && tag[0] == "p" && tag[1] == member.Hex() {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("latest snapshot omitted the added member")
+		}
+		previous = current
+	}
+}
