@@ -82,6 +82,40 @@ func TestCollaborationMergePinsExpectedHead(t *testing.T) {
 	require.Equal(t, strings.Repeat("c", 40), result.MergedCommit)
 }
 
+func TestPullRequestDiffRetainsProviderFileSetAfterMerge(t *testing.T) {
+	base := strings.Repeat("a", 40)
+	head := strings.Repeat("b", 40)
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponseWithPermissions(t, w, r, collaborationPermissions) {
+			return
+		}
+		switch r.URL.Path {
+		case "/repos/lapis/notes/pulls/7":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"base": map[string]any{"sha": base}, "head": map[string]any{"sha": head},
+			})
+		case "/repos/lapis/notes/pulls/7/files":
+			require.Equal(t, "100", r.URL.Query().Get("per_page"))
+			require.Equal(t, "1", r.URL.Query().Get("page"))
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"filename": "docs/merged.md", "status": "added", "additions": 3,
+				"deletions": 0, "changes": 3, "patch": "@@ -0,0 +1,3 @@\n+# Merged",
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	diff, err := backend.PullRequestDiff(context.Background(), repository, forge.PullRequestDiffRequest{
+		Number: 7, MaxFiles: 10, MaxPatchBytes: 1 << 20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, base, diff.Base)
+	require.Equal(t, head, diff.Head)
+	require.Equal(t, "docs/merged.md", diff.Files[0].Path)
+	require.Contains(t, diff.Patch, "diff --git a/docs/merged.md b/docs/merged.md")
+}
+
 func TestCollaborationCreatesNativePullRequestReviews(t *testing.T) {
 	marker := strings.Repeat("b", 32)
 	actor := nostr.Generate().Public()

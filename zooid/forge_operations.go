@@ -613,6 +613,9 @@ func (policy *GitForgePolicy) projectForgeOperation(ctx context.Context, reposit
 			{"subject", stringValue(payload["title"])}, {"c", headSHA},
 			{"clone", clone.Capabilities.Clone.URL},
 		}}
+		if baseSHA := strings.ToLower(result.BaseSHA); fullForgeObjectID(baseSHA) {
+			event.Tags = append(event.Tags, nostr.Tag{"base-commit", baseSHA})
+		}
 		if ref := firstNonempty(result.HeadRef, stringValue(payload["head"])); ref != "" {
 			event.Tags = append(event.Tags, nostr.Tag{"branch-name", ref})
 		}

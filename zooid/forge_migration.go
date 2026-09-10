@@ -184,8 +184,8 @@ func (policy *GitForgePolicy) verifyMigrationReplicaObjects(ctx context.Context,
 			continue
 		}
 		state, err := projecttask.ReducePullRequest(root, source.Repository.Announcement, policy.pullRequestRelatedEvents(ctx, root.ID))
-		if err == nil && (state.Lifecycle == projecttask.PullRequestOpen || state.Lifecycle == projecttask.PullRequestDraft) {
-			for _, oid := range []string{state.CurrentCommit, state.MergeBase} {
+		if err == nil {
+			for _, oid := range []string{state.CurrentCommit, state.BaseCommit, state.MergeBase} {
 				if fullForgeObjectID(oid) {
 					oids[strings.ToLower(oid)] = struct{}{}
 				}
@@ -200,7 +200,9 @@ func (policy *GitForgePolicy) verifyMigrationReplicaObjects(ctx context.Context,
 		if !isGitObjectMissing(err) {
 			return err
 		}
-		if err := policy.ensureReplicaObject(ctx, source.Repository, oid); err != nil {
+		objectRepository := source.Repository
+		objectRepository.Integration.ContentBackend = forge.BackendWalGit
+		if err := policy.ensureReplicaObject(ctx, objectRepository, oid); err != nil {
 			return err
 		}
 		if _, err := content.Resolve(ctx, target, forge.RevisionRequest{Revision: oid, Principal: replicaPrincipal(source.Repository.Integration.ConnectionID)}); err != nil {

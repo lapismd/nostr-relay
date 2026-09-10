@@ -115,6 +115,23 @@ func TestGitHubToWalGitMigrationRequiresVerifiedImportAndOwnerAnnouncement(t *te
 		"refs/tags/v1":    strings.Repeat("b", 40),
 	}
 	policy, store, source, target, owner, repository := configureForgeMigrationTest(t, []map[string]string{refs, refs})
+	prHead := strings.Repeat("c", 40)
+	prBase := strings.Repeat("d", 40)
+	coordinate := repositoryCoordinate(t, repository)
+	review := nostr.Event{Kind: projecttask.KindPullRequest, CreatedAt: nostr.Now(), Content: "Historical review", Tags: nostr.Tags{
+		{"a", coordinate.String()}, {"p", repository.PubKey.Hex()}, {"subject", "Retain merged objects"},
+		{"c", prHead}, {"base-commit", prBase}, {"clone", "https://github.com/lapis/notes.git"},
+	}}
+	require.NoError(t, review.Sign(owner))
+	require.NoError(t, store.SaveEvent(review))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), review))
+	closed := nostr.Event{Kind: nostr.KindStatusClosed, CreatedAt: review.CreatedAt + 1, Tags: nostr.Tags{
+		{"e", review.ID.Hex(), "", "root"}, {"a", coordinate.String()},
+	}}
+	require.NoError(t, closed.Sign(owner))
+	require.NoError(t, store.SaveEvent(closed))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), closed))
+	target.missingObjects = map[string]bool{prHead: true, prBase: true}
 	admin := store.Config.secret
 	url := "https://relay.example/api/forge/repositories/" + repository.PubKey.Hex() + "/notes/migration"
 	body := []byte(`{"expected_announcement_id":"` + repository.ID.Hex() + `","acknowledge_provider_write_freeze":true,"keep_github_collaboration":true,"retain_github_mirror":true}`)
@@ -134,6 +151,10 @@ func TestGitHubToWalGitMigrationRequiresVerifiedImportAndOwnerAnnouncement(t *te
 	require.Equal(t, "https://github.com/lapis/notes.git", target.requests[0].SourceCloneURL)
 	require.Equal(t, "x-access-token", target.requests[0].SourceUsername)
 	require.Equal(t, "opaque-installation-token", target.requests[0].SourcePassword)
+	require.Len(t, target.objectRequests, 2)
+	require.ElementsMatch(t, []string{prHead, prBase}, []string{
+		target.objectRequests[0].ObjectOID, target.objectRequests[1].ObjectOID,
+	}, "migration must retain historical review objects after close")
 	migration, found, err := policy.loadForgeMigration(context.Background(), operationID)
 	require.NoError(t, err)
 	require.True(t, found)

@@ -24,6 +24,7 @@ func TestReducePullRequestMatchesBuzzTipStatusAndReviewSemantics(t *testing.T) {
 		nostr.Tag{"t", "DRAFT"},
 		nostr.Tag{"branch-name", "review/buzz"},
 		nostr.Tag{"target-branch", "main"},
+		nostr.Tag{"base-commit", strings.Repeat("e", 40)},
 	)
 	repository := nostr.Event{
 		Kind: nostr.KindRepositoryAnnouncement, PubKey: owner,
@@ -59,6 +60,7 @@ func TestReducePullRequestMatchesBuzzTipStatusAndReviewSemantics(t *testing.T) {
 	require.Equal(t, PullRequestOpen, state.Lifecycle, "smallest status event ID wins a same-second tie")
 	require.Equal(t, "review/buzz", state.BranchName)
 	require.Equal(t, "main", state.TargetBranch)
+	require.Equal(t, strings.Repeat("f", 40), state.BaseCommit)
 	require.Len(t, state.Updates, 2, "authorized group members may be stored but cannot move the trusted tip")
 	require.Equal(t, []nostr.PubKey{owner, requested}, state.Reviewers)
 	require.Len(t, state.Approvals, 1)
@@ -120,7 +122,8 @@ func prUpdate(t *testing.T, eventID nostr.ID, createdAt nostr.Timestamp, signer 
 		Tags: nostr.Tags{
 			{"a", coordinate.String()}, {"p", coordinate.Owner.Hex()},
 			{"E", root.ID.Hex()}, {"P", root.PubKey.Hex()}, {"c", commit},
-			{"clone", "https://updates.example/notes.git"}, {"merge-base", strings.Repeat("f", 40)},
+			{"clone", "https://updates.example/notes.git"},
+			{"base-commit", strings.Repeat("f", 40)}, {"merge-base", strings.Repeat("f", 40)},
 		},
 	}
 }

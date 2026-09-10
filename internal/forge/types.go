@@ -218,6 +218,13 @@ type CompareRequest struct {
 	Principal     string
 }
 
+type PullRequestDiffRequest struct {
+	Number        int64
+	MaxFiles      int
+	MaxPatchBytes int64
+	Principal     string
+}
+
 type Revision struct {
 	Ref  string `json:"ref"`
 	SHA  string `json:"sha"`
@@ -338,6 +345,13 @@ type RepositoryContentBackend interface {
 	Compare(context.Context, Repository, CompareRequest) (Diff, error)
 }
 
+// PullRequestDiffBackend exposes a provider's immutable review file set as a
+// compatibility fallback for legacy roots without a persisted Git baseline.
+// New reviews use RepositoryContentBackend with their stored object IDs.
+type PullRequestDiffBackend interface {
+	PullRequestDiff(context.Context, Repository, PullRequestDiffRequest) (Diff, error)
+}
+
 type RepositoryProvisioner interface {
 	EnsureRepository(context.Context, Repository) error
 }
@@ -433,6 +447,7 @@ type CollaborationResult struct {
 	State            string   `json:"state,omitempty"`
 	HeadSHA          string   `json:"head_sha,omitempty"`
 	HeadRef          string   `json:"head_ref,omitempty"`
+	BaseSHA          string   `json:"base_sha,omitempty"`
 	BaseRef          string   `json:"base_ref,omitempty"`
 	MergedCommit     string   `json:"merged_commit,omitempty"`
 	ImportedRoots    int      `json:"imported_roots,omitempty"`

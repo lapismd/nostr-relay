@@ -96,15 +96,16 @@ invented. Result JSON remains provider-neutral and can carry `truncated`, an
 opaque `continuation`, `incomplete`, `limit_exceeded`, and
 `capability_limits`.
 
-The PR diff route reduces the unchanged Buzz-compatible Nostr graph, resolves
-the target branch when needed, ensures both immutable base and current head
-exist in WalGit, and compares locally. Old tips remain addressable by SHA.
+The PR diff route reduces the unchanged Buzz-compatible Nostr graph, prefers
+its immutable merge-base or base snapshot over the live target branch, ensures
+both baseline and current head exist in WalGit, and compares locally. Old tips
+remain addressable by SHA.
 
 ## Authority migration and outbound Git replication
 
 Migration first reconciles and reuses a current WalGit replica; it performs a
 full import only when no verified replica is available. It also verifies all
-managed refs plus open PR head/merge-base objects, rechecks frozen GitHub refs,
+managed refs plus every retained PR head/base/merge-base object, rechecks frozen GitHub refs,
 and waits for the owner to publish the canonical relay clone URL. Activation
 atomically selects WalGit for both authority and content and disables the
 GitHub-to-WalGit worker. Nostr coordinates, projects, issues, PRs, comments,

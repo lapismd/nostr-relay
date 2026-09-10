@@ -106,6 +106,34 @@ func TestProviderCommandIsDurableIdempotentAndProjectsBridgeRoot(t *testing.T) {
 	require.Equal(t, "provider", mapping.Authority)
 }
 
+func TestProviderPullRequestRootPersistsImmutableBase(t *testing.T) {
+	policy, store, provider, actor, repository, _ := configureForgeCollaborationTest(t)
+	base := strings.Repeat("a", 40)
+	head := strings.Repeat("b", 40)
+	provider.result = forge.CollaborationResult{
+		ExternalID: "9100", ExternalNumber: 18, ExternalURL: "https://github.com/lapis/notes/pull/18",
+		State: "open", HeadSHA: head, HeadRef: "feature/history", BaseSHA: base, BaseRef: "main",
+	}
+	target := "https://relay.example/api/forge/repositories/" + repository.PubKey.Hex() + "/notes/pull-requests"
+	body := []byte(`{"title":"Historical diff","body":"Retain these objects","head":"feature/history","base":"main","head_sha":"` + head + `"}`)
+	request := signedForgeRequest(t, http.MethodPost, target, body, actor)
+	request.Header.Set("Idempotency-Key", "pull-18")
+	recorder := httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, request)
+	require.Equal(t, http.StatusAccepted, recorder.Code, recorder.Body.String())
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+
+	roots := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{projecttask.KindPullRequest}})
+	require.Len(t, roots, 1)
+	require.Equal(t, head, roots[0].Tags.Find("c")[1])
+	require.Equal(t, base, roots[0].Tags.Find("base-commit")[1])
+	require.Equal(t, "main", roots[0].Tags.Find("target-branch")[1])
+
+	state, err := projecttask.ReducePullRequest(roots[0], repository, nil)
+	require.NoError(t, err)
+	require.Equal(t, base, state.BaseCommit)
+}
+
 func TestProviderOriginStateIsCanonicalButRelayOriginIsObservation(t *testing.T) {
 	policy, store, provider, actor, repository, connectionID := configureForgeCollaborationTest(t)
 	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}

@@ -138,6 +138,7 @@ func TestValidatePullRequestMatchesBuzzBuilderContract(t *testing.T) {
 	pr := validPullRequestEvent(t, id(t, "7"), owner, owner, "notes", strings.Repeat("a", 40))
 	pr.Tags = append(pr.Tags,
 		nostr.Tag{"r", strings.Repeat("b", 64)},
+		nostr.Tag{"base-commit", strings.Repeat("d", 40)},
 		nostr.Tag{"merge-base", strings.Repeat("c", 40)},
 		nostr.Tag{"branch-name", "feature/reviews"},
 		nostr.Tag{"target-branch", "main"},
@@ -191,6 +192,10 @@ func TestValidatePullRequestMatchesBuzzBuilderContract(t *testing.T) {
 			event.Tags = replaceNamedTag(event.Tags, "merge-base", nostr.Tag{"merge-base", "deadbeef"})
 			return event
 		}, "merge-base"},
+		{"bad base commit", func(event nostr.Event) nostr.Event {
+			event.Tags = replaceNamedTag(event.Tags, "base-commit", nostr.Tag{"base-commit", "deadbeef"})
+			return event
+		}, "base-commit"},
 		{"bad revision", func(event nostr.Event) nostr.Event {
 			event.Tags = append(event.Tags.CloneDeep(), nostr.Tag{"e", "bad"})
 			return event
@@ -226,6 +231,7 @@ func TestValidatePullRequestUpdateAndMergeStatus(t *testing.T) {
 			{"clone", "https://one.example/notes.git"},
 			{"clone", "ssh://two/notes.git"},
 			{"r", strings.Repeat("e", 40)},
+			{"base-commit", strings.Repeat("b", 40)},
 			{"merge-base", strings.Repeat("f", 64)},
 		},
 	}

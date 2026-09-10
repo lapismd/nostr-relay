@@ -79,8 +79,10 @@ PR diffs first reduce the existing `1618/1619/163x` graph, then compare the
 current immutable head through the selected content backend. For a
 GitHub-authoritative WalGit replica, missing PR-only commits are fetched by
 exact SHA and pinned privately before local comparison. An explicit merge base
-is used directly; otherwise the target branch is resolved. Full SHA-1/SHA-256
-IDs and configured file/patch bounds apply to every backend.
+is used directly. Otherwise a persisted `base-commit` is compared to the head
+with Git merge-base semantics. Resolving the live target branch is only a
+legacy fallback for graphs that predate both baselines. Full SHA-1/SHA-256 IDs
+and configured file/patch bounds apply to every backend.
 
 ## Collaboration authority
 

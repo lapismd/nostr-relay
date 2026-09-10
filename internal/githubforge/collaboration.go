@@ -20,6 +20,67 @@ var mergePermissions = map[string]string{
 	"metadata": "read", "contents": "write",
 }
 
+func (backend *Backend) PullRequestDiff(ctx context.Context, repository forge.Repository, request forge.PullRequestDiffRequest) (forge.Diff, error) {
+	if request.Number <= 0 || request.MaxFiles <= 0 || request.MaxPatchBytes <= 0 {
+		return forge.Diff{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_pull_request_diff"}
+	}
+	path := repoPath(repository) + "/pulls/" + strconv.FormatInt(request.Number, 10)
+	response, err := backend.getRepository(ctx, repository, path, collaborationPermissions)
+	if err != nil {
+		return forge.Diff{}, err
+	}
+	var pull struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			SHA string `json:"sha"`
+		} `json:"base"`
+	}
+	if err := decodeAndClose(response, &pull, 4<<20); err != nil {
+		return forge.Diff{}, err
+	}
+	if !fullObjectID(pull.Base.SHA) || !fullObjectID(pull.Head.SHA) {
+		return forge.Diff{}, &forge.Error{Status: http.StatusBadGateway, Code: "invalid_github_response"}
+	}
+
+	files := make([]forge.DiffFile, 0, min(request.MaxFiles, 100))
+	var patch strings.Builder
+	for page := 1; ; page++ {
+		response, err = backend.getRepository(ctx, repository, path+"/files?per_page=100&page="+strconv.Itoa(page), collaborationPermissions)
+		if err != nil {
+			return forge.Diff{}, err
+		}
+		var pageFiles []gitHubFile
+		if err := decodeAndClose(response, &pageFiles, maxGitHubResponse); err != nil {
+			return forge.Diff{}, err
+		}
+		if len(files)+len(pageFiles) > request.MaxFiles {
+			return forge.Diff{}, &forge.Error{Status: http.StatusRequestEntityTooLarge, Code: "diff_too_large"}
+		}
+		for _, file := range pageFiles {
+			files = append(files, forge.DiffFile{
+				Path: file.Filename, OldPath: file.PreviousFilename, Status: normalizeFileStatus(file.Status),
+				Additions: file.Additions, Deletions: file.Deletions, Binary: file.Patch == "" && file.Changes > 0,
+			})
+			appendPatch(&patch, file)
+			if int64(patch.Len()) > request.MaxPatchBytes {
+				return forge.Diff{}, &forge.Error{Status: http.StatusRequestEntityTooLarge, Code: "diff_too_large"}
+			}
+		}
+		if len(pageFiles) < 100 {
+			break
+		}
+	}
+	limits, _ := backend.ContentCapabilities(ctx, repository)
+	result := forge.Diff{
+		Base: pull.Base.SHA, Head: pull.Head.SHA, Files: files, Patch: patch.String(),
+		ResultMetadata: githubResultMetadata(),
+	}
+	result.CapabilityLimits = &limits.Limits
+	return result, nil
+}
+
 func (backend *Backend) Execute(ctx context.Context, command forge.CollaborationCommand) (forge.CollaborationResult, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(command.Payload, &payload); err != nil {
@@ -154,6 +215,7 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 			Ref string `json:"ref"`
 		} `json:"head"`
 		Base struct {
+			SHA string `json:"sha"`
 			Ref string `json:"ref"`
 		} `json:"base"`
 	}
@@ -181,7 +243,7 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 	return forge.CollaborationResult{
 		ExternalID: strconv.FormatInt(result.ID, 10), ExternalNumber: result.Number,
 		ExternalURL: result.HTMLURL, State: result.State, HeadSHA: result.Head.SHA,
-		HeadRef: result.Head.Ref, BaseRef: result.Base.Ref,
+		HeadRef: result.Head.Ref, BaseSHA: result.Base.SHA, BaseRef: result.Base.Ref,
 		ExternalAuthor: result.User.Login, ExternalAuthorID: strconv.FormatInt(result.User.ID, 10),
 	}, nil
 }
@@ -245,13 +307,15 @@ func (backend *Backend) recoverCorrelated(ctx context.Context, repository forge.
 					Ref string `json:"ref"`
 				} `json:"head"`
 				Base struct {
+					SHA string `json:"sha"`
 					Ref string `json:"ref"`
 				} `json:"base"`
 			}
 			if err := decodeAndClose(response, &pull, 4<<20); err != nil {
 				return forge.CollaborationResult{}, false, err
 			}
-			result.HeadSHA, result.HeadRef, result.BaseRef = pull.Head.SHA, pull.Head.Ref, pull.Base.Ref
+			result.HeadSHA, result.HeadRef = pull.Head.SHA, pull.Head.Ref
+			result.BaseSHA, result.BaseRef = pull.Base.SHA, pull.Base.Ref
 		}
 		return result, true, nil
 	}
@@ -290,3 +354,4 @@ func numberValue(value any) (int64, error) {
 }
 
 var _ forge.CollaborationBackend = (*Backend)(nil)
+var _ forge.PullRequestDiffBackend = (*Backend)(nil)

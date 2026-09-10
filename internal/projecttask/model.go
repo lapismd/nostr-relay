@@ -231,6 +231,9 @@ func validatePullRequest(event nostr.Event) error {
 	if err := validateCloneLocators(event.Tags); err != nil {
 		return err
 	}
+	if err := validateCommitSingleton(event.Tags, "base-commit", false); err != nil {
+		return err
+	}
 	for _, singleton := range []struct {
 		name string
 		max  int
@@ -278,6 +281,9 @@ func validatePullRequestUpdate(event nostr.Event) error {
 		return err
 	}
 	if err := validateCloneLocators(event.Tags); err != nil {
+		return err
+	}
+	if err := validateCommitSingleton(event.Tags, "base-commit", false); err != nil {
 		return err
 	}
 	return validateCommitTags(event.Tags, "r", "merge-base")

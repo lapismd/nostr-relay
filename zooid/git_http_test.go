@@ -248,6 +248,57 @@ func TestPullRequestDiffUsesReducerAndTargetBranchFallback(t *testing.T) {
 	require.Equal(t, "private, no-store", recorder.Header().Get("Cache-Control"))
 }
 
+func TestPullRequestDiffUsesPersistedBaseCommitAfterMerge(t *testing.T) {
+	base := strings.Repeat("d", 40)
+	head := strings.Repeat("e", 40)
+	merge := strings.Repeat("f", 40)
+	backend := &recordingGitBackend{
+		resolveResult: head,
+		comparison: gitforge.CompareResult{
+			Base: base, Head: head, MergeBase: strings.Repeat("c", 40),
+			Files: []gitforge.CompareFile{{Path: "docs/history.md", Status: "added", Additions: 3}}, Patch: "diff --git",
+		},
+	}
+	policy, store := createGitForgeTestPolicy(t, backend)
+	owner := nostr.Generate()
+	author := nostr.Generate()
+	repository := readyHostedRepository(t, policy, store, owner, "notes", "repo-channel")
+	grantGitGroup(policy, "repo-channel", author.Public())
+
+	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
+	root := nostr.Event{Kind: projecttask.KindPullRequest, CreatedAt: nostr.Now(), Content: "Historical review", Tags: nostr.Tags{
+		{"a", coordinate.String()}, {"p", repository.PubKey.Hex()}, {"subject", "Retain this diff"},
+		{"c", head}, {"base-commit", base},
+		{"clone", "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"}, {"target-branch", "main"},
+	}}
+	require.NoError(t, root.Sign(author))
+	require.NoError(t, store.SaveEvent(root))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), root))
+	merged := nostr.Event{Kind: nostr.KindStatusApplied, CreatedAt: root.CreatedAt + 1, Tags: nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"merge-commit", merge},
+	}}
+	require.NoError(t, merged.Sign(author))
+	require.NoError(t, store.SaveEvent(merged))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), merged))
+
+	target := "https://relay.example/api/pull-requests/" + root.ID.Hex() + "/diff"
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	signedGitRequest(t, request, author, http.MethodGet, target)
+	recorder := httptest.NewRecorder()
+	policy.ServePullRequestAPI(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, []string{base, head}, backend.resolveRevisions, "the live target branch must not determine a historical diff")
+	require.Equal(t, base, backend.comparisonRequest.Base)
+	require.Equal(t, head, backend.comparisonRequest.Head)
+	require.True(t, backend.comparisonRequest.UseMergeBase)
+
+	var response pullRequestDiffResponse
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Equal(t, "base-commit", response.BaseSource)
+	require.Equal(t, projecttask.PullRequestMerged, response.Lifecycle)
+	require.Equal(t, "docs/history.md", response.Files[0].Path)
+}
+
 func TestPullRequestDiffRequiresEveryDerivedScope(t *testing.T) {
 	backend := &recordingGitBackend{resolveResult: strings.Repeat("a", 40)}
 	policy, store := createGitForgeTestPolicy(t, backend)

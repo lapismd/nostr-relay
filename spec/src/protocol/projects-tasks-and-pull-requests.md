@@ -48,8 +48,8 @@ its clone locators equals the relay's canonical Git URL.
 | Project Task Anchor | `kind:30617`, `project-task-anchor=true`, no Git backing |
 | Buzz project | `kind:30621` (NIP-MP) |
 | Task/issue | `kind:1621`, `a` points to `30617` |
-| Pull request | `kind:1618`, `a` points to `30617`; required repository-owner `p`, `subject`, full `c`, and one or more `clone` locators |
-| Pull-request update | `kind:1619`; required matching `a`, root `E/P`, new full `c`, and one or more `clone` locators |
+| Pull request | `kind:1618`, `a` points to `30617`; required repository-owner `p`, `subject`, full `c`, and one or more `clone` locators; optional full `base-commit` and `merge-base` preserve the immutable comparison baseline |
+| Pull-request update | `kind:1619`; required matching `a`, root `E/P`, new full `c`, and one or more `clone` locators; optional full `base-commit` and `merge-base` replace the comparison baseline for the new tip |
 | Status | `kind:1630` through `1633`, root `e` points to a task or pull request |
 | Buzz assignment/unassignment | `kind:1`, root `e`, repository `a`, `p`, and `t:assignment` or `t:unassignment` |
 | Standard task comment | NIP-22 `kind:1111`, uppercase `E/K/P` for the task and lowercase `e/k/p` for the immediate parent |
@@ -95,6 +95,10 @@ equal timestamp. Kinds `1630`, `1631`, `1632`, and `1633` mean Open, Merged,
 Closed, and Draft. A merged `1631` may carry a full `merge-commit` only when a
 matching `r` is present. Patch-oriented `q` and `applied-as-commits` tags remain
 ordinary preserved event data and do not trigger relay-side patch handling.
+`base-commit` is a Lapis extension containing the immutable target-branch tip
+observed for that review revision. When an exact `merge-base` is absent, readers
+perform the normal three-dot comparison between `base-commit` and `c`; they
+never substitute the target branch's current tip for a historical review.
 
 Root `p` recipients and trusted `t:review-request` notes form the reviewer set,
 excluding the PR author. A decision has exactly one of `t:approval` or

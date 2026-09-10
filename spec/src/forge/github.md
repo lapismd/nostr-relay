@@ -201,6 +201,14 @@ original outbox operation without publishing a second relay event.
 Provider-origin issues (`1621`), PR roots/updates (`1618`/`1619`), and lifecycle
 (`1630`-`1633`) are bridge-signed with deterministic provenance tags including
 `external-provider`, stable ID/number, URL, and external author identity.
+GitHub `review_requested` pull-request activity becomes a bridge-signed kind-1
+`t=review-request` observation with the requesting actor and requested GitHub
+reviewer preserved as external provenance. Provider-backed pull-request diff
+roots and updates persist GitHub's immutable base SHA as `base-commit` beside
+the head `c`. The provider-neutral content backend reconstructs the historical
+three-dot diff from those object IDs after close or merge. GitHub's pull-request
+files resource is only a compatibility fallback for older imported roots that
+do not contain either `base-commit` or `merge-base`.
 Relay-origin roots remain Buzz-strict and Nostr-authoritative. Provider state
 for them is a kind-1 `t=external-state` observation. GitHub-origin reviews are
 kind-1 `t=external-review` observations with external reviewer, decision, URL,

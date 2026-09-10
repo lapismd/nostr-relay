@@ -41,10 +41,11 @@ const (
 )
 
 type PullRequestUpdate struct {
-	Event     nostr.Event
-	Commit    string
-	CloneURLs []string
-	MergeBase string
+	Event      nostr.Event
+	Commit     string
+	CloneURLs  []string
+	BaseCommit string
+	MergeBase  string
 }
 
 type InlineAnchor struct {
@@ -89,6 +90,7 @@ type PullRequestState struct {
 	CloneURLs       []string
 	BranchName      string
 	TargetBranch    string
+	BaseCommit      string
 	MergeBase       string
 	Lifecycle       PullRequestLifecycle
 	StatusEvent     *nostr.Event
@@ -136,6 +138,7 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (Pul
 		CloneURLs:     cloneLocators(root.Tags),
 		BranchName:    firstTagValue(root.Tags, "branch-name"),
 		TargetBranch:  firstTagValue(root.Tags, "target-branch"),
+		BaseCommit:    firstTagValue(root.Tags, "base-commit"),
 		MergeBase:     firstTagValue(root.Tags, "merge-base"),
 		Lifecycle:     defaultPullRequestLifecycle(root),
 		CreatedAt:     root.CreatedAt,
@@ -159,7 +162,8 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (Pul
 			}
 			state.Updates = append(state.Updates, PullRequestUpdate{
 				Event: event, Commit: firstTagValue(event.Tags, "c"),
-				CloneURLs: cloneLocators(event.Tags), MergeBase: firstTagValue(event.Tags, "merge-base"),
+				CloneURLs: cloneLocators(event.Tags), BaseCommit: firstTagValue(event.Tags, "base-commit"),
+				MergeBase: firstTagValue(event.Tags, "merge-base"),
 			})
 			if latestUpdate == nil || eventNewerSmallestID(event, *latestUpdate) {
 				copy := event
@@ -190,6 +194,9 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (Pul
 	if latestUpdate != nil {
 		state.CurrentCommit = firstTagValue(latestUpdate.Tags, "c")
 		state.CloneURLs = cloneLocators(latestUpdate.Tags)
+		if baseCommit := firstTagValue(latestUpdate.Tags, "base-commit"); baseCommit != "" {
+			state.BaseCommit = baseCommit
+		}
 		if mergeBase := firstTagValue(latestUpdate.Tags, "merge-base"); mergeBase != "" {
 			state.MergeBase = mergeBase
 		}

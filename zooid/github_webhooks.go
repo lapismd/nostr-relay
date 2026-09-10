@@ -173,6 +173,8 @@ type githubWebhookPayload struct {
 	PullRequest         githubWebhookPullRequest  `json:"pull_request"`
 	Comment             githubWebhookComment      `json:"comment"`
 	Review              githubWebhookReview       `json:"review"`
+	Sender              githubWebhookUser         `json:"sender"`
+	RequestedReviewer   githubWebhookUser         `json:"requested_reviewer"`
 	Reactions           []githubWebhookReaction   `json:"reactions"`
 	WorkflowRun         githubWebhookWorkflowRun  `json:"workflow_run"`
 }
@@ -216,6 +218,7 @@ type githubWebhookPullRequest struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
 	Base struct {
+		SHA string `json:"sha"`
 		Ref string `json:"ref"`
 	} `json:"base"`
 }
@@ -335,6 +338,9 @@ func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery
 		if delivery.Action == "synchronize" {
 			return policy.publishProviderPullRequestUpdate(ctx, repository, root, mapping, delivery, payload.PullRequest)
 		}
+		if delivery.Action == "review_requested" {
+			return policy.publishProviderReviewRequest(ctx, repository, root, delivery, payload)
+		}
 		state := pullRequestWebhookState(delivery.Action, payload.PullRequest)
 		if state != "" {
 			return policy.publishProviderState(ctx, repository, root, mapping, delivery, state)
@@ -364,6 +370,17 @@ func (policy *GitForgePolicy) processGitHubMirrorObservation(ctx context.Context
 	case "issues":
 		return policy.publishMappedStateObservation(ctx, repository, delivery, "issue", strconv.FormatInt(payload.Issue.ID, 10), "GitHub state changed to "+issueState(payload.Issue), payload.Issue.User)
 	case "pull_request":
+		if delivery.Action == "review_requested" {
+			mapping, found, err := policy.loadMappingByExternal(ctx, forge.BackendGitHub, delivery.ConnectionID, strconv.FormatInt(payload.PullRequest.ID, 10), "pull_request")
+			if err != nil || !found {
+				return err
+			}
+			root, found, err := policy.eventByHexID(ctx, mapping.NostrRootID)
+			if err != nil || !found {
+				return missingMappedEvent(err, found)
+			}
+			return policy.publishProviderReviewRequest(ctx, repository, root, delivery, payload)
+		}
 		state := pullRequestWebhookState(delivery.Action, payload.PullRequest)
 		if delivery.Action == "synchronize" {
 			state = "head changed to " + payload.PullRequest.Head.SHA
@@ -660,7 +677,7 @@ func webhookCollaborationResult(delivery githubWebhookDelivery, payload githubWe
 	case "issues":
 		result = forge.CollaborationResult{ExternalID: strconv.FormatInt(payload.Issue.ID, 10), ExternalNumber: payload.Issue.Number, ExternalURL: payload.Issue.HTMLURL, State: payload.Issue.State, ExternalAuthor: payload.Issue.User.Login, ExternalAuthorID: strconv.FormatInt(payload.Issue.User.ID, 10)}
 	case "pull_request":
-		result = forge.CollaborationResult{ExternalID: strconv.FormatInt(payload.PullRequest.ID, 10), ExternalNumber: payload.PullRequest.Number, ExternalURL: payload.PullRequest.HTMLURL, State: payload.PullRequest.State, HeadSHA: payload.PullRequest.Head.SHA, HeadRef: payload.PullRequest.Head.Ref, BaseRef: payload.PullRequest.Base.Ref, ExternalAuthor: payload.PullRequest.User.Login, ExternalAuthorID: strconv.FormatInt(payload.PullRequest.User.ID, 10)}
+		result = forge.CollaborationResult{ExternalID: strconv.FormatInt(payload.PullRequest.ID, 10), ExternalNumber: payload.PullRequest.Number, ExternalURL: payload.PullRequest.HTMLURL, State: payload.PullRequest.State, HeadSHA: payload.PullRequest.Head.SHA, HeadRef: payload.PullRequest.Head.Ref, BaseSHA: payload.PullRequest.Base.SHA, BaseRef: payload.PullRequest.Base.Ref, ExternalAuthor: payload.PullRequest.User.Login, ExternalAuthorID: strconv.FormatInt(payload.PullRequest.User.ID, 10)}
 	case "issue_comment", "pull_request_review_comment":
 		result = forge.CollaborationResult{ExternalID: strconv.FormatInt(payload.Comment.ID, 10), ExternalURL: payload.Comment.HTMLURL, ExternalAuthor: payload.Comment.User.Login, ExternalAuthorID: strconv.FormatInt(payload.Comment.User.ID, 10)}
 	case "pull_request_review":
@@ -704,7 +721,7 @@ func (policy *GitForgePolicy) ensureProviderPullRequest(ctx context.Context, rep
 	if !validForgeTitle(pull.Title) || !fullForgeObjectID(pull.Head.SHA) {
 		return nostr.Event{}, forgeObjectMapping{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_github_pull_request"}
 	}
-	result := forge.CollaborationResult{ExternalID: externalID, ExternalNumber: pull.Number, ExternalURL: pull.HTMLURL, State: pull.State, HeadSHA: pull.Head.SHA, HeadRef: pull.Head.Ref, BaseRef: pull.Base.Ref, ExternalAuthor: pull.User.Login, ExternalAuthorID: strconv.FormatInt(pull.User.ID, 10)}
+	result := forge.CollaborationResult{ExternalID: externalID, ExternalNumber: pull.Number, ExternalURL: pull.HTMLURL, State: pull.State, HeadSHA: pull.Head.SHA, HeadRef: pull.Head.Ref, BaseSHA: pull.Base.SHA, BaseRef: pull.Base.Ref, ExternalAuthor: pull.User.Login, ExternalAuthorID: strconv.FormatInt(pull.User.ID, 10)}
 	event, err := policy.newProviderPullRequestEvent(ctx, repository, delivery.ConnectionID, delivery.ReceivedAt, pull.Title, pull.Body, pull.Draft, result)
 	if err != nil {
 		return nostr.Event{}, forgeObjectMapping{}, err
@@ -746,6 +763,9 @@ func (policy *GitForgePolicy) newProviderPullRequestEvent(ctx context.Context, r
 		return nostr.Event{}, &forge.Error{Status: http.StatusConflict, Code: "clone_unavailable"}
 	}
 	event := nostr.Event{CreatedAt: nostr.Timestamp(at.Unix()), Kind: projecttask.KindPullRequest, Content: body, Tags: nostr.Tags{{"a", repository.Coordinate.String()}, {"p", repository.Coordinate.Owner.Hex()}, {"subject", title}, {"c", strings.ToLower(result.HeadSHA)}, {"clone", resolved.Capabilities.Clone.URL}}}
+	if fullForgeObjectID(result.BaseSHA) {
+		event.Tags = append(event.Tags, nostr.Tag{"base-commit", strings.ToLower(result.BaseSHA)})
+	}
 	if result.HeadRef != "" {
 		event.Tags = append(event.Tags, nostr.Tag{"branch-name", result.HeadRef})
 	}
@@ -814,6 +834,9 @@ func (policy *GitForgePolicy) publishProviderPullRequestUpdate(ctx context.Conte
 	}
 	result := forge.CollaborationResult{ExternalID: mapping.ExternalID, ExternalNumber: mapping.ExternalNumber, ExternalURL: mapping.ExternalURL, ExternalAuthor: pull.User.Login, ExternalAuthorID: strconv.FormatInt(pull.User.ID, 10)}
 	event := nostr.Event{CreatedAt: nostr.Timestamp(delivery.ReceivedAt.Unix()), Kind: projecttask.KindPullRequestUpdate, Tags: nostr.Tags{{"E", root.ID.Hex()}, {"P", root.PubKey.Hex()}, {"a", repository.Coordinate.String()}, {"c", strings.ToLower(pull.Head.SHA)}, {"clone", resolved.Capabilities.Clone.URL}}}
+	if fullForgeObjectID(pull.Base.SHA) {
+		event.Tags = append(event.Tags, nostr.Tag{"base-commit", strings.ToLower(pull.Base.SHA)})
+	}
 	event.Tags = append(event.Tags, externalProvenanceTags(result, nil)...)
 	if err := event.Sign(secret); err != nil {
 		return err
@@ -856,6 +879,27 @@ func (policy *GitForgePolicy) publishProviderState(ctx context.Context, reposito
 func (policy *GitForgePolicy) publishExternalStateObservation(ctx context.Context, repository forge.Repository, root nostr.Event, delivery githubWebhookDelivery, content string, user githubWebhookUser) error {
 	result := forge.CollaborationResult{ExternalID: delivery.ExternalObjectID, ExternalAuthor: user.Login, ExternalAuthorID: strconv.FormatInt(user.ID, 10)}
 	return policy.publishBridgeNote(ctx, repository, root, delivery.ConnectionID, delivery.ReceivedAt, content, nostr.Tags{{"t", "external-state"}}, result)
+}
+
+func (policy *GitForgePolicy) publishProviderReviewRequest(ctx context.Context, repository forge.Repository, root nostr.Event, delivery githubWebhookDelivery, payload githubWebhookPayload) error {
+	reviewer := strings.TrimSpace(payload.RequestedReviewer.Login)
+	if reviewer == "" {
+		return &forge.Error{Status: http.StatusBadRequest, Code: "invalid_github_review_request"}
+	}
+	requester := strings.TrimSpace(payload.Sender.Login)
+	content := "Requested @" + reviewer + " to review"
+	if requester != "" {
+		content = "@" + requester + " requested a review from @" + reviewer
+	}
+	tags := nostr.Tags{{"t", "review-request"}, {"external-reviewer", reviewer}}
+	if payload.RequestedReviewer.ID > 0 {
+		tags = append(tags, nostr.Tag{"external-reviewer-id", strconv.FormatInt(payload.RequestedReviewer.ID, 10)})
+	}
+	result := forge.CollaborationResult{ExternalAuthor: requester}
+	if payload.Sender.ID > 0 {
+		result.ExternalAuthorID = strconv.FormatInt(payload.Sender.ID, 10)
+	}
+	return policy.publishBridgeNote(ctx, repository, root, delivery.ConnectionID, delivery.ReceivedAt, content, tags, result)
 }
 
 func (policy *GitForgePolicy) publishExternalComment(ctx context.Context, repository forge.Repository, delivery githubWebhookDelivery, rootExternalID string, comment githubWebhookComment, review bool) error {

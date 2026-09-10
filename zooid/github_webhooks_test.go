@@ -138,6 +138,54 @@ func TestGitHubExternalReviewCannotBecomeNativeApproval(t *testing.T) {
 	require.Empty(t, state.Approvals, "stock Buzz reduction must not trust an external-review observation")
 }
 
+func TestGitHubPullRequestReviewRequestAndMergeRemainVisible(t *testing.T) {
+	policy, store, _, repository := configureWebhookTest(t)
+	base := strings.Repeat("9", 40)
+	head := strings.Repeat("a", 40)
+	mergeCommit := strings.Repeat("b", 40)
+	process := func(action string, payload map[string]any) {
+		t.Helper()
+		body, err := json.Marshal(payload)
+		require.NoError(t, err)
+		require.NoError(t, policy.processGitHubWebhook(context.Background(), githubWebhookDelivery{
+			Provider: forge.BackendGitHub, ConnectionID: "connection", ExternalRepositoryID: "42",
+			EventType: "pull_request", Action: action, ExternalObjectID: "9100",
+			Payload: body, ReceivedAt: time.Now().UTC(),
+		}))
+	}
+	pull := map[string]any{
+		"id": 9100, "number": 18, "title": "Webhook PR", "body": "Review it", "state": "open",
+		"html_url": "https://github.com/lapis/notes/pull/18", "user": map[string]any{"id": 72, "login": "author"},
+		"head": map[string]any{"sha": head, "ref": "feature"}, "base": map[string]any{"sha": base, "ref": "main"},
+	}
+	process("opened", map[string]any{"repository": map[string]any{"id": 42}, "pull_request": pull})
+	process("review_requested", map[string]any{
+		"repository": map[string]any{"id": 42}, "pull_request": pull,
+		"sender":             map[string]any{"id": 73, "login": "maintainer"},
+		"requested_reviewer": map[string]any{"id": 74, "login": "reviewer"},
+	})
+	pull["state"] = "closed"
+	pull["merged"] = true
+	pull["merge_commit_sha"] = mergeCommit
+	process("closed", map[string]any{"repository": map[string]any{"id": 42}, "pull_request": pull})
+
+	roots := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{projecttask.KindPullRequest}})
+	require.Len(t, roots, 1)
+	require.Equal(t, base, roots[0].Tags.Find("base-commit")[1])
+	requests := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindTextNote}, Tags: nostr.TagMap{"e": {roots[0].ID.Hex()}, "t": {"review-request"}}})
+	require.Len(t, requests, 1)
+	require.Equal(t, "maintainer", requests[0].Tags.Find("external-author")[1])
+	require.Equal(t, "reviewer", requests[0].Tags.Find("external-reviewer")[1])
+	merged := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindStatusApplied}, Tags: nostr.TagMap{"e": {roots[0].ID.Hex()}}})
+	require.Len(t, merged, 1)
+	require.Equal(t, mergeCommit, merged[0].Tags.Find("merge-commit")[1])
+
+	state, err := projecttask.ReducePullRequest(roots[0], repository, append(requests, merged...))
+	require.NoError(t, err)
+	require.Equal(t, base, state.BaseCommit)
+	require.Equal(t, projecttask.PullRequestMerged, state.Lifecycle)
+}
+
 func TestCorrelatedGitHubReviewAcknowledgesSignedRelayReviewWithoutEcho(t *testing.T) {
 	policy, store, _, repository := configureWebhookTest(t)
 	head := strings.Repeat("a", 40)

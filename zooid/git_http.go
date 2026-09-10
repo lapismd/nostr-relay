@@ -440,7 +440,39 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 	base := state.MergeBase
 	baseSource := "merge-base"
 	useMergeBase := false
+	if base == "" && state.BaseCommit != "" {
+		base = state.BaseCommit
+		baseSource = "base-commit"
+		useMergeBase = true
+	}
 	if base == "" {
+		if diffBackend, ok := resolved.Collaboration.(forge.PullRequestDiffBackend); ok {
+			mapping, found, mappingErr := policy.loadMappingByNostrRoot(
+				r.Context(), resolved.Repository.Integration.CollaborationBackend,
+				resolved.Repository.Integration.ConnectionID, root.ID.Hex(),
+			)
+			if mappingErr != nil {
+				writeGitError(w, http.StatusServiceUnavailable, "mapping_store_unavailable")
+				return
+			}
+			if found && mapping.ObjectType == "pull_request" && mapping.ExternalNumber > 0 {
+				comparison, diffErr := diffBackend.PullRequestDiff(r.Context(), resolved.Repository, forge.PullRequestDiffRequest{
+					Number: mapping.ExternalNumber, MaxFiles: policy.Config.Git.MaxDiffFiles,
+					MaxPatchBytes: policy.Config.Git.MaxDiffBytes, Principal: authEvent.PubKey.Hex(),
+				})
+				if diffErr != nil {
+					writeGitBackendFailure(w, diffErr)
+					return
+				}
+				writePullRequestDiff(w, r.Method, pullRequestDiffResponse{
+					PullRequest: root.ID.Hex(), Repository: coordinate.String(), Lifecycle: state.Lifecycle,
+					BaseSource: "provider-pull-request", TargetBranch: state.TargetBranch,
+					Base: comparison.Base, Head: comparison.Head, MergeBase: comparison.MergeBase,
+					Files: comparison.Files, Patch: comparison.Patch, ResultMetadata: comparison.ResultMetadata,
+				}, resolved.Capabilities.CapabilityLimits)
+				return
+			}
+		}
 		baseSource = "target-branch"
 		target := strings.TrimPrefix(state.TargetBranch, "refs/heads/")
 		if target == "" {
@@ -490,8 +522,6 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		return
 	}
 
-	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("Content-Type", "application/json")
 	response := pullRequestDiffResponse{
 		PullRequest: root.ID.Hex(), Repository: coordinate.String(), Lifecycle: state.Lifecycle,
 		BaseSource: baseSource, TargetBranch: state.TargetBranch,
@@ -499,10 +529,16 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 		Files: comparison.Files, Patch: comparison.Patch,
 	}
 	response.ResultMetadata = comparison.ResultMetadata
+	writePullRequestDiff(w, r.Method, response, resolved.Capabilities.CapabilityLimits)
+}
+
+func writePullRequestDiff(w http.ResponseWriter, method string, response pullRequestDiffResponse, limits forge.ContentLimits) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Content-Type", "application/json")
 	if response.CapabilityLimits == nil {
-		response.CapabilityLimits = &resolved.Capabilities.CapabilityLimits
+		response.CapabilityLimits = &limits
 	}
-	if r.Method == http.MethodHead {
+	if method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
