@@ -1,6 +1,7 @@
 package zooid
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/hex"
@@ -34,6 +35,13 @@ var (
 	ssiMaxAttempts   int
 	ssiBaseBackoffMs int
 )
+
+func nextTimestamp(previous, proposed nostr.Timestamp) nostr.Timestamp {
+	if proposed <= previous {
+		return previous + 1
+	}
+	return proposed
+}
 
 func ssiConfig() (int, int) {
 	ssiConfigOnce.Do(func() {
@@ -147,7 +155,11 @@ func (events *EventStore) initFTS() error {
 		events.Schema.Render(`
 			CREATE OR REPLACE FUNCTION {{.Name}}_update_search_vector() RETURNS trigger AS $$
 			BEGIN
-				NEW.search_vector := to_tsvector('english', COALESCE(NEW.content, ''));
+				IF NEW.kind IN (30174, 30179, 44100, 44101, 44200) THEN
+					NEW.search_vector := NULL;
+				ELSE
+					NEW.search_vector := to_tsvector('english', COALESCE(NEW.content, ''));
+				END IF;
 				RETURN NEW;
 			END;
 			$$ LANGUAGE plpgsql`),
@@ -708,26 +720,25 @@ func (events *EventStore) replaceEventOnce(ctx context.Context, evt nostr.Event)
 	}
 
 	shouldSave := true
-	shouldDelete := make([]nostr.ID, 0)
-	deleted := make([]nostr.Event, 0)
+	previousEvents := make([]nostr.Event, 0)
 	for previous := range events.queryEventsWith(ctx, tx, filter, 0) {
-		if previous.CreatedAt <= evt.CreatedAt {
-			shouldDelete = append(shouldDelete, previous.ID)
-			deleted = append(deleted, previous)
-		} else {
+		previousEvents = append(previousEvents, previous)
+		if previous.ID == evt.ID || previous.CreatedAt > evt.CreatedAt ||
+			(previous.CreatedAt == evt.CreatedAt && bytes.Compare(previous.ID[:], evt.ID[:]) < 0) {
 			shouldSave = false
 		}
 	}
 
+	deleted := make([]nostr.Event, 0, len(previousEvents))
 	if shouldSave {
 		if err := events.saveEventWith(ctx, tx, evt); err != nil && err != eventstore.ErrDupEvent {
 			return nil, fmt.Errorf("failed to save: %w", err)
 		}
-	}
-
-	for _, id := range shouldDelete {
-		if err := events.deleteEventWith(ctx, tx, id); err != nil {
-			return nil, fmt.Errorf("failed to delete old event: %w", err)
+		for _, previous := range previousEvents {
+			if err := events.deleteEventWith(ctx, tx, previous.ID); err != nil {
+				return nil, fmt.Errorf("failed to delete old event: %w", err)
+			}
+			deleted = append(deleted, previous)
 		}
 	}
 
@@ -759,6 +770,9 @@ func (events *EventStore) CountEvents(filter nostr.Filter) (uint32, error) {
 // Non-eventstore methods
 
 func (events *EventStore) StoreEvent(event nostr.Event) error {
+	if event.Kind.IsEphemeral() {
+		return errors.New("ephemeral events cannot be stored")
+	}
 	if event.Kind.IsReplaceable() || event.Kind.IsAddressable() {
 		_, err := events.ReplaceEvent(event)
 		return err

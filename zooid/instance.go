@@ -18,6 +18,7 @@ import (
 	"fiatjaf.com/nostr/eventstore"
 	"github.com/fasthttp/websocket"
 	"github.com/gosimple/slug"
+	"zooid/buzzagents/protocol"
 	"zooid/internal/forge"
 	"zooid/internal/gitforge"
 	"zooid/internal/githubforge"
@@ -39,6 +40,7 @@ type Instance struct {
 	Registry     *RegistryPolicy
 	ProjectTasks *ProjectTaskPolicy
 	GitForge     *GitForgePolicy
+	Agents       *AgentPolicy
 }
 
 func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
@@ -97,16 +99,17 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	}
 	instance.Registry = NewRegistryPolicy(config, groups, events)
 	instance.ProjectTasks = NewProjectTaskPolicy(events, groups)
+	instance.Agents = NewAgentPolicy(config, management, groups)
 
 	// NIP 11 info
 
-	// self := config.GetSelf()
+	self := config.GetSelf()
 	owner := config.GetOwner()
 
 	instance.Relay.Negentropy = true
 	instance.Relay.Info.Name = config.Info.Name
 	instance.Relay.Info.Icon = config.Info.Icon
-	// instance.Relay.Info.Self = &self
+	instance.Relay.Info.Self = &self
 	instance.Relay.Info.PubKey = &owner
 	instance.Relay.Info.Description = config.Info.Description
 	instance.Relay.Info.Software = "https://github.com/coracle-social/zooid"
@@ -116,6 +119,8 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	// Handlers
 
 	instance.Relay.OnConnect = instance.OnConnect
+	instance.Relay.OnDisconnect = instance.Agents.OnDisconnect
+	instance.Relay.OnAuth = instance.Agents.OnAuth
 	instance.Relay.PreventBroadcast = instance.PreventBroadcast
 	instance.Relay.StoreEvent = instance.StoreEvent
 	instance.Relay.ReplaceEvent = instance.ReplaceEvent
@@ -151,6 +156,9 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 
 	instance.Management.WarmCaches()
 	instance.Groups.WarmCaches()
+	for event := range instance.Events.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{nostr.KindProfileMetadata}}, 0) {
+		instance.Agents.RememberStored(event)
+	}
 
 	if config.Git.Enabled {
 		forgeRegistry := forge.NewRegistry()
@@ -283,7 +291,8 @@ func (instance *Instance) Cleanup() {
 func (instance *Instance) StripSignature(ctx context.Context, event nostr.Event) nostr.Event {
 	pubkey, _ := authenticatedPubkey(ctx)
 
-	if instance.Config.Policy.StripSignatures && !instance.Config.CanManage(pubkey) {
+	if instance.Config.Policy.StripSignatures && !instance.Config.CanManage(pubkey) &&
+		(instance.Agents == nil || !instance.Agents.PreserveSignature(event)) {
 		var zeroSig [64]byte
 		event.Sig = zeroSig
 	}
@@ -305,7 +314,8 @@ func (instance *Instance) AllowRecipientEvent(event nostr.Event) bool {
 		if recipientTag != nil {
 			pubkey, err := nostr.PubKeyFromHex(recipientTag[1])
 
-			if err == nil && instance.Management.IsMember(pubkey) {
+			if err == nil && (instance.Management.IsMember(pubkey) ||
+				(instance.Agents != nil && instance.Agents.IsKnownActiveAgent(pubkey))) {
 				return true
 			}
 		}
@@ -393,9 +403,15 @@ func (instance *Instance) PreventBroadcast(ws *khatru.WebSocket, filter nostr.Fi
 
 	pubkey, authenticated := khatru.GetAuthed(ws.Context)
 	if !authenticated {
+		if isMembershipNotification(event.Kind) {
+			return true
+		}
 		return !instance.Config.Policy.AnonymousRead || !instance.CanAnonymousRead(event)
 	}
-	if instance.Groups.IsGroupEvent(event) && !instance.Groups.CanRead(pubkey, event) {
+	if instance.Agents != nil && !instance.Agents.CanRead(pubkey, event) {
+		return true
+	}
+	if instance.Groups.IsGroupEvent(event) && !isMembershipNotification(event.Kind) && !protocol.IsGlobalOnly(event.Kind) && !instance.Groups.CanRead(pubkey, event) {
 		return true
 	}
 	return instance.ProjectTasks != nil && !instance.ProjectTasks.CanRead(ws.Context, pubkey, event)
@@ -427,7 +443,7 @@ func (instance *Instance) OnRequest(ctx context.Context, filter nostr.Filter) (r
 	}
 
 	// If open policy, allow all authenticated users; otherwise require membership
-	if !instance.Config.Policy.Open && !instance.Management.IsMember(pubkey) {
+	if !instance.Config.Policy.Open && (instance.Agents == nil || !instance.Agents.IsRelayMember(ctx, pubkey)) {
 		return true, "restricted: you are not a member of this relay"
 	}
 
@@ -457,7 +473,6 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 			if slices.Contains(filter.Kinds, RELAY_INVITE) && instance.Config.CanInvite(pubkey) {
 				generated = append(generated, instance.GenerateInviteEvent(pubkey))
 			}
-
 			for _, event := range generated {
 				if !filter.Matches(event) {
 					continue
@@ -486,6 +501,9 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 				}
 
 				if !authenticated {
+					if isMembershipNotification(event.Kind) {
+						continue
+					}
 					if !instance.Config.Policy.AnonymousRead || !instance.CanAnonymousRead(event) {
 						continue
 					}
@@ -495,7 +513,11 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 					continue
 				}
 
-				if instance.Groups.IsGroupEvent(event) {
+				if instance.Agents != nil && !instance.Agents.CanRead(pubkey, event) {
+					continue
+				}
+
+				if instance.Groups.IsGroupEvent(event) && !isMembershipNotification(event.Kind) && !protocol.IsGlobalOnly(event.Kind) {
 					if !instance.Groups.CanRead(pubkey, event) {
 						continue
 					}
@@ -557,8 +579,14 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 		return instance.Management.ValidateJoinRequest(event)
 	}
 
+	if instance.Agents != nil {
+		if reason := instance.Agents.CheckWrite(ctx, event); reason != "" {
+			return true, reason
+		}
+	}
+
 	// If open policy, allow all authenticated users; otherwise require membership
-	if !instance.Config.Policy.Open && !instance.Management.IsMember(pubkey) {
+	if !instance.Config.Policy.Open && (instance.Agents == nil || !instance.Agents.IsRelayMember(ctx, pubkey)) {
 		return true, "restricted: you are not a member of this relay"
 	}
 
@@ -570,7 +598,7 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 		return true, "invalid: this event's kind is not accepted"
 	}
 
-	if instance.Groups.IsGroupEvent(event) {
+	if instance.Groups.IsGroupEvent(event) && !protocol.IsGlobalOnly(event.Kind) {
 		handled, registryReason := instance.Registry.CheckWrite(event)
 		if registryReason != "" {
 			return true, registryReason
@@ -601,6 +629,9 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 }
 
 func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
+	if instance.Agents != nil {
+		instance.Agents.RememberStored(event)
+	}
 	if instance.ProjectTasks != nil {
 		if err := instance.ProjectTasks.Remember(instance.Ctx, event); err != nil {
 			log.Printf("Failed to persist project/task scope for event %s: %v", event.ID.Hex(), err)
@@ -617,6 +648,8 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 	if event.Kind == nostr.KindSimpleGroupJoinRequest && instance.Config.Groups.AutoJoin {
 		if err := instance.Groups.AddMember(h, event.PubKey); err != nil {
 			log.Printf("Failed to add member %s to group %q: %v", event.PubKey, h, err)
+		} else if err := instance.emitMembershipNotification(true, h, event.PubKey, event.PubKey); err != nil {
+			log.Printf("Failed to notify member %s of group %q addition: %v", event.PubKey, h, err)
 		}
 		if err := instance.Groups.ScheduleMembersListUpdate(h); err != nil {
 			log.Printf("Failed to update members list for group %q: %v", h, err)
@@ -629,6 +662,8 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 	if event.Kind == nostr.KindSimpleGroupLeaveRequest {
 		if err := instance.Groups.RemoveMember(h, event.PubKey); err != nil {
 			log.Printf("Failed to remove member %s from group %q: %v", event.PubKey, h, err)
+		} else if err := instance.emitMembershipNotification(false, h, event.PubKey, event.PubKey); err != nil {
+			log.Printf("Failed to notify member %s of group %q removal: %v", event.PubKey, h, err)
 		}
 		if err := instance.Groups.ScheduleMembersListUpdate(h); err != nil {
 			log.Printf("Failed to update members list for group %q: %v", h, err)
@@ -653,6 +688,9 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 					roles = append(roles, tag[i])
 				}
 				instance.Groups.SetMemberRoles(h, pubkey, roles)
+				if err := instance.emitMembershipNotification(true, h, pubkey, event.PubKey); err != nil {
+					log.Printf("Failed to notify member %s of group %q addition: %v", pubkey, h, err)
+				}
 			}
 		}
 		if err := instance.Groups.ScheduleMembersListUpdate(h); err != nil {
@@ -665,14 +703,17 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 
 	if event.Kind == nostr.KindSimpleGroupRemoveUser {
 		// Update membership and role caches for externally-received RemoveUser events
-		if v, ok := instance.Groups.membershipCache.Load(h); ok {
-			ms := v.(*memberSet)
-			for tag := range event.Tags.FindAll("p") {
-				if pubkey, err := nostr.PubKeyFromHex(tag[1]); err == nil {
+		for tag := range event.Tags.FindAll("p") {
+			if pubkey, err := nostr.PubKeyFromHex(tag[1]); err == nil {
+				if v, ok := instance.Groups.membershipCache.Load(h); ok {
+					ms := v.(*memberSet)
 					ms.mu.Lock()
 					delete(ms.members, pubkey)
 					ms.mu.Unlock()
-					instance.Groups.ClearMemberRoles(h, pubkey)
+				}
+				instance.Groups.ClearMemberRoles(h, pubkey)
+				if err := instance.emitMembershipNotification(false, h, pubkey, event.PubKey); err != nil {
+					log.Printf("Failed to notify member %s of group %q removal: %v", pubkey, h, err)
 				}
 			}
 		}
@@ -696,6 +737,8 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 		instance.Groups.membershipFullyLoaded.Store(h, struct{}{})
 		if err := instance.Groups.AddMember(h, event.PubKey); err != nil {
 			log.Printf("Failed to add creator %s to group %q: %v", event.PubKey, h, err)
+		} else if err := instance.emitMembershipNotification(true, h, event.PubKey, event.PubKey); err != nil {
+			log.Printf("Failed to notify creator %s of group %q addition: %v", event.PubKey, h, err)
 		}
 		if err := instance.Groups.UpdateMetadata(event); err != nil {
 			log.Printf("Failed to create metadata for group %q: %v", h, err)
@@ -723,6 +766,9 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 }
 
 func (instance *Instance) OnEphemeralEvent(ctx context.Context, event nostr.Event) {
+	if instance.Agents != nil {
+		instance.Agents.OnEphemeral(event)
+	}
 	if event.Kind == RELAY_JOIN {
 		instance.Management.AddMember(event.PubKey)
 	}
@@ -730,4 +776,21 @@ func (instance *Instance) OnEphemeralEvent(ctx context.Context, event nostr.Even
 	if event.Kind == RELAY_LEAVE {
 		instance.Management.RemoveMember(event.PubKey)
 	}
+}
+
+func isMembershipNotification(kind nostr.Kind) bool {
+	return kind == protocol.KindMemberAddedNotification || kind == protocol.KindMemberRemovedNotification
+}
+
+func (instance *Instance) emitMembershipNotification(added bool, channel string, target, actor nostr.PubKey) error {
+	kind := protocol.KindMemberRemovedNotification
+	if added {
+		kind = protocol.KindMemberAddedNotification
+	}
+	event := nostr.Event{
+		Kind: kind, CreatedAt: nostr.Now(),
+		Tags:    nostr.Tags{{"p", target.Hex()}, {"h", channel}},
+		Content: membershipNotificationContent(added, channel, actor),
+	}
+	return instance.Events.SignAndStoreEvent(&event, true)
 }

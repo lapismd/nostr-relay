@@ -14,6 +14,7 @@ import (
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip29"
 	"github.com/Masterminds/squirrel"
+	"zooid/buzzagents/protocol"
 	"zooid/internal/khatru"
 )
 
@@ -111,6 +112,43 @@ func (instance *Instance) validateCountVisibility(ctx context.Context, filter no
 		}
 	}
 
+	if containsAnyKind(filter.Kinds,
+		protocol.KindMemberAddedNotification,
+		protocol.KindMemberRemovedNotification,
+		protocol.KindAgentEngram,
+		protocol.KindPrivateManagedAgent,
+		protocol.KindAgentTurnMetric,
+	) {
+		if filter.Search != "" || len(filter.Kinds) == 0 {
+			return errUnsafeCountFilter
+		}
+		for _, kind := range filter.Kinds {
+			switch kind {
+			case protocol.KindMemberAddedNotification, protocol.KindMemberRemovedNotification,
+				protocol.KindAgentEngram, protocol.KindPrivateManagedAgent, protocol.KindAgentTurnMetric:
+			default:
+				return errUnsafeCountFilter
+			}
+		}
+		pubkey, authenticated := authenticatedPubkey(ctx)
+		if !authenticated {
+			return errors.New("authentication is required for private counts")
+		}
+		pValues := filter.Tags["p"]
+		if len(pValues) == 1 && pValues[0] == pubkey.Hex() {
+			return nil
+		}
+		if len(filter.Authors) == 1 && filter.Authors[0] == pubkey {
+			for _, kind := range filter.Kinds {
+				if kind != protocol.KindAgentEngram && kind != protocol.KindPrivateManagedAgent {
+					return errUnsafeCountFilter
+				}
+			}
+			return nil
+		}
+		return errUnsafeCountFilter
+	}
+
 	groups := filter.Tags["h"]
 	if len(groups) > 0 {
 		if len(filter.Kinds) == 0 {
@@ -141,6 +179,17 @@ func (instance *Instance) validateCountVisibility(ctx context.Context, filter no
 	// private group events. Refuse it until that visibility union is represented
 	// directly in SQL; never derive a count by downloading matching events.
 	return errUnsafeCountFilter
+}
+
+func containsAnyKind(kinds []nostr.Kind, candidates ...nostr.Kind) bool {
+	for _, kind := range kinds {
+		for _, candidate := range candidates {
+			if kind == candidate {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func registryDiscussionFilters(filters []nostr.Filter) bool {

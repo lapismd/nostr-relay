@@ -69,25 +69,27 @@ type Relay struct {
 	ServiceURL string
 
 	// hooks that will be called at various times
-	OnEvent                   func(ctx context.Context, event nostr.Event) (reject bool, msg string)
-	StoreEvent                func(ctx context.Context, event nostr.Event) error
-	ReplaceEvent              func(ctx context.Context, event nostr.Event) error
-	DeleteEvent               func(ctx context.Context, id nostr.ID) error
-	OnEventSaved              func(ctx context.Context, event nostr.Event)
-	OnEventDeleted            func(ctx context.Context, deleted nostr.Event)
-	AllowDeleting             func(ctx context.Context, target, deletion nostr.Event) bool
-	OnEphemeralEvent          func(ctx context.Context, event nostr.Event)
-	OnRequest                 func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
-	OnCount                   func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
-	OnCountMany               func(ctx context.Context, filters []nostr.Filter) (reject bool, msg string)
-	QueryStored               func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
-	Count                     func(ctx context.Context, filter nostr.Filter) (uint32, error)
-	CountHLL                  func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error)
-	CountMany                 func(ctx context.Context, filters []nostr.Filter) (CountResult, error)
-	RejectConnection          func(r *http.Request) bool
-	OnConnect                 func(ctx context.Context)
-	OnDisconnect              func(ctx context.Context)
-	OnAuth                    func(ctx context.Context, pubkey nostr.PubKey)
+	OnEvent          func(ctx context.Context, event nostr.Event) (reject bool, msg string)
+	StoreEvent       func(ctx context.Context, event nostr.Event) error
+	ReplaceEvent     func(ctx context.Context, event nostr.Event) error
+	DeleteEvent      func(ctx context.Context, id nostr.ID) error
+	OnEventSaved     func(ctx context.Context, event nostr.Event)
+	OnEventDeleted   func(ctx context.Context, deleted nostr.Event)
+	AllowDeleting    func(ctx context.Context, target, deletion nostr.Event) bool
+	OnEphemeralEvent func(ctx context.Context, event nostr.Event)
+	OnRequest        func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+	OnCount          func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+	OnCountMany      func(ctx context.Context, filters []nostr.Filter) (reject bool, msg string)
+	QueryStored      func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
+	Count            func(ctx context.Context, filter nostr.Filter) (uint32, error)
+	CountHLL         func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error)
+	CountMany        func(ctx context.Context, filters []nostr.Filter) (CountResult, error)
+	RejectConnection func(r *http.Request) bool
+	OnConnect        func(ctx context.Context)
+	OnDisconnect     func(ctx context.Context)
+	// OnAuth runs after NIP-42 cryptographic validation and before the pubkey is
+	// added to the connection. Returning reject keeps the identity unauthenticated.
+	OnAuth                    func(ctx context.Context, event nostr.Event) (reject bool, msg string)
 	OnListenerAdded           func(ws *WebSocket, ssid int, id string, filter nostr.Filter)
 	OnListenerRemoved         func(ws *WebSocket, ssid int, id string, filter nostr.Filter)
 	OverwriteRelayInformation func(ctx context.Context, r *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument

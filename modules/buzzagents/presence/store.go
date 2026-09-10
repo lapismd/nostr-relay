@@ -3,9 +3,11 @@
 package presence
 
 import (
+	"encoding/json"
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"fiatjaf.com/nostr"
 )
@@ -16,7 +18,6 @@ type Entry struct {
 	PubKey    nostr.PubKey
 	Status    string
 	UpdatedAt time.Time
-	Event     nostr.Event
 }
 
 type Store struct {
@@ -36,18 +37,18 @@ func (store *Store) Update(event nostr.Event, status string, now time.Time) {
 		delete(store.entries, event.PubKey)
 		return
 	}
-	store.entries[event.PubKey] = Entry{PubKey: event.PubKey, Status: status, UpdatedAt: now, Event: event}
+	store.entries[event.PubKey] = Entry{PubKey: event.PubKey, Status: status, UpdatedAt: now}
 }
 
-// Snapshot returns fresh events matching author filters in deterministic order.
-func (store *Store) Snapshot(authors []nostr.PubKey, now time.Time) []nostr.Event {
+// Snapshot returns fresh entries matching subject pubkeys in deterministic order.
+func (store *Store) Snapshot(authors []nostr.PubKey, now time.Time) []Entry {
 	allowed := make(map[nostr.PubKey]struct{}, len(authors))
 	for _, pubkey := range authors {
 		allowed[pubkey] = struct{}{}
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	events := make([]nostr.Event, 0, len(store.entries))
+	entries := make([]Entry, 0, len(store.entries))
 	for pubkey, entry := range store.entries {
 		if now.Sub(entry.UpdatedAt) > TTL {
 			delete(store.entries, pubkey)
@@ -58,20 +59,33 @@ func (store *Store) Snapshot(authors []nostr.PubKey, now time.Time) []nostr.Even
 				continue
 			}
 		}
-		events = append(events, entry.Event)
+		entries = append(entries, entry)
 	}
-	sort.Slice(events, func(left, right int) bool {
-		if events[left].CreatedAt != events[right].CreatedAt {
-			return events[left].CreatedAt > events[right].CreatedAt
+	sort.Slice(entries, func(left, right int) bool {
+		if !entries[left].UpdatedAt.Equal(entries[right].UpdatedAt) {
+			return entries[left].UpdatedAt.After(entries[right].UpdatedAt)
 		}
-		return events[left].ID.Hex() < events[right].ID.Hex()
+		return entries[left].PubKey.Hex() < entries[right].PubKey.Hex()
 	})
-	return events
+	return entries
 }
 
 func ParseStatus(content string) string {
+	if len(content) > 0 && content[0] == '{' {
+		var legacy struct {
+			Status string `json:"status"`
+		}
+		if json.Unmarshal([]byte(content), &legacy) == nil && legacy.Status != "" {
+			return legacy.Status
+		}
+		return content
+	}
 	if len(content) > 128 {
-		content = content[:128]
+		end := 128
+		for end > 0 && !utf8.RuneStart(content[end]) {
+			end--
+		}
+		content = content[:end]
 	}
 	return content
 }

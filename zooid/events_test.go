@@ -614,6 +614,89 @@ func TestEventStore_ReplaceEvent_OlderEvent(t *testing.T) {
 	}
 }
 
+func TestEventStore_ReplaceEventUsesLowestIDForTimestampTie(t *testing.T) {
+	store := createTestEventStore()
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	secret := nostr.Generate()
+	first := nostr.Event{Kind: nostr.KindProfileMetadata, CreatedAt: 1234, Content: `{"name":"first"}`}
+	second := nostr.Event{Kind: nostr.KindProfileMetadata, CreatedAt: 1234, Content: `{"name":"second"}`}
+	if err := first.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	lower, higher := first, second
+	if lower.ID.Hex() > higher.ID.Hex() {
+		lower, higher = higher, lower
+	}
+	if _, err := store.ReplaceEvent(higher); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReplaceEvent(lower); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReplaceEvent(higher); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]nostr.Event, 0)
+	for event := range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{nostr.KindProfileMetadata}, Authors: []nostr.PubKey{secret.Public()}}, 0) {
+		got = append(got, event)
+	}
+	if len(got) != 1 || got[0].ID != lower.ID {
+		t.Fatalf("head = %#v, want lowest id %s", got, lower.ID.Hex())
+	}
+}
+
+func TestEventStoreBuzzHighKindsAreAppendOnlyAndPrivate(t *testing.T) {
+	store := createTestEventStore()
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	secret := nostr.Generate()
+	for _, content := range []string{"classified-one", "classified-two"} {
+		event := nostr.Event{Kind: 44200, CreatedAt: nostr.Now(), Content: content, Tags: nostr.Tags{{"p", nostr.Generate().Public().Hex()}}}
+		if err := event.Sign(secret); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.StoreEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := make([]nostr.Event, 0)
+	for event := range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{44200}, Authors: []nostr.PubKey{secret.Public()}}, 0) {
+		got = append(got, event)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d append-only turn metrics, want 2", len(got))
+	}
+	for range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{44200}, Search: "classified"}, 0) {
+		t.Fatal("encrypted agent content entered the full-text index")
+	}
+	for _, kind := range []nostr.Kind{44100, 44101} {
+		event := nostr.Event{Kind: kind, CreatedAt: nostr.Now(), Content: "private-membership-notification"}
+		if err := event.Sign(secret); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.StoreEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{44100, 44101}, Search: "private"}, 0) {
+		t.Fatal("membership notification entered the full-text index")
+	}
+
+	ephemeral := nostr.Event{Kind: 24200, CreatedAt: nostr.Now()}
+	if err := ephemeral.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreEvent(ephemeral); err == nil {
+		t.Fatal("ephemeral event was accepted by the storage boundary")
+	}
+}
+
 // TestEventStore_ReplaceEvent_SerializationRetry provokes a real PostgreSQL
 // serialization conflict by holding a SERIALIZABLE transaction open while
 // ReplaceEvent tries to touch the same rows. The first attempt should fail

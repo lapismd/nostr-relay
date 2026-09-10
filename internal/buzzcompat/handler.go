@@ -23,21 +23,25 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"zooid/buzzagents/protocol"
 )
 
 const (
 	maxRequestBody = 1 << 20
 	queryLimit     = 1000
 	authWindow     = 60 * time.Second
+	maxAuthTagSize = 4096
 )
 
 // Backend connects the compatibility transport to the relay's existing
 // authorization, query, and publish pipelines.
 type Backend struct {
+	Authenticate            func(context.Context, HTTPAuth) (context.Context, error)
 	WithAuthenticatedPubkey func(context.Context, nostr.PubKey) context.Context
 	AuthorizeQuery          func(context.Context, nostr.Filter) (bool, string)
 	Query                   func(context.Context, nostr.Filter) iter.Seq[nostr.Event]
 	QueryBefore             func(context.Context, nostr.Filter, string) iter.Seq[nostr.Event]
+	EphemeralQuery          func(context.Context, []nostr.Filter) ([]nostr.Event, error)
 	CountMany               func(context.Context, []nostr.Filter) (CountResult, error)
 	Publish                 func(context.Context, nostr.Event) (bool, error)
 	Broadcast               func(nostr.Event)
@@ -48,6 +52,14 @@ type Backend struct {
 	WalGitEvents            http.HandlerFunc
 	ForgeAPI                http.HandlerFunc
 	GitHubWebhook           http.HandlerFunc
+}
+
+// HTTPAuth carries only values protected by the already verified NIP-98 event
+// plus Buzz's optional owner credential header.
+type HTTPAuth struct {
+	PubKey   nostr.PubKey
+	SignedAt uint64
+	AuthTag  string
 }
 
 type CountResult struct {
@@ -237,6 +249,25 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, message)
 			return
 		}
+	}
+	if h.backend.EphemeralQuery != nil && isPresenceQuery(filters) {
+		presenceFilters := make([]nostr.Filter, 0, len(filters))
+		for _, queryFilter := range filters {
+			presenceFilters = append(presenceFilters, queryFilter.Filter)
+		}
+		events, err := h.backend.EphemeralQuery(ctx, presenceFilters)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		sortEvents(events)
+		if len(events) > queryLimit {
+			events = events[:queryLimit]
+		}
+		writeJSON(w, http.StatusOK, events)
+		return
+	}
+	for _, queryFilter := range filters {
 		query := h.backend.Query(ctx, queryFilter.Filter)
 		if queryFilter.BeforeID != "" {
 			if h.backend.QueryBefore == nil {
@@ -253,16 +284,36 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 			events = append(events, event)
 		}
 	}
+	sortEvents(events)
+	if len(events) > queryLimit {
+		events = events[:queryLimit]
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func isPresenceQuery(filters []queryFilter) bool {
+	if len(filters) == 0 {
+		return false
+	}
+	for _, queryFilter := range filters {
+		filter := queryFilter.Filter
+		if queryFilter.BeforeID != "" || len(filter.Kinds) != 1 || len(filter.Authors) == 0 {
+			return false
+		}
+		if filter.Kinds[0] != protocol.KindPresence && filter.Kinds[0] != protocol.KindPresenceSnapshot {
+			return false
+		}
+	}
+	return true
+}
+
+func sortEvents(events []nostr.Event) {
 	sort.Slice(events, func(left, right int) bool {
 		if events[left].CreatedAt != events[right].CreatedAt {
 			return events[left].CreatedAt > events[right].CreatedAt
 		}
 		return events[left].ID.Hex() < events[right].ID.Hex()
 	})
-	if len(events) > queryLimit {
-		events = events[:queryLimit]
-	}
-	writeJSON(w, http.StatusOK, events)
 }
 
 func (h *Handler) handleCount(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +417,10 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, submitResponse{EventID: event.ID, Message: "invalid: signature is invalid"})
 		return
 	}
+	if protocol.IsWebSocketOnly(event.Kind) {
+		writeJSON(w, http.StatusBadRequest, submitResponse{EventID: event.ID, Message: "invalid: ephemeral Buzz events require WebSocket EVENT"})
+		return
+	}
 
 	skipBroadcast, err := h.backend.Publish(ctx, event)
 	if err != nil {
@@ -388,7 +443,34 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, body []by
 		writeError(w, http.StatusUnauthorized, "auth event has already been used")
 		return nil, false
 	}
+	authTag, err := extractAuthTagHeader(r.Header.Values("X-Auth-Tag"))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return nil, false
+	}
+	if h.backend.Authenticate != nil {
+		ctx, err := h.backend.Authenticate(r.Context(), HTTPAuth{PubKey: event.PubKey, SignedAt: uint64(event.CreatedAt), AuthTag: authTag})
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return nil, false
+		}
+		return ctx, true
+	}
 	return h.backend.WithAuthenticatedPubkey(r.Context(), event.PubKey), true
+}
+
+func extractAuthTagHeader(values []string) (string, error) {
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", errors.New("multiple X-Auth-Tag headers are not allowed")
+	}
+	value := strings.TrimSpace(values[0])
+	if len(value) > maxAuthTagSize {
+		return "", errors.New("X-Auth-Tag header is too large")
+	}
+	return value, nil
 }
 
 func parseNIP98(r *http.Request, body []byte, now time.Time) (nostr.Event, error) {

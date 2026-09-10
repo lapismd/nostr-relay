@@ -109,6 +109,84 @@ func TestQueryUsesBeforeIDAndReturnsDeterministicOrder(t *testing.T) {
 	}
 }
 
+func TestQuerySynthesizesPresenceOnlyWhenEveryFilterQualifies(t *testing.T) {
+	now := time.Unix(1_750_000_000, 0)
+	secret := nostr.Generate()
+	subjects := []nostr.PubKey{nostr.Generate().Public(), nostr.Generate().Public()}
+	presence := signedEvent(t, nostr.Generate(), 20001, "online", now)
+	presence.Tags = nostr.Tags{{"p", subjects[0].Hex()}}
+	if err := presence.Sign(nostr.Generate()); err != nil {
+		t.Fatal(err)
+	}
+	queryCalls := 0
+	presenceCalls := 0
+	handler := New(Backend{
+		WithAuthenticatedPubkey: func(ctx context.Context, _ nostr.PubKey) context.Context { return ctx },
+		AuthorizeQuery:          func(context.Context, nostr.Filter) (bool, string) { return false, "" },
+		Query: func(context.Context, nostr.Filter) iter.Seq[nostr.Event] {
+			queryCalls++
+			return func(func(nostr.Event) bool) {}
+		},
+		EphemeralQuery: func(_ context.Context, filters []nostr.Filter) ([]nostr.Event, error) {
+			presenceCalls++
+			if len(filters) != 2 || filters[0].Kinds[0] != 40902 || filters[1].Kinds[0] != 20001 {
+				t.Fatalf("unexpected presence filters: %#v", filters)
+			}
+			return []nostr.Event{presence}, nil
+		},
+	})
+	handler.now = func() time.Time { return now }
+	server := httptest.NewServer(handler.Wrap(http.NotFoundHandler()))
+	defer server.Close()
+
+	body := []byte(fmt.Sprintf(`[{"kinds":[40902],"authors":[%q]},{"kinds":[20001],"authors":[%q]}]`, subjects[0].Hex(), subjects[1].Hex()))
+	response, err := http.DefaultClient.Do(authenticatedRequest(t, secret, http.MethodPost, server.URL+"/query", body, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var events []nostr.Event
+	if err := json.NewDecoder(response.Body).Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || presenceCalls != 1 || queryCalls != 0 || len(events) != 1 {
+		t.Fatalf("status=%s presenceCalls=%d queryCalls=%d events=%#v", response.Status, presenceCalls, queryCalls, events)
+	}
+}
+
+func TestQueryDoesNotSynthesizeMixedPresenceFilters(t *testing.T) {
+	now := time.Unix(1_750_000_000, 0)
+	secret := nostr.Generate()
+	subject := nostr.Generate().Public()
+	queryCalls := 0
+	presenceCalls := 0
+	handler := New(Backend{
+		WithAuthenticatedPubkey: func(ctx context.Context, _ nostr.PubKey) context.Context { return ctx },
+		AuthorizeQuery:          func(context.Context, nostr.Filter) (bool, string) { return false, "" },
+		Query: func(context.Context, nostr.Filter) iter.Seq[nostr.Event] {
+			queryCalls++
+			return func(func(nostr.Event) bool) {}
+		},
+		EphemeralQuery: func(context.Context, []nostr.Filter) ([]nostr.Event, error) {
+			presenceCalls++
+			return nil, nil
+		},
+	})
+	handler.now = func() time.Time { return now }
+	server := httptest.NewServer(handler.Wrap(http.NotFoundHandler()))
+	defer server.Close()
+
+	body := []byte(fmt.Sprintf(`[{"kinds":[40902],"authors":[%q]},{"kinds":[1]}]`, subject.Hex()))
+	response, err := http.DefaultClient.Do(authenticatedRequest(t, secret, http.MethodPost, server.URL+"/query", body, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || presenceCalls != 0 || queryCalls != 2 {
+		t.Fatalf("status=%s presenceCalls=%d queryCalls=%d", response.Status, presenceCalls, queryCalls)
+	}
+}
+
 func TestQueryRejectsInvalidBeforeID(t *testing.T) {
 	now := time.Unix(1_750_000_000, 0)
 	secret := nostr.Generate()
@@ -261,6 +339,72 @@ func TestEventsUsesPublishPipeline(t *testing.T) {
 	}
 	if !result.Accepted || result.EventID != event.ID {
 		t.Fatalf("unexpected response %#v", result)
+	}
+}
+
+func TestEventsRejectsBuzzEphemeralKindsOverHTTP(t *testing.T) {
+	now := time.Unix(1_750_000_000, 0)
+	secret := nostr.Generate()
+	for _, kind := range []nostr.Kind{20001, 20002, 24200} {
+		t.Run(strconv.Itoa(int(kind)), func(t *testing.T) {
+			event := signedEvent(t, secret, kind, "online", now)
+			body, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			published := false
+			handler := New(Backend{
+				WithAuthenticatedPubkey: func(ctx context.Context, _ nostr.PubKey) context.Context { return ctx },
+				Publish:                 func(context.Context, nostr.Event) (bool, error) { published = true; return false, nil },
+			})
+			handler.now = func() time.Time { return now }
+			server := httptest.NewServer(handler.Wrap(http.NotFoundHandler()))
+			defer server.Close()
+			response, err := http.DefaultClient.Do(authenticatedRequest(t, secret, http.MethodPost, server.URL+"/events", body, now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != http.StatusBadRequest || published {
+				t.Fatalf("status=%s published=%v", response.Status, published)
+			}
+		})
+	}
+}
+
+func TestAuthenticatePassesSignedTimestampAndSingleOwnerTag(t *testing.T) {
+	now := time.Unix(1_750_000_000, 0)
+	secret := nostr.Generate()
+	called := false
+	handler := New(Backend{
+		Authenticate: func(ctx context.Context, auth HTTPAuth) (context.Context, error) {
+			called = auth.PubKey == secret.Public() && auth.SignedAt == uint64(now.Unix()) && auth.AuthTag == `["auth","owner","","sig"]`
+			return ctx, nil
+		},
+		AuthorizeQuery: func(context.Context, nostr.Filter) (bool, string) { return false, "" },
+		Query:          func(context.Context, nostr.Filter) iter.Seq[nostr.Event] { return func(func(nostr.Event) bool) {} },
+	})
+	handler.now = func() time.Time { return now }
+	server := httptest.NewServer(handler.Wrap(http.NotFoundHandler()))
+	defer server.Close()
+	request := authenticatedRequest(t, secret, http.MethodPost, server.URL+"/query", []byte(`[]`), now)
+	request.Header.Set("X-Auth-Tag", `["auth","owner","","sig"]`)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !called {
+		t.Fatalf("status=%s called=%v", response.Status, called)
+	}
+}
+
+func TestOwnerAuthHeaderMustBeSingleAndBounded(t *testing.T) {
+	if _, err := extractAuthTagHeader([]string{"one", "two"}); err == nil {
+		t.Fatal("multiple X-Auth-Tag headers were accepted")
+	}
+	if _, err := extractAuthTagHeader([]string{strings.Repeat("x", maxAuthTagSize+1)}); err == nil {
+		t.Fatal("oversized X-Auth-Tag header was accepted")
 	}
 }
 

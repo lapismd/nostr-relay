@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"fiatjaf.com/nostr"
+	"zooid/buzzagents/protocol"
 	"zooid/internal/khatru"
 )
 
@@ -119,6 +120,25 @@ func TestInstance_AnonymousReadPolicy(t *testing.T) {
 
 	if reject, msg := instance.OnEvent(context.Background(), nostr.Event{}); !reject || msg != "auth-required: authentication is required for access" {
 		t.Fatalf("anonymous write = (%v, %q)", reject, msg)
+	}
+}
+
+func TestInstanceTreatsBuzzAgentDefinitionsAsGlobal(t *testing.T) {
+	secret := nostr.Generate()
+	config := &Config{}
+	config.Policy.Open = true
+	config.Groups.Enabled = true
+	management := &ManagementStore{Config: config, cachesWarmed: true}
+	groups := &GroupStore{Config: config, Management: management, cachesWarmed: true}
+	agents := NewAgentPolicy(config, management, groups)
+	instance := &Instance{Config: config, Management: management, Groups: groups, Agents: agents}
+	ctx := withAuthenticatedPrincipal(t.Context(), authenticatedPrincipal{PubKey: secret.Public()})
+	event := nostr.Event{
+		Kind: protocol.KindPersona, PubKey: secret.Public(),
+		Tags: nostr.Tags{{"d", "reviewer"}, {"h", "metadata-only"}},
+	}
+	if reject, reason := instance.OnEvent(ctx, event); reject {
+		t.Fatalf("global Buzz agent definition was channel-scoped: %s", reason)
 	}
 }
 
@@ -491,6 +511,15 @@ func TestOnEventSaved_JoinRequest(t *testing.T) {
 	memberCount := findTagValue(meta.Tags, "member_count")
 	if memberCount != "2" {
 		t.Errorf("member_count = %q after join, want %q", memberCount, "2")
+	}
+
+	filter := nostr.Filter{Kinds: []nostr.Kind{44100}, Tags: nostr.TagMap{"p": []string{joiner.Hex()}}}
+	var notifications []nostr.Event
+	for event := range instance.Events.QueryEvents(filter, 0) {
+		notifications = append(notifications, event)
+	}
+	if len(notifications) != 1 || notifications[0].Tags.FindWithValue("h", "jointest") == nil {
+		t.Fatalf("membership notification = %#v", notifications)
 	}
 }
 

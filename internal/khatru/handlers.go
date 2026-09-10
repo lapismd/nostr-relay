@@ -109,6 +109,9 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 			httpRequestKey, r,
 		),
 	)
+	// Keep the WebSocket's public context identical to the handler context so
+	// live-delivery policy hooks can inspect NIP-42 identities and request data.
+	ws.Context = ctx
 
 	killOnce := sync.Once{}
 	kill := func() {
@@ -310,6 +313,15 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 				case *nostr.AuthEnvelope:
 					wsBaseUrl := strings.Replace(rl.getBaseURL(r), "http", "ws", 1)
 					if pubkey, err := nip42.ValidateAuthEvent(env.Event, ws.Challenge, wsBaseUrl); err == nil {
+						if rl.OnAuth != nil {
+							if reject, msg := rl.OnAuth(ctx, env.Event); reject {
+								if msg == "" {
+									msg = "restricted: authentication refused"
+								}
+								ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: nostr.NormalizeOKMessage(msg, "restricted")})
+								return
+							}
+						}
 						ws.authLock.Lock()
 						total := len(ws.AuthedPublicKeys)
 						if idx := slices.Index(ws.AuthedPublicKeys, pubkey); idx == -1 {
@@ -328,9 +340,6 @@ func (rl *Relay) HandleWebsocket(w http.ResponseWriter, r *http.Request) {
 						}
 						ws.authLock.Unlock()
 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: true})
-						if rl.OnAuth != nil {
-							rl.OnAuth(ctx, pubkey)
-						}
 					} else {
 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to authenticate: " + err.Error()})
 					}

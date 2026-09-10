@@ -1,0 +1,87 @@
+--- base/internal/khatru/handlers.go
++++ modified/internal/khatru/handlers.go
+@@ -109,6 +109,9 @@
+ 			httpRequestKey, r,
+ 		),
+ 	)
++	// Keep the WebSocket's public context identical to the handler context so
++	// live-delivery policy hooks can inspect NIP-42 identities and request data.
++	ws.Context = ctx
+ 
+ 	killOnce := sync.Once{}
+ 	kill := func() {
+@@ -310,6 +313,15 @@
+ 				case *nostr.AuthEnvelope:
+ 					wsBaseUrl := strings.Replace(rl.getBaseURL(r), "http", "ws", 1)
+ 					if pubkey, err := nip42.ValidateAuthEvent(env.Event, ws.Challenge, wsBaseUrl); err == nil {
++						if rl.OnAuth != nil {
++							if reject, msg := rl.OnAuth(ctx, env.Event); reject {
++								if msg == "" {
++									msg = "restricted: authentication refused"
++								}
++								ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: nostr.NormalizeOKMessage(msg, "restricted")})
++								return
++							}
++						}
+ 						ws.authLock.Lock()
+ 						total := len(ws.AuthedPublicKeys)
+ 						if idx := slices.Index(ws.AuthedPublicKeys, pubkey); idx == -1 {
+@@ -328,9 +340,6 @@
+ 						}
+ 						ws.authLock.Unlock()
+ 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: true})
+-						if rl.OnAuth != nil {
+-							rl.OnAuth(ctx, pubkey)
+-						}
+ 					} else {
+ 						ws.WriteJSON(nostr.OKEnvelope{EventID: env.Event.ID, OK: false, Reason: "error: failed to authenticate: " + err.Error()})
+ 					}
+--- base/internal/khatru/relay.go
++++ modified/internal/khatru/relay.go
+@@ -69,25 +69,27 @@
+ 	ServiceURL string
+ 
+ 	// hooks that will be called at various times
+-	OnEvent                   func(ctx context.Context, event nostr.Event) (reject bool, msg string)
+-	StoreEvent                func(ctx context.Context, event nostr.Event) error
+-	ReplaceEvent              func(ctx context.Context, event nostr.Event) error
+-	DeleteEvent               func(ctx context.Context, id nostr.ID) error
+-	OnEventSaved              func(ctx context.Context, event nostr.Event)
+-	OnEventDeleted            func(ctx context.Context, deleted nostr.Event)
+-	AllowDeleting             func(ctx context.Context, target, deletion nostr.Event) bool
+-	OnEphemeralEvent          func(ctx context.Context, event nostr.Event)
+-	OnRequest                 func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+-	OnCount                   func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+-	OnCountMany               func(ctx context.Context, filters []nostr.Filter) (reject bool, msg string)
+-	QueryStored               func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
+-	Count                     func(ctx context.Context, filter nostr.Filter) (uint32, error)
+-	CountHLL                  func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error)
+-	CountMany                 func(ctx context.Context, filters []nostr.Filter) (CountResult, error)
+-	RejectConnection          func(r *http.Request) bool
+-	OnConnect                 func(ctx context.Context)
+-	OnDisconnect              func(ctx context.Context)
+-	OnAuth                    func(ctx context.Context, pubkey nostr.PubKey)
++	OnEvent          func(ctx context.Context, event nostr.Event) (reject bool, msg string)
++	StoreEvent       func(ctx context.Context, event nostr.Event) error
++	ReplaceEvent     func(ctx context.Context, event nostr.Event) error
++	DeleteEvent      func(ctx context.Context, id nostr.ID) error
++	OnEventSaved     func(ctx context.Context, event nostr.Event)
++	OnEventDeleted   func(ctx context.Context, deleted nostr.Event)
++	AllowDeleting    func(ctx context.Context, target, deletion nostr.Event) bool
++	OnEphemeralEvent func(ctx context.Context, event nostr.Event)
++	OnRequest        func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
++	OnCount          func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
++	OnCountMany      func(ctx context.Context, filters []nostr.Filter) (reject bool, msg string)
++	QueryStored      func(ctx context.Context, filter nostr.Filter) iter.Seq[nostr.Event]
++	Count            func(ctx context.Context, filter nostr.Filter) (uint32, error)
++	CountHLL         func(ctx context.Context, filter nostr.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error)
++	CountMany        func(ctx context.Context, filters []nostr.Filter) (CountResult, error)
++	RejectConnection func(r *http.Request) bool
++	OnConnect        func(ctx context.Context)
++	OnDisconnect     func(ctx context.Context)
++	// OnAuth runs after NIP-42 cryptographic validation and before the pubkey is
++	// added to the connection. Returning reject keeps the identity unauthenticated.
++	OnAuth                    func(ctx context.Context, event nostr.Event) (reject bool, msg string)
+ 	OnListenerAdded           func(ws *WebSocket, ssid int, id string, filter nostr.Filter)
+ 	OnListenerRemoved         func(ws *WebSocket, ssid int, id string, filter nostr.Filter)
+ 	OverwriteRelayInformation func(ctx context.Context, r *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument

@@ -15,6 +15,7 @@ const (
 	KindManagedAgent              nostr.Kind = 30177
 	KindSharedTeamCatalog         nostr.Kind = 30178
 	KindPrivateManagedAgent       nostr.Kind = 30179
+	KindPresenceSnapshot          nostr.Kind = 40902
 	KindMemberAddedNotification   nostr.Kind = 44100
 	KindMemberRemovedNotification nostr.Kind = 44101
 	KindAgentTurnMetric           nostr.Kind = 44200

@@ -25,6 +25,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"zooid/buzzagents/protocol"
 	"zooid/internal/projecttask"
 )
 
@@ -268,6 +269,64 @@ func newAnonymousNostrClient(ctx context.Context, t *testing.T, uri string, secr
 	return &nostrClient{conn: conn, secret: secret}
 }
 
+func newOwnerDerivedNostrClient(ctx context.Context, t *testing.T, uri string, agentSecret, ownerSecret nostr.SecretKey) *nostrClient {
+	t.Helper()
+	opts := &websocket.DialOptions{Host: "localhost"}
+	conn, _, err := websocket.Dial(ctx, uri, opts)
+	if err != nil {
+		t.Fatalf("Failed to connect owner-derived agent: %v", err)
+	}
+	client := &nostrClient{conn: conn, secret: agentSecret}
+
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, challengeData, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("Failed to read agent AUTH challenge: %v", err)
+	}
+	var challengeEnvelope []json.RawMessage
+	if err := json.Unmarshal(challengeData, &challengeEnvelope); err != nil || len(challengeEnvelope) < 2 {
+		t.Fatalf("Invalid agent AUTH challenge: %s", challengeData)
+	}
+	var challenge string
+	if err := json.Unmarshal(challengeEnvelope[1], &challenge); err != nil {
+		t.Fatalf("Invalid agent AUTH challenge value: %v", err)
+	}
+	var ownerTag nostr.Tag
+	if err := json.Unmarshal([]byte(makeOwnerAuthTag(t, ownerSecret, agentSecret.Public(), "")), &ownerTag); err != nil {
+		t.Fatal(err)
+	}
+	authEvent := nostr.Event{
+		Kind:      22242,
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"relay", "ws://localhost"},
+			{"challenge", challenge},
+			ownerTag,
+		},
+	}
+	if err := authEvent.Sign(agentSecret); err != nil {
+		t.Fatal(err)
+	}
+	message, _ := json.Marshal([]interface{}{"AUTH", authEvent})
+	if err := conn.Write(ctx, websocket.MessageText, message); err != nil {
+		t.Fatalf("Failed to send agent AUTH response: %v", err)
+	}
+	_, response, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("Failed to read agent AUTH result: %v", err)
+	}
+	var result []json.RawMessage
+	if err := json.Unmarshal(response, &result); err != nil || len(result) < 3 {
+		t.Fatalf("Invalid agent AUTH result: %s", response)
+	}
+	var accepted bool
+	if err := json.Unmarshal(result[2], &accepted); err != nil || !accepted {
+		t.Fatalf("Owner-derived agent AUTH was rejected: %s", response)
+	}
+	return client
+}
+
 func (c *nostrClient) authenticate(ctx context.Context, t *testing.T) {
 	// Read the AUTH challenge from relay
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -500,6 +559,62 @@ func TestIntegration_RelayAdminListPublished(t *testing.T) {
 		pTagCount++
 	}
 	t.Logf("Relay admin list contains %d admins", pTagCount)
+}
+
+func TestIntegration_BuzzAgentOwnerAuthAndPresence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	ctx := context.Background()
+	relay := setupRelay(ctx, t, true)
+	defer relay.Cleanup(ctx)
+	agentSecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000004")
+	agent := newOwnerDerivedNostrClient(ctx, t, relay.URI, agentSecret, adminSecret)
+	defer agent.close()
+
+	presenceEvent := &nostr.Event{
+		Kind: protocol.KindPresence, CreatedAt: nostr.Now(), Content: `{"status":"working"}`,
+	}
+	if result := agent.sendEvent(ctx, t, presenceEvent); result != "ok" {
+		t.Fatalf("owner-derived agent presence rejected: %s", result)
+	}
+
+	filters := []map[string]interface{}{{
+		"kinds": []int{int(protocol.KindPresenceSnapshot)}, "authors": []string{agentSecret.Public().Hex()},
+	}}
+	body, err := json.Marshal(filters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := strings.Replace(relay.URI, "ws://", "http://", 1) + "/query"
+	request := integrationAuthenticatedRequest(t, agentSecret, http.MethodPost, target, body)
+	request.Header.Set("X-Auth-Tag", makeOwnerAuthTag(t, adminSecret, agentSecret.Public(), ""))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(response.Body)
+		t.Fatalf("owner-derived presence query returned %s: %s", response.Status, responseBody)
+	}
+	var presence []nostr.Event
+	if err := json.NewDecoder(response.Body).Decode(&presence); err != nil {
+		t.Fatal(err)
+	}
+	if len(presence) != 1 || presence[0].Kind != protocol.KindPresence ||
+		presence[0].PubKey != relaySecret.Public() || presence[0].Content != "working" || !presence[0].VerifySignature() {
+		t.Fatalf("unexpected presence projection: %#v", presence)
+	}
+	if tag := presence[0].Tags.Find("p"); tag == nil || len(tag) < 2 || tag[1] != agentSecret.Public().Hex() {
+		t.Fatalf("presence projection does not identify the agent: %#v", presence[0].Tags)
+	}
+
+	snapshot := &nostr.Event{Kind: protocol.KindPresenceSnapshot, CreatedAt: nostr.Now()}
+	if result := agent.sendEvent(ctx, t, snapshot); !strings.Contains(result, "query projections only") {
+		t.Fatalf("client-generated presence snapshot was not rejected: %s", result)
+	}
 }
 
 func TestIntegration_AdminCanCreateGroup(t *testing.T) {

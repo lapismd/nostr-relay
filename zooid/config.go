@@ -39,6 +39,12 @@ type GitHubConfig struct {
 	MaxWebhookBytes   int64  `toml:"max_webhook_bytes"`
 }
 
+type AgentConfig struct {
+	Enabled                bool `toml:"enabled"`
+	AllowOwnerAuth         bool `toml:"allow_owner_auth"`
+	EnforceCredentialKinds bool `toml:"enforce_credential_kinds"`
+}
+
 type Config struct {
 	Host   string `toml:"host"`
 	Schema string `toml:"schema"`
@@ -84,6 +90,8 @@ type Config struct {
 		ReleaseGroupID string `toml:"release_group_id"`
 		CuratorRole    string `toml:"curator_role"`
 	} `toml:"registry"`
+
+	Agents AgentConfig `toml:"agents"`
 
 	Git    GitConfig    `toml:"git"`
 	GitHub GitHubConfig `toml:"github"`
@@ -148,6 +156,9 @@ func LoadConfig(filename string) (*Config, error) {
 func decodeConfigFile(path string) (Config, error) {
 	var config Config
 	config.Policy.AnonymousRead = true
+	config.Agents.Enabled = true
+	config.Agents.AllowOwnerAuth = true
+	config.Agents.EnforceCredentialKinds = true
 	config.Git.ReconcileInterval = "5s"
 	config.Git.MaxDiffBytes = 8 << 20
 	config.Git.MaxDiffFiles = 2000

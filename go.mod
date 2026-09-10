@@ -25,7 +25,10 @@ require (
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
 	golang.org/x/sync v0.17.0
+	zooid/buzzagents v0.0.0
 )
+
+replace zooid/buzzagents => ./modules/buzzagents
 
 require (
 	dario.cat/mergo v1.0.2 // indirect

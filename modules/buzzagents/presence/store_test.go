@@ -1,8 +1,10 @@
 package presence
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"fiatjaf.com/nostr"
 )
@@ -23,5 +25,20 @@ func TestStoreSnapshotAndExpiry(t *testing.T) {
 	store.Update(event, "offline", now)
 	if got := store.Snapshot(nil, now); len(got) != 0 {
 		t.Fatalf("offline presence was returned: %v", got)
+	}
+}
+
+func TestParseStatusMatchesBuzzCompatibilityRules(t *testing.T) {
+	if got := ParseStatus(`{"status":"online"}`); got != "online" {
+		t.Fatalf("legacy JSON status = %q", got)
+	}
+	unicodeStatus := strings.Repeat("a", 127) + "é"
+	got := ParseStatus(unicodeStatus)
+	if len(got) != 127 || !utf8.ValidString(got) {
+		t.Fatalf("status truncation produced %d invalid bytes: %q", len(got), got)
+	}
+	longJSON := `{"status":"` + strings.Repeat("x", 129) + `"}`
+	if got := ParseStatus(longJSON); len(got) != 129 {
+		t.Fatalf("legacy JSON status was unexpectedly truncated to %d bytes", len(got))
 	}
 }

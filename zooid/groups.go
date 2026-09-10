@@ -511,9 +511,13 @@ func (g *GroupStore) UpdateMetadata(event nostr.Event) error {
 		tags = append(tags, nostr.Tag{"member_count", strconv.Itoa(g.GetMemberCount(h))})
 	}
 
+	createdAt := event.CreatedAt
+	if current, found := g.GetMetadata(h); found {
+		createdAt = nextTimestamp(current.CreatedAt, createdAt)
+	}
 	metadataEvent := nostr.Event{
 		Kind:      nostr.KindSimpleGroupMetadata,
-		CreatedAt: event.CreatedAt,
+		CreatedAt: createdAt,
 		Tags:      tags,
 		Content:   event.Content, // Include metadata JSON (name, about, picture, etc.)
 	}
@@ -568,7 +572,7 @@ func (g *GroupStore) RefreshMemberCount(h string) error {
 
 	metadataEvent := nostr.Event{
 		Kind:      nostr.KindSimpleGroupMetadata,
-		CreatedAt: nostr.Now(),
+		CreatedAt: nextTimestamp(cached.event.CreatedAt, nostr.Now()),
 		Tags:      tags,
 		Content:   cached.event.Content,
 	}
