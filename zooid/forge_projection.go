@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"fiatjaf.com/nostr"
@@ -63,6 +64,45 @@ func (policy *GitForgePolicy) rememberForgeProjection(ctx context.Context, event
 		}
 		command, objectType = "comment", "comment"
 		payload["body"] = event.Content
+		if root.Kind == projecttask.KindPullRequest {
+			switch {
+			case forgeHasTagValue(event, "t", "inline-comment"):
+				line, lineErr := strconv.ParseInt(forgeFirstTag(event, "line"), 10, 64)
+				path := forgeFirstTag(event, "file")
+				commit := strings.ToLower(forgeFirstTag(event, "c"))
+				side := strings.ToLower(forgeFirstTag(event, "side"))
+				if path == "" || lineErr != nil || line <= 0 || !fullForgeObjectID(commit) {
+					return nil
+				}
+				switch side {
+				case "old", "left":
+					side = "LEFT"
+				case "new", "right":
+					side = "RIGHT"
+				default:
+					return nil
+				}
+				command, objectType = "review_comment", "comment"
+				payload["commit_id"] = commit
+				payload["path"] = path
+				payload["line"] = line
+				payload["side"] = side
+			case forgeHasTagValue(event, "t", "approval"):
+				command, objectType = "review", "review"
+				payload["event"] = "APPROVE"
+			case forgeHasTagValue(event, "t", "changes-requested"):
+				command, objectType = "review", "review"
+				payload["event"] = "REQUEST_CHANGES"
+			case forgeHasTagValue(event, "t", "review-comment"):
+				command, objectType = "review", "review"
+				payload["event"] = "COMMENT"
+			}
+			if command == "review" {
+				if commit := strings.ToLower(forgeFirstTag(event, "c")); fullForgeObjectID(commit) {
+					payload["commit_id"] = commit
+				}
+			}
+		}
 	case nostr.KindReaction:
 		content, supported := githubforge.ReactionContent(event.Content)
 		if !supported {

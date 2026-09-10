@@ -97,8 +97,9 @@ without duplicating them.
 
 Native relay collaboration is signed-event-first. A relay collaboration
 adapter may submit an already-signed event through the existing validation and
-storage path, but the relay never signs as a user or translates native Nostr
-publication into provider CRUD.
+storage path, and the relay never signs as a user. When GitHub is the selected
+collaboration backend, the adapter may project the signed event into the
+corresponding provider operation without replacing the source event.
 
 GitHub-origin roots are signed by a dedicated configured bridge identity.
 That identity signs later canonical status for those roots. Relay-origin roots
@@ -106,6 +107,11 @@ remain Nostr-authoritative: GitHub lifecycle changes are observable kind-1
 activity with `t=external-state`, not trusted `163x` state. External reviews
 remain attributed kind-1 `t=external-review` notes and never gain native
 `approval` or `changes-requested` labels.
+
+Signer-authored pull-request replies with native review labels project as
+GitHub reviews, while inline anchors project as immediate GitHub review
+comments. GitHub App authorship and visible Nostr signer attribution remain
+distinct.
 
 Repository and PR-origin channel scope still comes from the signed event graph.
 Backend selection cannot widen NIP-29 access. GitHub clone and push are direct

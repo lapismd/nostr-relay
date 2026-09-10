@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +176,68 @@ func TestNativeNostrRootRemainsAuthoritativeAndOutboxRebuildsCrashGap(t *testing
 	require.Equal(t, "relay", mapping.Origin)
 	require.Equal(t, "relay", mapping.Authority)
 	require.Equal(t, "8300", mapping.ExternalID)
+}
+
+func TestRelayPullRequestReviewsProjectAsNativeGitHubReviews(t *testing.T) {
+	policy, store, provider, actor, repository, connectionID := configureForgeCollaborationTest(t)
+	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
+	head := strings.Repeat("a", 40)
+	root := nostr.Event{Kind: projecttask.KindPullRequest, CreatedAt: nostr.Now(), Content: "Review body", Tags: nostr.Tags{
+		{"a", coordinate.String()}, {"p", repository.PubKey.Hex()}, {"subject", "Native review"},
+		{"c", head}, {"clone", "https://github.com/lapis/notes.git"},
+	}}
+	require.NoError(t, root.Sign(actor))
+	require.NoError(t, store.SaveEvent(root))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), root))
+	require.NoError(t, policy.saveForgeMapping(context.Background(), forgeObjectMapping{
+		Provider: forge.BackendGitHub, ConnectionID: connectionID, Coordinate: coordinate,
+		ObjectType: "pull_request", NostrEventID: root.ID.Hex(), NostrRootID: root.ID.Hex(),
+		ExternalID: "9100", ExternalNumber: 18, Origin: "provider", Authority: "provider",
+	}))
+
+	review := nostr.Event{Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Please add coverage", Tags: nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"c", head}, {"t", "changes-requested"},
+	}}
+	require.NoError(t, review.Sign(actor))
+	require.NoError(t, store.SaveEvent(review))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), review))
+	require.NoError(t, policy.Remember(context.Background(), review))
+	provider.result = forge.CollaborationResult{ExternalID: "9200", ExternalURL: "https://github.com/lapis/notes/pull/18#review", State: "changes_requested"}
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	require.Len(t, provider.commands, 1)
+	require.Equal(t, "review", provider.commands[0].Kind)
+	var reviewPayload map[string]any
+	require.NoError(t, json.Unmarshal(provider.commands[0].Payload, &reviewPayload))
+	require.Equal(t, "REQUEST_CHANGES", reviewPayload["event"])
+	require.Equal(t, head, reviewPayload["commit_id"])
+	require.EqualValues(t, 18, reviewPayload["external_number"])
+	reviewMapping, found, err := policy.loadMappingByNostrEvent(context.Background(), forge.BackendGitHub, connectionID, review.ID.Hex(), "review")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "9200", reviewMapping.ExternalID)
+
+	inline := nostr.Event{Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Please clarify this line", Tags: nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"c", head},
+		{"t", "inline-comment"}, {"file", "README.md"}, {"side", "new"}, {"line", "4"},
+	}}
+	require.NoError(t, inline.Sign(actor))
+	require.NoError(t, store.SaveEvent(inline))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), inline))
+	require.NoError(t, policy.Remember(context.Background(), inline))
+	provider.result = forge.CollaborationResult{ExternalID: "9300", ExternalURL: "https://github.com/lapis/notes/pull/18#discussion_r9300"}
+	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
+	require.Len(t, provider.commands, 2)
+	require.Equal(t, "review_comment", provider.commands[1].Kind)
+	var inlinePayload map[string]any
+	require.NoError(t, json.Unmarshal(provider.commands[1].Payload, &inlinePayload))
+	require.Equal(t, head, inlinePayload["commit_id"])
+	require.Equal(t, "README.md", inlinePayload["path"])
+	require.Equal(t, "RIGHT", inlinePayload["side"])
+	require.EqualValues(t, 4, inlinePayload["line"])
+	commentMapping, found, err := policy.loadMappingByNostrEvent(context.Background(), forge.BackendGitHub, connectionID, inline.ID.Hex(), "comment")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "9300", commentMapping.ExternalID)
 }
 
 func TestRelayReviewCommentReactionProjectsToGitHubAndDeletionRemovesIt(t *testing.T) {

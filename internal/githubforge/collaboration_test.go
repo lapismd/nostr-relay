@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"fiatjaf.com/nostr"
 	"github.com/stretchr/testify/require"
 	"zooid/internal/forge"
 )
@@ -79,6 +80,78 @@ func TestCollaborationMergePinsExpectedHead(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, strings.Repeat("c", 40), result.MergedCommit)
+}
+
+func TestCollaborationCreatesNativePullRequestReviews(t *testing.T) {
+	marker := strings.Repeat("b", 32)
+	actor := nostr.Generate().Public()
+	actorHex := actor.Hex()
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(t, w, r) {
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/pulls/7/reviews":
+			_ = json.NewEncoder(w).Encode([]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/lapis/notes/pulls/7/reviews":
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, "REQUEST_CHANGES", payload["event"])
+			require.Equal(t, strings.Repeat("d", 40), payload["commit_id"])
+			require.Contains(t, payload["body"], "Please add coverage")
+			require.Contains(t, payload["body"], "Submitted through Lapis by Nostr pubkey `"+actorHex+"`.")
+			require.Contains(t, payload["body"], "<!-- lapis:"+marker+" -->")
+			require.NotContains(t, payload, "external_number")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 88, "html_url": "https://github.com/lapis/notes/pull/7#pullrequestreview-88",
+				"state": "CHANGES_REQUESTED", "user": map[string]any{"id": 55, "login": "lapis-bot"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	result, err := backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "review", Actor: actor, Repository: repository, CorrelationMarker: marker,
+		Payload: json.RawMessage(`{"external_number":7,"event":"REQUEST_CHANGES","commit_id":"` + strings.Repeat("d", 40) + `","body":"Please add coverage"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "88", result.ExternalID)
+	require.Equal(t, "lapis-bot", result.ExternalAuthor)
+}
+
+func TestCollaborationCreatesInlinePullRequestReviewComments(t *testing.T) {
+	marker := strings.Repeat("e", 32)
+	actor := nostr.Generate().Public()
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(t, w, r) {
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/lapis/notes/pulls/7/comments":
+			_ = json.NewEncoder(w).Encode([]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/lapis/notes/pulls/7/comments":
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+			require.Equal(t, strings.Repeat("f", 40), payload["commit_id"])
+			require.Equal(t, "README.md", payload["path"])
+			require.Equal(t, "RIGHT", payload["side"])
+			require.EqualValues(t, 4, payload["line"])
+			require.Contains(t, payload["body"], "Submitted through Lapis by Nostr pubkey")
+			require.Contains(t, payload["body"], "<!-- lapis:"+marker+" -->")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 89, "html_url": "https://github.com/lapis/notes/pull/7#discussion_r89",
+				"user": map[string]any{"id": 55, "login": "lapis-bot"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	result, err := backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "review_comment", Actor: actor, Repository: repository, CorrelationMarker: marker,
+		Payload: json.RawMessage(`{"external_number":7,"commit_id":"` + strings.Repeat("f", 40) + `","path":"README.md","line":4,"side":"RIGHT","body":"Please clarify this"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "89", result.ExternalID)
 }
 
 func TestCollaborationReviewCommentReactionsUseGitHubAllowlist(t *testing.T) {

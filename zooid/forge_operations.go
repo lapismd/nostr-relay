@@ -538,10 +538,14 @@ func (policy *GitForgePolicy) projectForgeOperation(ctx context.Context, reposit
 				Origin: "relay", Authority: "relay", ExternalURL: result.ExternalURL,
 				CorrelationMarker: operation.CorrelationMarker,
 			})
-		case "comment":
+		case "comment", "review", "review_comment":
+			objectType := "comment"
+			if operation.Command == "review" {
+				objectType = "review"
+			}
 			return policy.saveForgeMapping(ctx, forgeObjectMapping{
 				Provider: operation.Provider, ConnectionID: operation.ConnectionID,
-				Coordinate: operation.Coordinate, ObjectType: "comment",
+				Coordinate: operation.Coordinate, ObjectType: objectType,
 				NostrEventID: source.ID.Hex(), NostrRootID: operation.RootEventID,
 				ExternalID: result.ExternalID, ExternalNumber: result.ExternalNumber,
 				Origin: "relay", Authority: "relay", ExternalURL: result.ExternalURL,
@@ -709,7 +713,8 @@ func (policy *GitForgePolicy) prepareForgeCommand(ctx context.Context, operation
 			return nil, &forge.Error{Status: http.StatusBadRequest, Code: "unsupported_github_comment_type"}
 		}
 		commentType := "issue_comment"
-		if forgeHasTagValue(target, "t", "external-review") && target.Tags.Find("path") != nil {
+		if (forgeHasTagValue(target, "t", "external-review") && target.Tags.Find("path") != nil) ||
+			(forgeHasTagValue(target, "t", "inline-comment") && target.Tags.Find("file") != nil) {
 			commentType = "pull_request_review_comment"
 		}
 		payload["external_comment_id"] = mapping.ExternalID

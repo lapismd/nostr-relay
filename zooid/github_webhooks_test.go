@@ -138,6 +138,60 @@ func TestGitHubExternalReviewCannotBecomeNativeApproval(t *testing.T) {
 	require.Empty(t, state.Approvals, "stock Buzz reduction must not trust an external-review observation")
 }
 
+func TestCorrelatedGitHubReviewAcknowledgesSignedRelayReviewWithoutEcho(t *testing.T) {
+	policy, store, _, repository := configureWebhookTest(t)
+	head := strings.Repeat("a", 40)
+	process := func(delivery githubWebhookDelivery) {
+		t.Helper()
+		delivery.Provider = forge.BackendGitHub
+		delivery.ConnectionID = "connection"
+		delivery.ExternalRepositoryID = "42"
+		delivery.ReceivedAt = time.Now().UTC()
+		require.NoError(t, policy.processGitHubWebhook(context.Background(), delivery))
+	}
+	pullPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42},
+		"pull_request": map[string]any{
+			"id": 9100, "number": 18, "title": "Webhook PR", "body": "Review it", "state": "open",
+			"html_url": "https://github.com/lapis/notes/pull/18", "user": map[string]any{"id": 72, "login": "author"},
+			"head": map[string]any{"sha": head, "ref": "feature"}, "base": map[string]any{"ref": "main"},
+		},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "pull_request", Action: "opened", ExternalObjectID: "9100", Payload: pullPayload})
+	roots := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{projecttask.KindPullRequest}, Tags: nostr.TagMap{"a": {"30617:" + repository.PubKey.Hex() + ":notes"}}})
+	require.Len(t, roots, 1)
+
+	review := nostr.Event{Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Looks good", Tags: nostr.Tags{
+		{"e", roots[0].ID.Hex(), "", "root"}, {"a", "30617:" + repository.PubKey.Hex() + ":notes"},
+		{"c", head}, {"t", "approval"},
+	}}
+	require.NoError(t, review.Sign(store.Config.secret))
+	require.NoError(t, store.SaveEvent(review))
+	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), review))
+	require.NoError(t, policy.Remember(context.Background(), review))
+	idempotency := "nostr:" + review.ID.Hex() + ":github:connection"
+	operation, err := policy.loadForgeOperationByIdempotency(context.Background(), idempotency)
+	require.NoError(t, err)
+	require.Equal(t, "review", operation.Command)
+	marker := forgeCorrelationMarker(idempotency)
+	reviewPayload, err := json.Marshal(map[string]any{
+		"repository": map[string]any{"id": 42}, "pull_request": map[string]any{"id": 9100},
+		"review": map[string]any{
+			"id": 9200, "body": "Looks good\n\n<!-- lapis:" + marker + " -->", "state": "approved",
+			"commit_id": head, "html_url": "https://github.com/lapis/notes/pull/18#review", "user": map[string]any{"id": 73, "login": "lapis-bot"},
+		},
+	})
+	require.NoError(t, err)
+	process(githubWebhookDelivery{EventType: "pull_request_review", Action: "submitted", ExternalObjectID: "9200", Payload: reviewPayload})
+	operation, err = policy.loadForgeOperationByIdempotency(context.Background(), idempotency)
+	require.NoError(t, err)
+	require.NotNil(t, operation.ProviderResult)
+	require.Equal(t, "9200", operation.ProviderResult.ExternalID)
+	external := collectForgeEvents(store, nostr.Filter{Kinds: []nostr.Kind{nostr.KindTextNote}, Tags: nostr.TagMap{"e": {roots[0].ID.Hex()}, "t": {"external-review"}}})
+	require.Empty(t, external)
+}
+
 func TestGitHubCommentReactionSnapshotsProjectAddsAndRemovals(t *testing.T) {
 	policy, store, _, repository := configureWebhookTest(t)
 	head := strings.Repeat("a", 40)

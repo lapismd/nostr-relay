@@ -25,8 +25,11 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 	if err := json.Unmarshal(command.Payload, &payload); err != nil {
 		return forge.CollaborationResult{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_forge_command"}
 	}
-	if command.CorrelationMarker != "" && (command.Kind == "create_issue" || command.Kind == "create_pull_request" || command.Kind == "comment") {
+	if command.CorrelationMarker != "" && correlatableCollaborationCommand(command.Kind) {
 		body, _ := payload["body"].(string)
+		if command.Kind == "review" || command.Kind == "review_comment" {
+			body = appendLapisAttribution(body, command.Actor.Hex())
+		}
 		payload["body"] = strings.TrimRight(body, "\n") + "\n\n<!-- lapis:" + command.CorrelationMarker + " -->"
 	}
 	externalNumber, _ := numberValue(payload["external_number"])
@@ -53,6 +56,16 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_missing"}
 		}
 		method, path = http.MethodPost, repoPath(command.Repository)+"/issues/"+strconv.FormatInt(externalNumber, 10)+"/comments"
+	case "review":
+		if externalNumber <= 0 {
+			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_missing"}
+		}
+		method, path = http.MethodPost, repoPath(command.Repository)+"/pulls/"+strconv.FormatInt(externalNumber, 10)+"/reviews"
+	case "review_comment":
+		if externalNumber <= 0 {
+			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_missing"}
+		}
+		method, path = http.MethodPost, repoPath(command.Repository)+"/pulls/"+strconv.FormatInt(externalNumber, 10)+"/comments"
 	case "state":
 		if externalNumber <= 0 {
 			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "forge_mapping_missing"}
@@ -103,7 +116,7 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 	default:
 		return forge.CollaborationResult{}, &forge.Error{Status: http.StatusBadRequest, Code: "unsupported_forge_command"}
 	}
-	if command.CorrelationMarker != "" && (command.Kind == "create_issue" || command.Kind == "create_pull_request" || command.Kind == "comment") {
+	if command.CorrelationMarker != "" && correlatableCollaborationCommand(command.Kind) {
 		if recovered, found, err := backend.recoverCorrelated(ctx, command.Repository, command.Kind, externalNumber, command.CorrelationMarker); err != nil {
 			return forge.CollaborationResult{}, err
 		} else if found {
@@ -175,11 +188,18 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 
 func (backend *Backend) recoverCorrelated(ctx context.Context, repository forge.Repository, kind string, externalNumber int64, marker string) (forge.CollaborationResult, bool, error) {
 	path := repoPath(repository) + "/issues?state=all&sort=updated&direction=desc&per_page=100"
-	if kind == "comment" {
+	if kind == "comment" || kind == "review" || kind == "review_comment" {
 		if externalNumber <= 0 {
 			return forge.CollaborationResult{}, false, nil
 		}
-		path = repoPath(repository) + "/issues/" + strconv.FormatInt(externalNumber, 10) + "/comments?per_page=100"
+		switch kind {
+		case "comment":
+			path = repoPath(repository) + "/issues/" + strconv.FormatInt(externalNumber, 10) + "/comments?per_page=100"
+		case "review":
+			path = repoPath(repository) + "/pulls/" + strconv.FormatInt(externalNumber, 10) + "/reviews?per_page=100"
+		case "review_comment":
+			path = repoPath(repository) + "/pulls/" + strconv.FormatInt(externalNumber, 10) + "/comments?per_page=100"
+		}
 	}
 	response, err := backend.doRepository(ctx, repository, http.MethodGet, path, nil, collaborationPermissions)
 	if err != nil {
@@ -236,6 +256,24 @@ func (backend *Backend) recoverCorrelated(ctx context.Context, repository forge.
 		return result, true, nil
 	}
 	return forge.CollaborationResult{}, false, nil
+}
+
+func correlatableCollaborationCommand(kind string) bool {
+	switch kind {
+	case "create_issue", "create_pull_request", "comment", "review", "review_comment":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendLapisAttribution(body, actor string) string {
+	body = strings.TrimSpace(body)
+	attribution := "Submitted through Lapis by Nostr pubkey `" + actor + "`."
+	if body == "" {
+		return attribution
+	}
+	return body + "\n\n---\n" + attribution
 }
 
 func numberValue(value any) (int64, error) {

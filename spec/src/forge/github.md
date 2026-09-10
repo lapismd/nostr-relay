@@ -185,13 +185,28 @@ retry is relay-admin-only. Retry scheduling honors GitHub `Retry-After` and
 rate-limit reset metadata as recommended by the
 [REST rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
 
+For a GitHub collaboration backend, a signed kind-1 pull-request reply maps to
+a native GitHub review when it carries `t=approval`, `t=changes-requested`, or
+`t=review-comment`. Those labels become GitHub review events `APPROVE`,
+`REQUEST_CHANGES`, and `COMMENT`. A reply carrying `t=inline-comment`, a full
+reviewed `c`, non-empty `file`, positive `line`, and `side=old|new` becomes an
+immediate GitHub pull-request review comment with `LEFT|RIGHT` side semantics.
+Other pull-request replies remain conversation comments. Provider requests
+retain the GitHub App as their API author while including a visible
+Lapis/Nostr pubkey attribution footer and the hidden correlation marker.
+Review and inline-comment recovery list the corresponding GitHub pull-request
+collections before retrying, and correlated webhook echoes acknowledge the
+original outbox operation without publishing a second relay event.
+
 Provider-origin issues (`1621`), PR roots/updates (`1618`/`1619`), and lifecycle
 (`1630`-`1633`) are bridge-signed with deterministic provenance tags including
 `external-provider`, stable ID/number, URL, and external author identity.
 Relay-origin roots remain Buzz-strict and Nostr-authoritative. Provider state
-for them is a kind-1 `t=external-state` observation. GitHub reviews are
+for them is a kind-1 `t=external-state` observation. GitHub-origin reviews are
 kind-1 `t=external-review` observations with external reviewer, decision, URL,
-and reviewed `c`; they never impersonate a Nostr reviewer.
+and reviewed `c`; they never impersonate a Nostr reviewer. A relay-origin
+review remains the original signer-authored event after its native GitHub
+projection is acknowledged.
 
 Pull-request conversation and inline-review comment reactions use NIP-25
 `kind:7` events addressed to the mapped comment with matching `e`, `p`, `k`,

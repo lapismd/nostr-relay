@@ -93,6 +93,12 @@ For relay-origin roots, GitHub lifecycle and reviews are observational kind-1
 notes (`t=external-state` or `t=external-review`), never native trusted state
 or review decisions. GitHub mirror mode imports no unrelated roots.
 
+When GitHub is the selected collaboration backend, signer-authored review
+decisions and inline review comments are projected outward as native GitHub
+review objects. The GitHub App remains the provider-side author and a visible
+Lapis/Nostr signer footer preserves attribution. Correlated webhooks do not
+replace or duplicate the authoritative signed source event.
+
 A private Git replica remains independent of collaboration. GitHub can own
 clone/push and collaboration while WalGit serves content, or collaboration can
 remain relay-native. The GitHub clone locator stays signed in `30617`; users

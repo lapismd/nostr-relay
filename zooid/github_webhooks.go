@@ -307,7 +307,7 @@ func (policy *GitForgePolicy) processGitHubWebhook(ctx context.Context, delivery
 		}
 		return err
 	}
-	if marker := webhookCorrelationMarker(delivery.Payload); marker != "" {
+	if marker := webhookCorrelationMarker(payload); marker != "" {
 		if acknowledged, err := policy.acknowledgeCorrelatedWebhook(ctx, repository, delivery, payload, marker); err != nil || acknowledged {
 			return err
 		}
@@ -600,8 +600,8 @@ func (policy *GitForgePolicy) recordGitHubPush(ctx context.Context, delivery git
 	})
 }
 
-func webhookCorrelationMarker(payload []byte) string {
-	text := string(payload)
+func webhookCorrelationMarker(payload githubWebhookPayload) string {
+	text := firstNonempty(payload.Issue.Body, payload.PullRequest.Body, payload.Comment.Body, payload.Review.Body)
 	prefix := "<!-- lapis:"
 	start := strings.Index(text, prefix)
 	if start < 0 {
@@ -663,6 +663,8 @@ func webhookCollaborationResult(delivery githubWebhookDelivery, payload githubWe
 		result = forge.CollaborationResult{ExternalID: strconv.FormatInt(payload.PullRequest.ID, 10), ExternalNumber: payload.PullRequest.Number, ExternalURL: payload.PullRequest.HTMLURL, State: payload.PullRequest.State, HeadSHA: payload.PullRequest.Head.SHA, HeadRef: payload.PullRequest.Head.Ref, BaseRef: payload.PullRequest.Base.Ref, ExternalAuthor: payload.PullRequest.User.Login, ExternalAuthorID: strconv.FormatInt(payload.PullRequest.User.ID, 10)}
 	case "issue_comment", "pull_request_review_comment":
 		result = forge.CollaborationResult{ExternalID: strconv.FormatInt(payload.Comment.ID, 10), ExternalURL: payload.Comment.HTMLURL, ExternalAuthor: payload.Comment.User.Login, ExternalAuthorID: strconv.FormatInt(payload.Comment.User.ID, 10)}
+	case "pull_request_review":
+		result = forge.CollaborationResult{ExternalID: strconv.FormatInt(payload.Review.ID, 10), ExternalURL: payload.Review.HTMLURL, State: strings.ToLower(payload.Review.State), ExternalAuthor: payload.Review.User.Login, ExternalAuthorID: strconv.FormatInt(payload.Review.User.ID, 10)}
 	}
 	return result
 }
