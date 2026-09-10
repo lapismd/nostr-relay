@@ -15,6 +15,9 @@
 | `FORGE_WORKER_MODE` | `embedded`, `disabled`, or worker-only `only`. | `embedded` |
 | `WALGIT_RELAY_TOKEN` | Runtime-only private WalGit service token. | none |
 | `WALGIT_WEBHOOK_SECRET` | Runtime-only WalGit ref-event HMAC secret. | none |
+| `LAPIS_AGENTS_ENABLED` | Enable Buzz agent protocol policy. | `true` |
+| `LAPIS_AGENTS_ALLOW_OWNER_AUTH` | Let a relay member's signed NIP-OA credential grant connection-local NIP-AA admission to an agent. | `true` |
+| `LAPIS_AGENTS_ENFORCE_CREDENTIAL_KINDS` | Enforce NIP-OA `kind=` conditions on owner-derived agent writes. | `true` |
 
 The container entrypoint maps deployment-facing `LAPIS_*` variables into the
 relay configuration and private sidecar environment. The complete WalGit,
@@ -41,6 +44,8 @@ The major sections are:
   stripping;
 - `[groups]`: NIP-29 enablement, auto-join, creation, and private-group policy;
 - `[groups.retention]`: default and per-group chat retention;
+- `[agents]`: Buzz agent policy, owner-derived admission, and credential-kind
+  enforcement;
 - `[management]`: NIP-86 enablement and method allowlist;
 - `[blossom]`: Blossom enablement;
 - `[registry]`: optional Lapis plugin-release group and curator-role policy;
@@ -75,6 +80,11 @@ auto_join = true
 admin_create_only = true
 private_admin_only = true
 private_relay_admin_access = false
+
+[agents]
+enabled = true
+allow_owner_auth = true
+enforce_credential_kinds = true
 
 [management]
 enabled = true

@@ -3,10 +3,12 @@ FROM golang:1.25 AS build
 WORKDIR /app
 
 COPY go.mod go.sum ./
+COPY modules/buzzagents/go.mod modules/buzzagents/go.sum modules/buzzagents/
 
 RUN go mod download
 
 COPY internal internal
+COPY modules/buzzagents modules/buzzagents
 COPY zooid zooid
 COPY cmd cmd
 

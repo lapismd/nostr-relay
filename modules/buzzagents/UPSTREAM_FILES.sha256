@@ -1,0 +1,14 @@
+5b6755bae451d5a1a21b4f778ed40e0d73978a30e3ae18d2669ebcf40a302e2a  docs/nips/NIP-OA.md
+d759c3de0afcee58fdf2d851d24e80a8f3225bd4344be3ee072a5557560f4cdb  docs/nips/NIP-AA.md
+60bf7931bea81ec80bd533b76ebb1cf5547b621e1d259b6ec69320f82f05fb8b  docs/nips/NIP-AO.md
+f577f737f62f372ae8fb9ee01e3d0ae2afdc54e0feb5e48936c6c093119d325a  docs/nips/NIP-AE.md
+fb68ce4a562fcd992bbc1c35bf0d7881d6e6ded3fbefc4832f096b18e516ae04  docs/nips/NIP-AP.md
+2f07596bf22890ee910ae6f512d3c699b10dd8c19240c8bcfbddb63525ea3ef8  docs/nips/NIP-PMA.md
+767b175cb3d78d0c67134afda4fce8807b21eca360c3288124a7ecd9d54dfd4b  docs/nips/NIP-AM.md
+de54e283391b447fcf6a80c3c252debd3f9cadbb506abe899927fb8f2a748f96  crates/buzz-core/src/kind.rs
+8fc5293cef05947625eb398418875fb66b3d4d47e4be026ca1b9cb62f38aeaf1  crates/buzz-core/src/observer.rs
+030f396c21e9ef047a26a366500e154368946117195c3c1ad65f5ac8f3187725  crates/buzz-relay/src/handlers/auth.rs
+66626a4da7d3dcfface2beffcc9ffd952b1d0e228d889d4cd1f66983a62ad30b  crates/buzz-relay/src/handlers/event.rs
+e4dc1ab2574063e1c99260e66322643822e2fe2630bef3c5cfcfc4bda304f0be  crates/buzz-relay/src/handlers/ingest.rs
+c5327229c04f9e1f945e2af63b61bfb1975ef2ffca6b8ff80c6d222eb4b9a8cf  crates/buzz-relay/src/handlers/req.rs
+12719eb8211f6ccefa196a4630433d08ae8548deb41b9bc3251fa536bc76dd6e  crates/buzz-relay/src/api/bridge.rs

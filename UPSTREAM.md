@@ -18,6 +18,16 @@ retain only the adapter registration and calls to the shared authenticated
 pubkey accessor. During an upstream update, preserve that narrow seam and avoid
 moving Buzz route behavior into the core relay handlers.
 
+Buzz agent protocol rules are independently pinned to `block/buzz` commit
+`cec5c8fd9280d30f56effac701e1e19d5cfe6fea` in
+`modules/buzzagents/UPSTREAM_VERSION`. The separate `zooid/buzzagents` Go module
+contains only transport-neutral authentication, event-envelope, visibility,
+and presence rules. `zooid/agent_policy.go` is its relay adapter, and
+`scripts/update-buzz-agent-upstream.sh` verifies or refreshes the exact upstream
+contract-file manifest. A Buzz refresh must update that pin, module tests, and
+`spec/src/compatibility/buzz-agents.md` together. Do not copy ACP runtime,
+model, context, or tool-execution code into the relay.
+
 Project/task/PR compatibility follows the same rule. No project/task/PR changes
 live under `internal/khatru`. The local patch map is:
 
@@ -66,9 +76,10 @@ live under `internal/khatru`. The local patch map is:
   the worker publishes a host port; only the relay is a client-facing policy
   boundary.
 
-The audited Buzz contract and refresh checklist live in
-`spec/src/compatibility/buzz-desktop.md`. Update its pinned Buzz commit and contract
-fixtures before adapting behavior to a newer Desktop release.
+The project/Git Buzz contract and refresh checklist live in
+`spec/src/compatibility/buzz-desktop.md`; its existing audit pin remains scoped
+to that contract. The agent-protocol audit has its own pin and checklist in
+`spec/src/compatibility/buzz-agents.md`.
 
 The provider boundary and operator contract live in
 `spec/src/forge/capabilities.md`, `spec/src/forge/github.md`, and

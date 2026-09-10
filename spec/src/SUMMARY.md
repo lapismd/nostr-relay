@@ -16,6 +16,7 @@
   - [Deployment and local testing](operations/deployment.md)
   - [Observability](operations/observability.md)
 - [Compatibility](compatibility/buzz-desktop.md)
+  - [Buzz agents](compatibility/buzz-agents.md)
 - [Maintenance](maintenance/upstream.md)
   - [Deferred forge work](roadmap/deferred-forge-work.md)
 - [Historical audits](audits/walgit-abstraction.md)

@@ -5,7 +5,11 @@ build:
   CGO_ENABLED=0 go build -o bin/lapis-relay cmd/relay/main.go
 
 test:
-  go test -v ./...
+	(cd modules/buzzagents && GOWORK=off go test -v ./...)
+	go test -v ./...
+
+buzz-agent-check:
+	./scripts/update-buzz-agent-upstream.sh --check
 
 fmt:
   gofmt -w -s .
