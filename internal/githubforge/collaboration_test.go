@@ -60,7 +60,9 @@ func TestCollaborationCreateUsesMarkerAndRecoversWithoutDuplicate(t *testing.T) 
 func TestCollaborationMergePinsExpectedHead(t *testing.T) {
 	head := strings.Repeat("b", 40)
 	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		if tokenResponse(t, w, r) {
+		if tokenResponseWithPermissions(t, w, r, map[string]string{
+			"metadata": "read", "contents": "write",
+		}) {
 			return
 		}
 		require.Equal(t, http.MethodPut, r.Method)

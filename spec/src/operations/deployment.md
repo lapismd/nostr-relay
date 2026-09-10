@@ -125,7 +125,7 @@ token requires the Contents permission. Use the smallest applicable set:
 | Use | Repository permissions |
 | --- | --- |
 | Repository reads and private WalGit replica | Metadata read, Contents read |
-| Provider collaboration | Metadata read, Contents read, Issues read/write, Pull requests read/write |
+| Provider collaboration | Metadata read, Contents write for merge, Issues read/write, Pull requests read/write |
 | Outbound Git target | Metadata read, Contents write |
 | GitHub Actions | Metadata read, Contents write, Actions write |
 

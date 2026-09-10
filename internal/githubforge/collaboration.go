@@ -16,6 +16,10 @@ var collaborationPermissions = map[string]string{
 	"metadata": "read", "contents": "read", "issues": "write", "pull_requests": "write",
 }
 
+var mergePermissions = map[string]string{
+	"metadata": "read", "contents": "write",
+}
+
 func (backend *Backend) Execute(ctx context.Context, command forge.CollaborationCommand) (forge.CollaborationResult, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(command.Payload, &payload); err != nil {
@@ -107,7 +111,11 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 		}
 	}
 	body, _ := json.Marshal(payload)
-	response, err := backend.doRepository(ctx, command.Repository, method, path, bytes.NewReader(body), collaborationPermissions)
+	permissions := collaborationPermissions
+	if command.Kind == "merge" {
+		permissions = mergePermissions
+	}
+	response, err := backend.doRepository(ctx, command.Repository, method, path, bytes.NewReader(body), permissions)
 	if err != nil {
 		return forge.CollaborationResult{}, err
 	}

@@ -36,7 +36,7 @@ collaboration and CI mirrors need different access:
 
 | Connection | Repository permissions |
 | --- | --- |
-| source/collaboration | Metadata read, Contents read, Issues read/write, Pull requests read/write |
+| source/collaboration | Metadata read, Contents write for merge, Issues read/write, Pull requests read/write |
 | CI mirror | Metadata read, Contents write, Actions write |
 
 Subscribe only to `installation`, `installation_repositories`, `repository`,

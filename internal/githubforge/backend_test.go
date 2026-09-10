@@ -50,16 +50,24 @@ func testGitHubBackend(t *testing.T, handler http.HandlerFunc) (*Backend, forge.
 }
 
 func tokenResponse(t *testing.T, w http.ResponseWriter, r *http.Request) bool {
+	return tokenResponseWithPermissions(t, w, r, nil)
+}
+
+func tokenResponseWithPermissions(t *testing.T, w http.ResponseWriter, r *http.Request, expected map[string]string) bool {
 	t.Helper()
 	if r.URL.Path != "/app/installations/99/access_tokens" {
 		return false
 	}
 	require.Equal(t, APIVersion, r.Header.Get("X-GitHub-Api-Version"))
 	var request struct {
-		RepositoryIDs []int64 `json:"repository_ids"`
+		RepositoryIDs []int64           `json:"repository_ids"`
+		Permissions   map[string]string `json:"permissions"`
 	}
 	require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 	require.Equal(t, []int64{42}, request.RepositoryIDs)
+	if expected != nil {
+		require.Equal(t, expected, request.Permissions)
+	}
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_opaque_token_value", "expires_at": time.Now().Add(time.Hour).UTC()})
 	return true
