@@ -25,7 +25,7 @@ func (policy *GitForgePolicy) ListGitHubConnections(ctx context.Context) ([]gith
 	defer cancel()
 	rows, err := GetDb().QueryContext(queryCtx, policy.Events.Schema.Render(`
 		SELECT id, host, app_id, installation_id, bridge_pubkey,
-		       account_id, account_login, status
+		       account_id, account_login, status, last_error, updated_at
 		FROM {{.Name}}__forge_connections
 		WHERE provider = 'github'
 		ORDER BY account_login, id`))
@@ -41,6 +41,7 @@ func (policy *GitForgePolicy) ListGitHubConnections(ctx context.Context) ([]gith
 			&connection.ID, &connection.Host, &connection.AppID, &installationID,
 			&connection.BridgePubkey,
 			&connection.AccountID, &connection.AccountLogin, &connection.Status,
+			&connection.LastError, &connection.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -56,6 +57,36 @@ func (policy *GitForgePolicy) ListGitHubConnections(ctx context.Context) ([]gith
 	return connections, nil
 }
 
+func (policy *GitForgePolicy) FindGitHubConnectionByInstallation(ctx context.Context, installationID int64) (githubforge.Connection, bool, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
+	defer cancel()
+	var connection githubforge.Connection
+	var storedInstallationID string
+	err := GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
+		SELECT id, host, app_id, installation_id, credential_ref,
+		       webhook_secret_ref, bridge_credential_ref, bridge_pubkey,
+		       account_id, account_login, status, last_error, updated_at
+		FROM {{.Name}}__forge_connections
+		WHERE provider = 'github' AND host = 'github.com' AND installation_id = $1`),
+		strconv.FormatInt(installationID, 10)).Scan(
+		&connection.ID, &connection.Host, &connection.AppID, &storedInstallationID,
+		&connection.CredentialRef, &connection.WebhookSecretRef,
+		&connection.BridgeCredentialRef, &connection.BridgePubkey,
+		&connection.AccountID, &connection.AccountLogin, &connection.Status,
+		&connection.LastError, &connection.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return githubforge.Connection{}, false, nil
+	}
+	if err != nil {
+		return githubforge.Connection{}, false, err
+	}
+	connection.InstallationID, err = strconv.ParseInt(storedInstallationID, 10, 64)
+	if err != nil || connection.InstallationID <= 0 {
+		return githubforge.Connection{}, false, fmt.Errorf("invalid stored GitHub installation")
+	}
+	return connection, true, nil
+}
+
 func (policy *GitForgePolicy) LoadGitHubConnection(ctx context.Context, id string) (githubforge.Connection, bool, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()
@@ -64,13 +95,14 @@ func (policy *GitForgePolicy) LoadGitHubConnection(ctx context.Context, id strin
 	err := GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
 		SELECT id, host, app_id, installation_id, credential_ref,
 		       webhook_secret_ref, bridge_credential_ref, bridge_pubkey,
-		       account_id, account_login, status
+		       account_id, account_login, status, last_error, updated_at
 		FROM {{.Name}}__forge_connections
 		WHERE id = $1 AND provider = 'github'`), id).Scan(
 		&connection.ID, &connection.Host, &connection.AppID, &installationID,
 		&connection.CredentialRef, &connection.WebhookSecretRef,
 		&connection.BridgeCredentialRef, &connection.BridgePubkey,
-		&connection.AccountID, &connection.AccountLogin, &connection.Status)
+		&connection.AccountID, &connection.AccountLogin, &connection.Status,
+		&connection.LastError, &connection.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return githubforge.Connection{}, false, nil
 	}

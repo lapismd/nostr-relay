@@ -9,7 +9,7 @@ in proportion to the affected boundary.
 | Go unit and package behavior | Focused package tests, followed by `go test ./...`. |
 | Buzz project and pull-request behavior | Relevant tagged project/PR Docker integration lane. |
 | WalGit storage and recovery | Tagged WalGit object-store recovery lane and local WalGit image build. |
-| GitHub integration | Focused HTTP coverage proves admin-only connection discovery omits credentials, pull-request conversation and inline-review comment reaction snapshots map only GitHub's eight values, and relay reactions/deletions call the mapped GitHub endpoints; the deterministic fake GitHub App/API/Git/webhook Docker lane never uses live credentials. |
+| GitHub integration | Focused HTTP coverage proves admin-only connection create, explicit update, revalidation, duplicate-installation conflict, and sanitized discovery; pull-request conversation and inline-review comment reaction snapshots map only GitHub's eight values, and relay reactions/deletions call the mapped GitHub endpoints. The deterministic fake GitHub App/API/Git/webhook Docker lane never uses live credentials. |
 | Deployment topology | Compose configuration rendering and local relay, WalGit, and forge-worker image builds. |
 
 Documentation-only changes do not alter a runtime contract, but must still run

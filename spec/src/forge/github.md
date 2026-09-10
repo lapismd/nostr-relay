@@ -78,10 +78,28 @@ POST /api/forge/connections/github
 }
 ```
 
-`GET /api/forge/connections/github` lists configured connections without
-credential references or secrets. `GET
+`GET /api/forge/connections/github` lists configured connections with their
+status, sanitized failure detail, and last-update time, but without credential
+references or secrets. `GET
 /api/forge/connections/github/<id>/repositories` lists repositories available
 to one installation. Connection registration and discovery are relay-admin-only.
+
+Registration is explicit and idempotent by GitHub installation: attempting to
+register an installation that already exists returns `409
+github_connection_exists` with the existing public connection record. It never
+overwrites the stored credential references. An administrator can replace the
+complete configuration or revalidate the stored configuration with:
+
+```text
+PUT  /api/forge/connections/github/<id>
+POST /api/forge/connections/github/<id>/revalidate
+```
+
+The `PUT` body has the same shape as registration. Both operations validate the
+server-mounted references, bridge keypair, and GitHub installation before an
+active result is stored. Failed revalidation records an error status and a
+sanitized detail suitable for the management UI; it never exposes secret
+values or credential reference names.
 
 ## Repository attachment
 

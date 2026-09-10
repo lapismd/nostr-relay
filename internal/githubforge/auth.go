@@ -41,6 +41,8 @@ type Connection struct {
 	AccountID           string
 	AccountLogin        string
 	Status              string
+	LastError           string
+	UpdatedAt           time.Time
 }
 
 type ConnectionLoader interface {

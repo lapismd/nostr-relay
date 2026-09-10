@@ -204,6 +204,13 @@ payload; the JSON examples below intentionally omit an `Authorization` header.
    }
    ```
 
+   Repeating registration for the same installation returns the existing
+   connection as `409 github_connection_exists`; update it deliberately with
+   `PUT /api/forge/connections/github/<connection-id>`. After rotating a
+   mounted credential, call `POST
+   /api/forge/connections/github/<connection-id>/revalidate` and confirm that
+   the connection list reports `status=active` before continuing.
+
 3. List the installation repositories with
    `GET /api/forge/connections/github/<connection-id>/repositories` and retain
    the immutable GitHub repository ID.

@@ -32,9 +32,15 @@ type fakeGitHubProvider struct {
 	ciStatus         forge.CIRun
 	ciCancelled      []string
 	ciCleaned        []string
+	validateErr      error
+	validated        []githubforge.Connection
 }
 
 func (provider *fakeGitHubProvider) ValidateConnection(_ context.Context, connection githubforge.Connection) (githubforge.Connection, error) {
+	provider.validated = append(provider.validated, connection)
+	if provider.validateErr != nil {
+		return githubforge.Connection{}, provider.validateErr
+	}
 	connection.AccountID = "7"
 	connection.AccountLogin = "lapis"
 	connection.Host = "github.com"
@@ -267,6 +273,72 @@ func TestForgeConnectionRegistrationRequiresRelayAdmin(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodGet, target, nil, nostr.Generate()))
 	require.Equal(t, http.StatusForbidden, recorder.Code)
+}
+
+func TestForgeGitHubConnectionManagementIsExplicitAndSanitized(t *testing.T) {
+	policy, store := createGitForgeTestPolicy(t, &recordingGitBackend{})
+	admin := store.Config.secret
+	bridge := nostr.Generate()
+	provider := &fakeGitHubProvider{}
+	policy.GitHub = provider
+	policy.Credentials = fakeCredentialStore{
+		"env:APP_KEY": []byte("app-key"), "env:APP_KEY_2": []byte("updated-app-key"),
+		"env:WEBHOOK": []byte("webhook-secret"), "env:BRIDGE": []byte(bridge.Hex()),
+	}
+	connectionBody := []byte(`{"app_id":"123","installation_id":99,"credential_ref":"env:APP_KEY","webhook_secret_ref":"env:WEBHOOK","bridge_credential_ref":"env:BRIDGE","bridge_pubkey":"` + bridge.Public().Hex() + `"}`)
+	connectionURL := "https://relay.example/api/forge/connections/github"
+	recorder := httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPost, connectionURL, connectionBody, admin))
+	require.Equal(t, http.StatusCreated, recorder.Code, recorder.Body.String())
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &created))
+	connectionID := created["id"].(string)
+
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPost, connectionURL, connectionBody, admin))
+	require.Equal(t, http.StatusConflict, recorder.Code, recorder.Body.String())
+	require.Contains(t, recorder.Body.String(), `"error":"github_connection_exists"`)
+	require.Contains(t, recorder.Body.String(), `"id":"`+connectionID+`"`)
+	require.Len(t, provider.validated, 1, "duplicate installations do not overwrite or revalidate the existing connection")
+
+	updatedBody := []byte(`{"app_id":"456","installation_id":99,"credential_ref":"env:APP_KEY_2","webhook_secret_ref":"env:WEBHOOK","bridge_credential_ref":"env:BRIDGE","bridge_pubkey":"` + bridge.Public().Hex() + `"}`)
+	updateURL := connectionURL + "/" + connectionID
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPut, updateURL, updatedBody, admin))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, "456", provider.validated[len(provider.validated)-1].AppID)
+	require.NotContains(t, recorder.Body.String(), "APP_KEY_2")
+
+	provider.validateErr = &forge.Error{Status: http.StatusConflict, Code: "github_installation_unavailable"}
+	revalidateURL := updateURL + "/revalidate"
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPost, revalidateURL, nil, admin))
+	require.Equal(t, http.StatusConflict, recorder.Code, recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodGet, connectionURL, nil, admin))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	var listed struct {
+		Connections []map[string]any `json:"connections"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &listed))
+	require.Len(t, listed.Connections, 1)
+	require.Equal(t, "error", listed.Connections[0]["status"])
+	require.Equal(t, "github_installation_unavailable", listed.Connections[0]["detail"])
+	require.NotEmpty(t, listed.Connections[0]["updated_at"])
+	require.NotContains(t, recorder.Body.String(), "credential_ref")
+	require.NotContains(t, recorder.Body.String(), "APP_KEY")
+	require.NotContains(t, recorder.Body.String(), bridge.Hex())
+
+	provider.validateErr = nil
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodPost, revalidateURL, nil, admin))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	policy.ServeForgeAPI(recorder, signedForgeRequest(t, http.MethodGet, connectionURL, nil, admin))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.NotContains(t, recorder.Body.String(), `"detail"`)
 }
 
 func TestGitHubAnnouncementMatchRequiresCloneAndWeb(t *testing.T) {
