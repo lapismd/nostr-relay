@@ -59,6 +59,10 @@ func configureForgeCollaborationTest(t *testing.T) (*GitForgePolicy, *EventStore
 
 func TestProviderCommandIsDurableIdempotentAndProjectsBridgeRoot(t *testing.T) {
 	policy, store, provider, actor, repository, _ := configureForgeCollaborationTest(t)
+	policy.UserCredentialMode = func(_ context.Context, pubkey nostr.PubKey) (string, error) {
+		require.Equal(t, actor.Public(), pubkey)
+		return forge.CredentialUser, nil
+	}
 	target := "https://relay.example/api/forge/repositories/" + repository.PubKey.Hex() + "/notes/issues"
 	body := []byte(`{"title":"Provider issue","body":"Track this"}`)
 	request := signedForgeRequest(t, http.MethodPost, target, body, actor)
@@ -81,6 +85,7 @@ func TestProviderCommandIsDurableIdempotentAndProjectsBridgeRoot(t *testing.T) {
 
 	require.NoError(t, policy.ProcessForgeOutboxOnce(context.Background()))
 	require.Len(t, provider.commands, 1)
+	require.Equal(t, forge.CredentialUser, provider.commands[0].CredentialMode)
 	require.Contains(t, string(provider.commands[0].Payload), "Provider issue")
 
 	var root nostr.Event
@@ -100,6 +105,7 @@ func TestProviderCommandIsDurableIdempotentAndProjectsBridgeRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, forgeOperationComplete, operation.State)
+	require.Equal(t, forge.CredentialUser, operation.CredentialMode)
 	mapping, found, err := policy.loadMappingByNostrRoot(context.Background(), forge.BackendGitHub, "connection", root.ID.Hex())
 	require.NoError(t, err)
 	require.True(t, found)

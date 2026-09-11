@@ -47,7 +47,7 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string, client *http.
 	}
 	return &GitHubProvider{config: &oauth2.Config{
 		ClientID: clientID, ClientSecret: clientSecret, RedirectURL: redirectURL,
-		Endpoint: github.Endpoint,
+		Endpoint: github.Endpoint, Scopes: []string{"repo"},
 	}, client: client}, nil
 }
 
@@ -88,6 +88,17 @@ func (provider *GitHubProvider) Exchange(ctx context.Context, code, verifier, _ 
 		Provider: "github", ProviderID: strconv.FormatInt(user.ID, 10), Login: user.Login,
 		DisplayName: user.Name, Email: strings.TrimSpace(user.Email), Token: token,
 	}, nil
+}
+
+func (provider *GitHubProvider) Refresh(ctx context.Context, token *oauth2.Token) (*oauth2.Token, error) {
+	if token == nil || token.RefreshToken == "" {
+		return nil, errors.New("GitHub refresh token is missing")
+	}
+	refreshed, err := provider.config.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, provider.client), token).Token()
+	if err != nil || refreshed.AccessToken == "" {
+		return nil, errors.New("GitHub token refresh failed")
+	}
+	return refreshed, nil
 }
 
 type GoogleProvider struct {

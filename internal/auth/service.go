@@ -11,10 +11,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"fiatjaf.com/nostr"
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
+	"zooid/internal/forge"
 	"zooid/internal/gitforge"
 )
 
@@ -38,6 +41,72 @@ type Service struct {
 	Wrapper   KeyWrapper
 	Providers map[string]OAuthProvider
 	Now       func() time.Time
+	refreshMu sync.Mutex
+}
+
+func (service *Service) GitHubCredentialMode(ctx context.Context, pubkey nostr.PubKey) (string, error) {
+	credential, err := service.Store.GitHubCredentialByPubkey(ctx, pubkey)
+	if errors.Is(err, ErrNotFound) || err == nil && credential.Status == "disconnected" {
+		return forge.CredentialSystem, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if credential.Status == "active" || credential.Status == "reconnect_required" {
+		return forge.CredentialUser, nil
+	}
+	return "", errors.New("invalid GitHub credential status")
+}
+
+func (service *Service) ResolveGitHubUserToken(ctx context.Context, pubkey nostr.PubKey) (string, error) {
+	service.refreshMu.Lock()
+	defer service.refreshMu.Unlock()
+	credential, err := service.Store.GitHubCredentialByPubkey(ctx, pubkey)
+	if err != nil || credential.Status != "active" || credential.AppClientID != service.Config.GitHubClientID {
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return "", err
+		}
+		return "", forge.ErrGitHubUserReconnectRequired
+	}
+	codec := CredentialCodec{Wrapper: service.Wrapper}
+	accessToken, err := codec.Decrypt(credential.AccountID, "github-access", credential.EncryptedAccessToken)
+	if err != nil || accessToken == "" {
+		_ = service.Store.UpdateGitHubCredentialStatus(ctx, credential.AccountID, "reconnect_required", service.Now())
+		return "", forge.ErrGitHubUserReconnectRequired
+	}
+	if credential.AccessTokenExpiresAt.IsZero() || credential.AccessTokenExpiresAt.After(service.Now().Add(5*time.Minute)) {
+		return accessToken, nil
+	}
+	refreshToken, err := codec.Decrypt(credential.AccountID, "github-refresh", credential.EncryptedRefreshToken)
+	provider, ok := service.Providers["github"].(*GitHubProvider)
+	if err != nil || refreshToken == "" || !ok {
+		_ = service.Store.UpdateGitHubCredentialStatus(ctx, credential.AccountID, "reconnect_required", service.Now())
+		return "", forge.ErrGitHubUserReconnectRequired
+	}
+	refreshed, err := provider.Refresh(ctx, &oauth2.Token{AccessToken: accessToken, RefreshToken: refreshToken, Expiry: credential.AccessTokenExpiresAt})
+	if err != nil {
+		_ = service.Store.UpdateGitHubCredentialStatus(ctx, credential.AccountID, "reconnect_required", service.Now())
+		return "", forge.ErrGitHubUserReconnectRequired
+	}
+	if refreshed.RefreshToken == "" {
+		refreshed.RefreshToken = refreshToken
+	}
+	updated, err := GitHubCredentialFromToken(credential.AccountID, credential.GitHubUserID, credential.Login, credential.AppClientID, refreshed, codec)
+	if err != nil || service.Store.SaveGitHubCredential(ctx, updated) != nil {
+		return "", errors.New("store refreshed GitHub credential")
+	}
+	return refreshed.AccessToken, nil
+}
+
+func (service *Service) MarkGitHubUserReconnectRequired(ctx context.Context, pubkey nostr.PubKey) error {
+	credential, err := service.Store.GitHubCredentialByPubkey(ctx, pubkey)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return service.Store.UpdateGitHubCredentialStatus(ctx, credential.AccountID, "reconnect_required", service.Now())
 }
 
 func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers ...OAuthProvider) (*Service, error) {

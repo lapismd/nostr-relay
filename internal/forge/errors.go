@@ -1,9 +1,12 @@
 package forge
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+var ErrGitHubUserReconnectRequired = errors.New("GitHub user authorization must be reconnected")
 
 type Error struct {
 	Status    int

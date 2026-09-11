@@ -232,6 +232,9 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	if config.Git.Enabled {
 		forgeRegistry := forge.NewRegistry()
 		instance.GitForge = NewGitForgePolicyWithRegistry(ctx, config, events, groups, instance.ProjectTasks, forgeRegistry)
+		if instance.Auth != nil {
+			instance.GitForge.UserCredentialMode = instance.Auth.GitHubCredentialMode
+		}
 		if strings.TrimSpace(config.Git.BackendURL) != "" {
 			serviceToken := strings.TrimSpace(os.Getenv("WALGIT_RELAY_TOKEN"))
 			webhookSecret := strings.TrimSpace(os.Getenv("WALGIT_WEBHOOK_SECRET"))
@@ -260,6 +263,9 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 			if err != nil {
 				instance.Events.Close()
 				return nil, err
+			}
+			if instance.Auth != nil {
+				backend.SetUserTokenResolver(instance.Auth)
 			}
 			if err := forgeRegistry.RegisterGit(backend); err != nil {
 				instance.Events.Close()

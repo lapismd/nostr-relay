@@ -66,6 +66,7 @@ type Store interface {
 	SaveGitHubCredential(context.Context, GitHubCredential) error
 	GitHubCredentialByPubkey(context.Context, nostr.PubKey) (GitHubCredential, error)
 	GitHubCredentialByAccount(context.Context, string) (GitHubCredential, error)
+	UpdateGitHubCredentialStatus(context.Context, string, string, time.Time) error
 	DisconnectGitHubCredential(context.Context, string, time.Time) error
 }
 

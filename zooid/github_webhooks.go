@@ -646,7 +646,7 @@ func (policy *GitForgePolicy) acknowledgeCorrelatedWebhook(ctx context.Context, 
 	defer cancel()
 	operation, err := policy.scanForgeOperation(GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
 		SELECT operation_id, provider, connection_id, owner, repo, command,
-		       object_type, actor, nostr_root_id, source_event_id, expected_head, payload,
+		       object_type, actor, credential_mode, nostr_root_id, source_event_id, expected_head, payload,
 		       idempotency_key, correlation_marker, processing_state,
 		       attempt_count, provider_object_id, provider_result,
 		       sanitized_failure, created_at, updated_at

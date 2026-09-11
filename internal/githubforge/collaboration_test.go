@@ -13,6 +13,51 @@ import (
 	"zooid/internal/forge"
 )
 
+type userTokenResolverFunc func(context.Context, nostr.PubKey) (string, error)
+
+func (resolve userTokenResolverFunc) ResolveGitHubUserToken(ctx context.Context, pubkey nostr.PubKey) (string, error) {
+	return resolve(ctx, pubkey)
+}
+
+func (userTokenResolverFunc) MarkGitHubUserReconnectRequired(context.Context, nostr.PubKey) error {
+	return nil
+}
+
+func TestCollaborationUsesLinkedUserCredentialWithoutBotFallback(t *testing.T) {
+	actor := nostr.Generate().Public()
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		require.NotEqual(t, "/app/installations/99/access_tokens", r.URL.Path)
+		require.Equal(t, "Bearer github-user-token", r.Header.Get("Authorization"))
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/repos/lapis/notes/issues", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 8001, "number": 12, "html_url": "https://github.com/lapis/notes/issues/12",
+			"state": "open", "user": map[string]any{"id": 123, "login": "octo"},
+		})
+	})
+	backend.SetUserTokenResolver(userTokenResolverFunc(func(_ context.Context, pubkey nostr.PubKey) (string, error) {
+		require.Equal(t, actor, pubkey)
+		return "github-user-token", nil
+	}))
+	result, err := backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "create_issue", Actor: actor, CredentialMode: forge.CredentialUser, Repository: repository,
+		Payload: json.RawMessage(`{"title":"Issue","body":"Body"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "octo", result.ExternalAuthor)
+
+	backend.SetUserTokenResolver(userTokenResolverFunc(func(context.Context, nostr.PubKey) (string, error) {
+		return "", forge.ErrGitHubUserReconnectRequired
+	}))
+	_, err = backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "create_issue", Actor: actor, CredentialMode: forge.CredentialUser, Repository: repository,
+		Payload: json.RawMessage(`{"title":"Issue","body":"Body"}`),
+	})
+	var forgeErr *forge.Error
+	require.ErrorAs(t, err, &forgeErr)
+	require.Equal(t, "github_user_reconnect_required", forgeErr.Code)
+}
+
 func TestCollaborationCreateUsesMarkerAndRecoversWithoutDuplicate(t *testing.T) {
 	var created atomic.Int32
 	marker := strings.Repeat("a", 32)

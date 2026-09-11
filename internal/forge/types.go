@@ -22,6 +22,9 @@ const (
 
 	ConfigurationLegacyDefault = "legacy-default"
 	ConfigurationExplicit      = "explicit"
+
+	CredentialSystem = "system"
+	CredentialUser   = "user"
 )
 
 type CloneAuth string
@@ -431,6 +434,7 @@ type CollaborationCommand struct {
 	OperationID       string
 	Kind              string
 	Actor             nostr.PubKey
+	CredentialMode    string
 	Repository        Repository
 	RootEventID       string
 	ExpectedHead      string
@@ -467,6 +471,7 @@ type MirrorProjection struct {
 	Kind              string
 	Repository        Repository
 	Event             nostr.Event
+	CredentialMode    string
 	RootEventID       string
 	ExternalNumber    int64
 	ObjectType        string

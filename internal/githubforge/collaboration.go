@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fiatjaf.com/nostr"
 	"zooid/internal/forge"
 )
 
@@ -178,7 +179,7 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 		return forge.CollaborationResult{}, &forge.Error{Status: http.StatusBadRequest, Code: "unsupported_forge_command"}
 	}
 	if command.CorrelationMarker != "" && correlatableCollaborationCommand(command.Kind) {
-		if recovered, found, err := backend.recoverCorrelated(ctx, command.Repository, command.Kind, externalNumber, command.CorrelationMarker); err != nil {
+		if recovered, found, err := backend.recoverCorrelated(ctx, command.Repository, command.Actor, command.CredentialMode, command.Kind, externalNumber, command.CorrelationMarker); err != nil {
 			return forge.CollaborationResult{}, err
 		} else if found {
 			return recovered, nil
@@ -189,7 +190,7 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 	if command.Kind == "merge" {
 		permissions = mergePermissions
 	}
-	response, err := backend.doRepository(ctx, command.Repository, method, path, bytes.NewReader(body), permissions)
+	response, err := backend.doRepositoryForActor(ctx, command.Repository, command.Actor, command.CredentialMode, method, path, bytes.NewReader(body), permissions)
 	if err != nil {
 		return forge.CollaborationResult{}, err
 	}
@@ -248,7 +249,7 @@ func (backend *Backend) Execute(ctx context.Context, command forge.Collaboration
 	}, nil
 }
 
-func (backend *Backend) recoverCorrelated(ctx context.Context, repository forge.Repository, kind string, externalNumber int64, marker string) (forge.CollaborationResult, bool, error) {
+func (backend *Backend) recoverCorrelated(ctx context.Context, repository forge.Repository, actor nostr.PubKey, credentialMode, kind string, externalNumber int64, marker string) (forge.CollaborationResult, bool, error) {
 	path := repoPath(repository) + "/issues?state=all&sort=updated&direction=desc&per_page=100"
 	if kind == "comment" || kind == "review" || kind == "review_comment" {
 		if externalNumber <= 0 {
@@ -263,7 +264,7 @@ func (backend *Backend) recoverCorrelated(ctx context.Context, repository forge.
 			path = repoPath(repository) + "/pulls/" + strconv.FormatInt(externalNumber, 10) + "/comments?per_page=100"
 		}
 	}
-	response, err := backend.doRepository(ctx, repository, http.MethodGet, path, nil, collaborationPermissions)
+	response, err := backend.doRepositoryForActor(ctx, repository, actor, credentialMode, http.MethodGet, path, nil, collaborationPermissions)
 	if err != nil {
 		return forge.CollaborationResult{}, false, err
 	}
@@ -297,7 +298,7 @@ func (backend *Backend) recoverCorrelated(ctx context.Context, repository forge.
 			ExternalAuthor: object.User.Login, ExternalAuthorID: strconv.FormatInt(object.User.ID, 10),
 		}
 		if kind == "create_pull_request" {
-			response, err := backend.doRepository(ctx, repository, http.MethodGet, repoPath(repository)+"/pulls/"+strconv.FormatInt(object.Number, 10), nil, collaborationPermissions)
+			response, err := backend.doRepositoryForActor(ctx, repository, actor, credentialMode, http.MethodGet, repoPath(repository)+"/pulls/"+strconv.FormatInt(object.Number, 10), nil, collaborationPermissions)
 			if err != nil {
 				return forge.CollaborationResult{}, false, err
 			}

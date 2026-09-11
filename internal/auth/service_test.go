@@ -169,6 +169,16 @@ func (store *memoryStore) DisconnectGitHubCredential(_ context.Context, id strin
 	store.credentials[id] = value
 	return nil
 }
+func (store *memoryStore) UpdateGitHubCredentialStatus(_ context.Context, id, status string, updatedAt time.Time) error {
+	value, ok := store.credentials[id]
+	if !ok {
+		return ErrNotFound
+	}
+	value.Status = status
+	value.UpdatedAt = updatedAt
+	store.credentials[id] = value
+	return nil
+}
 
 type fakeProvider struct{ identity ProviderIdentity }
 
@@ -267,4 +277,32 @@ func TestCredentialCodecBindsCiphertextToAccountAndPurpose(t *testing.T) {
 	require.Equal(t, "secret-token", plain)
 	_, err = codec.Decrypt("account-b", "github-access", ciphertext)
 	require.True(t, errors.Is(err, errors.New("decrypt credential")) || err != nil)
+}
+
+func TestGitHubCredentialModeAndFreshUserToken(t *testing.T) {
+	store := newMemoryStore()
+	service := newTestService(t, store)
+	secret := nostr.Generate()
+	account, err := store.CreateExternalAccount(context.Background(), secret.Public())
+	require.NoError(t, err)
+	codec := CredentialCodec{Wrapper: service.Wrapper}
+	credential, err := GitHubCredentialFromToken(account.ID, "123", "octo", "github-client", &oauth2.Token{
+		AccessToken: "github-user-token", Expiry: time.Now().Add(time.Hour),
+	}, codec)
+	require.NoError(t, err)
+	require.NoError(t, store.SaveGitHubCredential(context.Background(), credential))
+
+	mode, err := service.GitHubCredentialMode(context.Background(), account.Pubkey)
+	require.NoError(t, err)
+	require.Equal(t, "user", mode)
+	token, err := service.ResolveGitHubUserToken(context.Background(), account.Pubkey)
+	require.NoError(t, err)
+	require.Equal(t, "github-user-token", token)
+
+	require.NoError(t, store.DisconnectGitHubCredential(context.Background(), account.ID, time.Now()))
+	mode, err = service.GitHubCredentialMode(context.Background(), account.Pubkey)
+	require.NoError(t, err)
+	require.Equal(t, "system", mode)
+	_, err = service.ResolveGitHubUserToken(context.Background(), account.Pubkey)
+	require.Error(t, err)
 }

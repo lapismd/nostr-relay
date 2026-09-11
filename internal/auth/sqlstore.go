@@ -274,16 +274,22 @@ func (store *SQLStore) SaveGitHubCredential(ctx context.Context, credential GitH
 	_, err := store.DB.ExecContext(ctx, `INSERT INTO `+store.table("github_credentials")+`
 		(account_id,github_user_id,github_login,encrypted_access_token,encrypted_refresh_token,
 		 access_token_expires_at,refresh_token_expires_at,app_client_id,status,updated_at)
-		VALUES ($1,$2,$3,$4,$5,NULLIF($6,$10),NULLIF($7,$10),$8,$9,$11)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (account_id) DO UPDATE SET github_user_id=EXCLUDED.github_user_id,
 		github_login=EXCLUDED.github_login,encrypted_access_token=EXCLUDED.encrypted_access_token,
 		encrypted_refresh_token=EXCLUDED.encrypted_refresh_token,access_token_expires_at=EXCLUDED.access_token_expires_at,
 		refresh_token_expires_at=EXCLUDED.refresh_token_expires_at,app_client_id=EXCLUDED.app_client_id,
 		status=EXCLUDED.status,updated_at=EXCLUDED.updated_at`, credential.AccountID, credential.GitHubUserID,
 		credential.Login, credential.EncryptedAccessToken, credential.EncryptedRefreshToken,
-		credential.AccessTokenExpiresAt, credential.RefreshTokenExpiresAt, credential.AppClientID,
-		credential.Status, time.Time{}, credential.UpdatedAt)
+		nullableTime(credential.AccessTokenExpiresAt), nullableTime(credential.RefreshTokenExpiresAt), credential.AppClientID,
+		credential.Status, credential.UpdatedAt)
 	return classifyConflict(err)
+}
+
+func (store *SQLStore) UpdateGitHubCredentialStatus(ctx context.Context, accountID, status string, now time.Time) error {
+	_, err := store.DB.ExecContext(ctx, `UPDATE `+store.table("github_credentials")+`
+		SET status=$2,updated_at=$3 WHERE account_id=$1`, accountID, status, now)
+	return err
 }
 
 func (store *SQLStore) GitHubCredentialByPubkey(ctx context.Context, pubkey nostr.PubKey) (GitHubCredential, error) {
@@ -332,6 +338,13 @@ func classifyConflict(err error) error {
 		return ErrIdentityConflict
 	}
 	return err
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }
 
 func (store *SQLStore) String() string { return fmt.Sprintf("auth SQL store %s", store.Prefix) }

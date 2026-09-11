@@ -38,6 +38,7 @@ type forgeOperation struct {
 	Command           string
 	ObjectType        string
 	Actor             nostr.PubKey
+	CredentialMode    string
 	RootEventID       string
 	SourceEventID     string
 	ExpectedHead      string
@@ -82,16 +83,28 @@ func (policy *GitForgePolicy) enqueueForgeOperation(ctx context.Context, operati
 	if operation.CorrelationMarker == "" {
 		operation.CorrelationMarker = forgeCorrelationMarker(operation.IdempotencyKey)
 	}
+	if operation.CredentialMode == "" {
+		operation.CredentialMode = forge.CredentialSystem
+		if operation.Provider == forge.BackendGitHub && operation.Actor != nostr.ZeroPK && policy.UserCredentialMode != nil && userAttributedForgeCommand(operation.Command) {
+			mode, modeErr := policy.UserCredentialMode(queryCtx, operation.Actor)
+			if modeErr != nil {
+				return forgeOperation{}, modeErr
+			}
+			if mode == forge.CredentialUser {
+				operation.CredentialMode = mode
+			}
+		}
+	}
 	_, err := GetDb().ExecContext(queryCtx, policy.Events.Schema.Render(`
 		INSERT INTO {{.Name}}__forge_outbox
 		  (operation_id, provider, connection_id, owner, repo, command,
-		   object_type, actor, nostr_root_id, source_event_id, expected_head, payload,
+		   object_type, actor, credential_mode, nostr_root_id, source_event_id, expected_head, payload,
 		   idempotency_key, correlation_marker, processing_state)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'pending')
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'pending')
 		ON CONFLICT (idempotency_key) DO NOTHING`),
 		operation.ID, operation.Provider, operation.ConnectionID,
 		operation.Coordinate.Owner.Hex(), operation.Coordinate.ID, operation.Command,
-		operation.ObjectType, operation.Actor.Hex(), operation.RootEventID, operation.SourceEventID,
+		operation.ObjectType, operation.Actor.Hex(), operation.CredentialMode, operation.RootEventID, operation.SourceEventID,
 		operation.ExpectedHead, operation.Payload, operation.IdempotencyKey,
 		operation.CorrelationMarker)
 	if err != nil {
@@ -100,12 +113,21 @@ func (policy *GitForgePolicy) enqueueForgeOperation(ctx context.Context, operati
 	return policy.loadForgeOperationByIdempotency(queryCtx, operation.IdempotencyKey)
 }
 
+func userAttributedForgeCommand(command string) bool {
+	switch command {
+	case "create_issue", "create_pull_request", "comment", "review", "review_comment", "state", "merge", "reaction_add", "reaction_delete":
+		return true
+	default:
+		return false
+	}
+}
+
 func (policy *GitForgePolicy) loadForgeOperation(ctx context.Context, id string) (forgeOperation, bool, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, dbOpTimeout)
 	defer cancel()
 	operation, err := policy.scanForgeOperation(GetDb().QueryRowContext(queryCtx, policy.Events.Schema.Render(`
 		SELECT operation_id, provider, connection_id, owner, repo, command,
-		       object_type, actor, nostr_root_id, source_event_id, expected_head, payload,
+		       object_type, actor, credential_mode, nostr_root_id, source_event_id, expected_head, payload,
 		       idempotency_key, correlation_marker, processing_state,
 		       attempt_count, provider_object_id, provider_result,
 		       sanitized_failure, created_at, updated_at
@@ -119,7 +141,7 @@ func (policy *GitForgePolicy) loadForgeOperation(ctx context.Context, id string)
 func (policy *GitForgePolicy) loadForgeOperationByIdempotency(ctx context.Context, key string) (forgeOperation, error) {
 	return policy.scanForgeOperation(GetDb().QueryRowContext(ctx, policy.Events.Schema.Render(`
 		SELECT operation_id, provider, connection_id, owner, repo, command,
-		       object_type, actor, nostr_root_id, source_event_id, expected_head, payload,
+		       object_type, actor, credential_mode, nostr_root_id, source_event_id, expected_head, payload,
 		       idempotency_key, correlation_marker, processing_state,
 		       attempt_count, provider_object_id, provider_result,
 		       sanitized_failure, created_at, updated_at
@@ -137,7 +159,7 @@ func (policy *GitForgePolicy) scanForgeOperation(row rowScanner) (forgeOperation
 	err := row.Scan(
 		&operation.ID, &operation.Provider, &operation.ConnectionID, &ownerHex,
 		&operation.Coordinate.ID, &operation.Command, &operation.ObjectType,
-		&actorHex, &operation.RootEventID, &operation.SourceEventID, &operation.ExpectedHead, &operation.Payload,
+		&actorHex, &operation.CredentialMode, &operation.RootEventID, &operation.SourceEventID, &operation.ExpectedHead, &operation.Payload,
 		&operation.IdempotencyKey, &operation.CorrelationMarker, &operation.State,
 		&operation.Attempts, &operation.ProviderObjectID, &resultJSON,
 		&operation.Failure, &operation.CreatedAt, &operation.UpdatedAt,
@@ -173,7 +195,7 @@ func (policy *GitForgePolicy) claimForgeOperation(ctx context.Context) (forgeOpe
 	defer tx.Rollback()
 	operation, err := policy.scanForgeOperation(tx.QueryRowContext(queryCtx, policy.Events.Schema.Render(`
 		SELECT operation_id, provider, connection_id, owner, repo, command,
-		       object_type, actor, nostr_root_id, source_event_id, expected_head, payload,
+		       object_type, actor, credential_mode, nostr_root_id, source_event_id, expected_head, payload,
 		       idempotency_key, correlation_marker, processing_state,
 		       attempt_count, provider_object_id, provider_result,
 		       sanitized_failure, created_at, updated_at
@@ -487,7 +509,8 @@ func (policy *GitForgePolicy) ProcessForgeOutboxOnce(ctx context.Context) error 
 		if resolved.Collaboration != nil && resolved.Collaboration.Name() == operation.Provider {
 			providerResult, executeErr = resolved.Collaboration.Execute(ctx, forge.CollaborationCommand{
 				OperationID: operation.ID, Kind: operation.Command, Actor: operation.Actor,
-				Repository: resolved.Repository, RootEventID: operation.RootEventID,
+				CredentialMode: operation.CredentialMode,
+				Repository:     resolved.Repository, RootEventID: operation.RootEventID,
 				ExpectedHead: operation.ExpectedHead, CorrelationMarker: operation.CorrelationMarker,
 				Payload: payload,
 			})
@@ -498,7 +521,8 @@ func (policy *GitForgePolicy) ProcessForgeOutboxOnce(ctx context.Context) error 
 			} else {
 				providerResult, executeErr = resolved.Mirror.Project(ctx, forge.MirrorProjection{
 					OperationID: operation.ID, Kind: operation.Command, Repository: resolved.Repository,
-					Event: source, RootEventID: operation.RootEventID, ExpectedHead: operation.ExpectedHead,
+					CredentialMode: operation.CredentialMode,
+					Event:          source, RootEventID: operation.RootEventID, ExpectedHead: operation.ExpectedHead,
 					CorrelationMarker: operation.CorrelationMarker, Payload: payload,
 				})
 			}

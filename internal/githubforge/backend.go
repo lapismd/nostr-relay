@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"fiatjaf.com/nostr"
 	"zooid/internal/forge"
 )
 
@@ -28,10 +30,22 @@ var gitWritePermissions = map[string]string{"metadata": "read", "contents": "wri
 type Backend struct {
 	connections ConnectionLoader
 	credentials CredentialStore
+	userTokens  UserTokenResolver
 	client      *http.Client
 	base        *url.URL
 	tokens      *tokenManager
 	reads       *githubReadCache
+}
+
+// UserTokenResolver returns an OAuth token for the Nostr author selected when
+// a durable forge operation was enqueued.
+type UserTokenResolver interface {
+	ResolveGitHubUserToken(context.Context, nostr.PubKey) (string, error)
+	MarkGitHubUserReconnectRequired(context.Context, nostr.PubKey) error
+}
+
+func (backend *Backend) SetUserTokenResolver(resolver UserTokenResolver) {
+	backend.userTokens = resolver
 }
 
 func New(connections ConnectionLoader, credentials CredentialStore, client *http.Client) (*Backend, error) {
@@ -578,6 +592,55 @@ func (backend *Backend) doRepository(ctx context.Context, repository forge.Repos
 		backend.reads.invalidate(connection.ID, repositoryID)
 	}
 	return response, err
+}
+
+func (backend *Backend) doRepositoryForActor(ctx context.Context, repository forge.Repository, actor nostr.PubKey, credentialMode, method, path string, body io.Reader, permissions map[string]string) (*http.Response, error) {
+	if credentialMode == "" || credentialMode == forge.CredentialSystem {
+		return backend.doRepository(ctx, repository, method, path, body, permissions)
+	}
+	if credentialMode != forge.CredentialUser || actor == nostr.ZeroPK || backend.userTokens == nil {
+		return nil, &forge.Error{Status: http.StatusUnauthorized, Code: "github_user_reconnect_required"}
+	}
+	connection, repositoryID, err := backend.connectionFor(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
+	token, err := backend.userTokens.ResolveGitHubUserToken(ctx, actor)
+	if errors.Is(err, forge.ErrGitHubUserReconnectRequired) || err == nil && token == "" {
+		return nil, &forge.Error{Status: http.StatusUnauthorized, Code: "github_user_reconnect_required"}
+	}
+	if err != nil {
+		return nil, &forge.Error{Status: http.StatusServiceUnavailable, Code: "github_user_credential_unavailable", Retryable: true}
+	}
+	target := *backend.base
+	pathPart, rawQuery, _ := strings.Cut(path, "?")
+	target.Path = pathPart
+	target.RawQuery = rawQuery
+	request, err := http.NewRequestWithContext(ctx, method, target.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	setGitHubHeaders(request, token)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := backend.client.Do(request)
+	if err != nil {
+		return nil, &forge.Error{Status: http.StatusServiceUnavailable, Code: "github_unavailable", Retryable: true}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		status := response.StatusCode
+		response.Body.Close()
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			_ = backend.userTokens.MarkGitHubUserReconnectRequired(ctx, actor)
+			return nil, &forge.Error{Status: http.StatusUnauthorized, Code: "github_user_reconnect_required"}
+		}
+		return nil, githubStatusError(status, response.Header)
+	}
+	if method != http.MethodGet {
+		backend.reads.invalidate(connection.ID, repositoryID)
+	}
+	return response, nil
 }
 
 func (backend *Backend) getRepository(ctx context.Context, repository forge.Repository, path string, permissions map[string]string) (*http.Response, error) {

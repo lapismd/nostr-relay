@@ -72,7 +72,8 @@ func (backend *Backend) Project(ctx context.Context, projection forge.MirrorProj
 	return backend.Execute(ctx, forge.CollaborationCommand{
 		OperationID: projection.OperationID, Kind: projection.Kind,
 		Actor: projection.Event.PubKey, Repository: projection.Repository,
-		RootEventID: projection.RootEventID, ExpectedHead: projection.ExpectedHead,
+		CredentialMode: projection.CredentialMode,
+		RootEventID:    projection.RootEventID, ExpectedHead: projection.ExpectedHead,
 		CorrelationMarker: projection.CorrelationMarker, Payload: projection.Payload,
 	})
 }
