@@ -53,6 +53,10 @@ live under `internal/khatru`. The local patch map is:
 - `internal/githubforge`: fixed-host GitHub App authentication, normalized Git
   reads, provider collaboration/mirror/event decoding, migration source, and
   exact-SHA Actions adapter. Provider response types do not leave this package.
+- `internal/auth`: provider-neutral accounts and sessions, GitHub and Google
+  login adapters, Nostr login, encrypted managed keys, the signer boundary,
+  passkeys, NIP-46 connections, and custody transfer. Zooid and forge code use
+  this package only through narrow service and credential-resolver seams.
 - `zooid/git_forge.go`, `zooid/git_http.go`, `zooid/forge_*.go`,
   `zooid/git_replicas.go`, `zooid/git_replication.go`, `zooid/github_*.go`, and
   `zooid/walgit_events.go`: durable desired state,
@@ -68,6 +72,9 @@ live under `internal/khatru`. The local patch map is:
 - migration `013`: independent authority/content/replication-target selection,
   private replica state/ref/jobs/object pins, replica-origin event marking, and
   outbound Git replication state/jobs.
+- migrations `016`-`019`: accounts and signer bindings, login/session/provider
+  state, durable GitHub credential attribution, encrypted passkeys, and custody
+  transfer state.
 - `third_party/walgit`: exact upstream pin, reproducible archive verification,
   image recipe, deployment configuration, and the short bounded-compare patch.
 - `cmd/forge-worker`, `Dockerfile`, `docker-compose.yml`, and the storage

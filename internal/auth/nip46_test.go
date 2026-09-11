@@ -98,6 +98,9 @@ func TestManagedSessionSignsNIP42Challenge(t *testing.T) {
 	pubkey, err := nip42.ValidateAuthEvent(payload.Event, challenge, "wss://relay.example")
 	require.NoError(t, err)
 	require.Equal(t, account.Pubkey, pubkey)
+	require.NotEmpty(t, store.audit)
+	require.Equal(t, "sign_relay_auth", store.audit[len(store.audit)-1].Operation)
+	require.Equal(t, SignerManaged, store.audit[len(store.audit)-1].SignerType)
 }
 
 func TestExternalAccountConnectsNIP46WithoutPersistingConnectionSecret(t *testing.T) {

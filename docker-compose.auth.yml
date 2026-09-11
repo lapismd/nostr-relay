@@ -1,0 +1,18 @@
+services:
+  relay:
+    environment:
+      AUTH_ENABLED: "true"
+      AUTH_MASTER_KEY_REF: file:lapis_auth_master_key
+    secrets:
+      - lapis_auth_master_key
+
+  forge-worker:
+    environment:
+      AUTH_ENABLED: "true"
+      AUTH_MASTER_KEY_REF: file:lapis_auth_master_key
+    secrets:
+      - lapis_auth_master_key
+
+secrets:
+  lapis_auth_master_key:
+    file: ${LAPIS_AUTH_MASTER_KEY_FILE:?set the auth master-key file}

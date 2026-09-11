@@ -9,6 +9,7 @@ The canonical functional documentation is the linked mdBook under
 [`spec/src`](spec/src/index.md). It covers:
 
 - relay architecture, transports, NIP-29 policy, and configuration;
+- Google, GitHub, and Nostr application auth, managed keys, passkeys, and NIP-46 signing;
 - Buzz-compatible projects, tasks, pull requests, HTTP, and Blossom behavior;
 - capability-based WalGit and GitHub forge integrations;
 - clean-boot data population, Cloudflare R2 deployment, local RustFS testing,

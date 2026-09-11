@@ -64,6 +64,46 @@ externally supplied secret/config paths through the deployment platform.
 WalGit's cache volume is reconstructable; the configured object store is the
 durable Git source when WalGit is authoritative.
 
+## Enable application authentication
+
+Application auth is independent of relay NIP-42 enforcement and is disabled by
+default. Create a 32-byte master wrapping key, encode it as hexadecimal or
+base64, and place it in a deployment secret file. Keep that file outside the
+repository and back it up separately from PostgreSQL. Losing it makes managed
+Nostr keys, passkeys, provider tokens, and NIP-46 client keys unrecoverable.
+
+Add the base overlay plus either or both provider overlays:
+
+```sh
+docker compose -f docker-compose.yml \
+  -f docker-compose.auth.yml \
+  -f docker-compose.auth-github.yml \
+  -f docker-compose.auth-google.yml \
+  config --quiet
+```
+
+Set `LAPIS_AUTH_PUBLIC_URL` to the exact browser-facing HTTPS origin. Register
+these provider callbacks:
+
+```text
+https://<relay>/api/auth/callback/github
+https://<relay>/api/auth/callback/google
+```
+
+The GitHub OAuth client must belong to the same GitHub App whose installation
+is used by the repository integration. Enable expiring user access tokens so
+the relay receives refresh tokens. The Google client is a web OIDC client with
+the relay callback in its authorized redirect URI list.
+
+Mount the master key through `docker-compose.auth.yml`. Mount provider secrets
+through their corresponding overlays. If an external forge worker is enabled,
+give it the same auth master key and GitHub OAuth secret so it can decrypt and
+refresh the user credential selected by the durable outbox operation.
+
+The endpoint and transfer contract are documented in [Application
+authentication and signing](../auth.md). Desktop NIP-46 and custody UI remain
+consumer work; this relay release supplies the backend contract.
+
 ## Use Cloudflare R2 in production
 
 The deployment-facing object-store variables are provider-neutral. WalGit can

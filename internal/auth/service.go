@@ -593,6 +593,7 @@ func (service *Service) connectNIP46(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusServiceUnavailable, "nip46_binding_failed")
 		return
 	}
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, SignerType: SignerNIP46, Operation: "nip46_connect", Result: "success"})
 	writeAuthJSON(w, http.StatusOK, map[string]any{"nostr_pubkey": account.Pubkey.Hex(), "signer_type": SignerNIP46})
 }
 
@@ -634,6 +635,7 @@ func (service *Service) logoutNIP46(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusConflict, "nip46_signer_unavailable")
 		return
 	}
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, SignerType: SignerExternal, Operation: "nip46_logout", Result: "success"})
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -51,7 +51,10 @@ The major sections are:
 - `[registry]`: optional Lapis plugin-release group and curator-role policy;
 - `[roles.<name>]`: static pubkeys plus `can_invite` and `can_manage`; and
 - `[git]`: public clone base, internal WalGit URL, reconcile interval, and diff
-  limits.
+  limits;
+- `[auth]`: optional application sessions, encrypted managed identities,
+  passkeys, NIP-46, and provider configuration described in
+  [Application authentication and signing](../auth.md).
 
 The checked-in [.env.example](../../../.env.example) and entrypoint are the
 canonical inventory of container variables. Operator-managed TOML files are

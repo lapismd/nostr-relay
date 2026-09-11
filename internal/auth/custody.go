@@ -136,6 +136,7 @@ func (service *Service) authorizeCustodyTransfer(w http.ResponseWriter, r *http.
 		writeAuthError(w, http.StatusServiceUnavailable, "custody_transfer_failed")
 		return
 	}
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, SignerType: SignerManaged, Operation: "custody_transfer_authorize", Result: "success"})
 	writeAuthJSON(w, http.StatusOK, envelope)
 }
 

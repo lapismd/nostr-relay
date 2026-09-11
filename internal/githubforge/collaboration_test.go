@@ -23,6 +23,20 @@ func (userTokenResolverFunc) MarkGitHubUserReconnectRequired(context.Context, no
 	return nil
 }
 
+type trackingUserTokenResolver struct {
+	token  string
+	marked nostr.PubKey
+}
+
+func (resolver *trackingUserTokenResolver) ResolveGitHubUserToken(context.Context, nostr.PubKey) (string, error) {
+	return resolver.token, nil
+}
+
+func (resolver *trackingUserTokenResolver) MarkGitHubUserReconnectRequired(_ context.Context, pubkey nostr.PubKey) error {
+	resolver.marked = pubkey
+	return nil
+}
+
 func TestCollaborationUsesLinkedUserCredentialWithoutBotFallback(t *testing.T) {
 	actor := nostr.Generate().Public()
 	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +70,25 @@ func TestCollaborationUsesLinkedUserCredentialWithoutBotFallback(t *testing.T) {
 	var forgeErr *forge.Error
 	require.ErrorAs(t, err, &forgeErr)
 	require.Equal(t, "github_user_reconnect_required", forgeErr.Code)
+}
+
+func TestCollaborationPermissionDenialRequiresReconnectWithoutInstallationFallback(t *testing.T) {
+	actor := nostr.Generate().Public()
+	backend, repository := testGitHubBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		require.NotEqual(t, "/app/installations/99/access_tokens", r.URL.Path)
+		require.Equal(t, "Bearer user-without-permission", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusForbidden)
+	})
+	resolver := &trackingUserTokenResolver{token: "user-without-permission"}
+	backend.SetUserTokenResolver(resolver)
+	_, err := backend.Execute(context.Background(), forge.CollaborationCommand{
+		Kind: "create_issue", Actor: actor, CredentialMode: forge.CredentialUser, Repository: repository,
+		Payload: json.RawMessage(`{"title":"Issue","body":"Body"}`),
+	})
+	var forgeErr *forge.Error
+	require.ErrorAs(t, err, &forgeErr)
+	require.Equal(t, "github_user_reconnect_required", forgeErr.Code)
+	require.Equal(t, actor, resolver.marked)
 }
 
 func TestCollaborationCreateUsesMarkerAndRecoversWithoutDuplicate(t *testing.T) {

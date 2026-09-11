@@ -1,0 +1,18 @@
+services:
+  relay:
+    environment:
+      AUTH_GITHUB_CLIENT_ID: ${LAPIS_AUTH_GITHUB_CLIENT_ID:?set the GitHub App OAuth client ID}
+      AUTH_GITHUB_CLIENT_SECRET_REF: file:lapis_auth_github_client_secret
+    secrets:
+      - lapis_auth_github_client_secret
+
+  forge-worker:
+    environment:
+      AUTH_GITHUB_CLIENT_ID: ${LAPIS_AUTH_GITHUB_CLIENT_ID:?set the GitHub App OAuth client ID}
+      AUTH_GITHUB_CLIENT_SECRET_REF: file:lapis_auth_github_client_secret
+    secrets:
+      - lapis_auth_github_client_secret
+
+secrets:
+  lapis_auth_github_client_secret:
+    file: ${LAPIS_AUTH_GITHUB_CLIENT_SECRET_FILE:?set the GitHub OAuth client-secret file}

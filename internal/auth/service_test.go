@@ -447,4 +447,6 @@ func TestExpiredGitHubUserTokenIsRefreshed(t *testing.T) {
 	plain, err := (CredentialCodec{Wrapper: service.Wrapper}).Decrypt(account.ID, "github-refresh", stored.EncryptedRefreshToken)
 	require.NoError(t, err)
 	require.Equal(t, "new-refresh-token", plain)
+	require.NotEmpty(t, store.audit)
+	require.Equal(t, "github_credential_refresh", store.audit[len(store.audit)-1].Operation)
 }

@@ -124,6 +124,7 @@ func (service *Service) finishPasskeyRegistration(w http.ResponseWriter, r *http
 		writeAuthError(w, http.StatusServiceUnavailable, "passkey_store_unavailable")
 		return
 	}
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, Operation: "passkey_register", Result: "success"})
 	writeAuthJSON(w, http.StatusCreated, map[string]any{"credential_id": encodeRawURL(credential.ID)})
 }
 

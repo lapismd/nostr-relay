@@ -54,6 +54,12 @@ by that operation.
 GitHub installation tokens are treated as opaque values and refreshed before
 their [one-hour expiry](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
 
+Application auth may additionally hold an encrypted GitHub App user token for
+a linked Nostr pubkey. Only user-authored collaboration mutations use that
+credential. Repository discovery, import, webhook recovery, mirroring,
+reconciliation, CI, and maintenance remain explicit system operations and use
+the installation token. See [Application authentication and signing](../auth.md).
+
 Repository metadata and browser-content GET responses use a relay-local,
 in-memory read-through cache keyed by connection, stable repository ID, and
 canonical GitHub API path. Concurrent misses are coalesced. Successful results
@@ -191,9 +197,13 @@ a native GitHub review when it carries `t=approval`, `t=changes-requested`, or
 `REQUEST_CHANGES`, and `COMMENT`. A reply carrying `t=inline-comment`, a full
 reviewed `c`, non-empty `file`, positive `line`, and `side=old|new` becomes an
 immediate GitHub pull-request review comment with `LEFT|RIGHT` side semantics.
-Other pull-request replies remain conversation comments. Provider requests
-retain the GitHub App as their API author while including a visible
-Lapis/Nostr pubkey attribution footer and the hidden correlation marker.
+Other pull-request replies remain conversation comments. When the Nostr author
+has linked GitHub, the durable operation uses that GitHub App user token and
+GitHub attributes the request to the user. A user operation with revoked or
+insufficient authorization fails with `github_user_reconnect_required` and
+never falls back to the installation token. An unlinked author uses the GitHub
+App installation identity and receives the visible Lapis/Nostr pubkey
+attribution footer. All creates retain the hidden correlation marker.
 Review and inline-comment recovery list the corresponding GitHub pull-request
 collections before retrying, and correlated webhook echoes acknowledge the
 original outbox operation without publishing a second relay event.

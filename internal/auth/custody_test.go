@@ -75,6 +75,8 @@ func TestCustodyTransferPreservesPubkeyAndDeletesManagedKeyAfterProof(t *testing
 	require.False(t, found)
 	require.Equal(t, "complete", store.transfers[transferID].State)
 	require.NotContains(t, string(store.bindings[account.ID].Metadata), "one-time-secret")
+	require.NotEmpty(t, store.audit)
+	require.Equal(t, "custody_transfer_complete", store.audit[len(store.audit)-1].Operation)
 }
 
 func TestCustodyTransferRequiresEnrolledPasskey(t *testing.T) {

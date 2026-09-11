@@ -18,7 +18,7 @@ Relay `AUTH` challenge and client kind `22242` response with `relay` and `challe
 
 ## Validation, lifecycle and visibility
 
-Khatru verifies the event, origin, challenge, and freshness. Zooid binds the authenticated pubkey to the connection; Buzz NIP-AA may derive connection-local agent admission after this verification.
+Khatru verifies the event, origin, challenge, and freshness. Zooid binds the authenticated pubkey to the connection; Buzz NIP-AA may derive connection-local agent admission after this verification. An authenticated application session may request a challenge-bound kind `22242` signature from its managed or NIP-46 signer through `/api/auth/relay/sign-auth`; the signing policy fixes the relay URL and event kind.
 
 ## Component support
 
