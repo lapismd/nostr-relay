@@ -206,6 +206,48 @@ func (store *SQLStore) LoadManagedKey(ctx context.Context, accountID string) (Ma
 	return key, err
 }
 
+func (store *SQLStore) SignerBindingByAccount(ctx context.Context, accountID string) (SignerBinding, error) {
+	var binding SignerBinding
+	var pubkey string
+	err := store.DB.QueryRowContext(ctx, `SELECT account_id,signer_type,public_key,status,metadata,created_at,updated_at
+		FROM `+store.table("signer_bindings")+` WHERE account_id=$1`, accountID).Scan(
+		&binding.AccountID, &binding.Type, &pubkey, &binding.Status, &binding.Metadata, &binding.CreatedAt, &binding.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return binding, ErrNotFound
+	}
+	if err != nil {
+		return binding, err
+	}
+	binding.Pubkey, err = nostr.PubKeyFromHex(pubkey)
+	return binding, err
+}
+
+func (store *SQLStore) SetNIP46Binding(ctx context.Context, accountID string, pubkey nostr.PubKey, metadata []byte, now time.Time) error {
+	result, err := store.DB.ExecContext(ctx, `UPDATE `+store.table("signer_bindings")+`
+		SET signer_type='nip46',status='active',metadata=$3,updated_at=$4
+		WHERE account_id=$1 AND public_key=$2 AND signer_type IN ('external','nip46')`, accountID, pubkey.Hex(), metadata, now)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return ErrSigningDenied
+	}
+	return nil
+}
+
+func (store *SQLStore) SetExternalBinding(ctx context.Context, accountID string, pubkey nostr.PubKey, now time.Time) error {
+	result, err := store.DB.ExecContext(ctx, `UPDATE `+store.table("signer_bindings")+`
+		SET signer_type='external',status='active',metadata='{}'::jsonb,updated_at=$3
+		WHERE account_id=$1 AND public_key=$2 AND signer_type='nip46'`, accountID, pubkey.Hex(), now)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return ErrSigningDenied
+	}
+	return nil
+}
+
 func (store *SQLStore) CreateSession(ctx context.Context, session Session) error {
 	_, err := store.DB.ExecContext(ctx, `INSERT INTO `+store.table("sessions")+`
 		(session_id,account_id,token_hash,auth_provider,expires_at,idle_expires_at,created_at,last_seen_at)

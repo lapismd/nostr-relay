@@ -56,6 +56,9 @@ type Store interface {
 	ExternalIdentities(context.Context, string) ([]ExternalIdentity, error)
 	RemoveIdentity(context.Context, string, string) error
 	LoadManagedKey(context.Context, string) (ManagedKey, error)
+	SignerBindingByAccount(context.Context, string) (SignerBinding, error)
+	SetNIP46Binding(context.Context, string, nostr.PubKey, []byte, time.Time) error
+	SetExternalBinding(context.Context, string, nostr.PubKey, time.Time) error
 	CreateSession(context.Context, Session) error
 	SessionByTokenHash(context.Context, [32]byte, time.Time) (Session, Account, error)
 	TouchSession(context.Context, string, time.Time, time.Time) error

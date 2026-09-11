@@ -29,6 +29,7 @@ type memoryStore struct {
 	sessions    map[[32]byte]Session
 	challenges  map[[32]byte]NostrChallenge
 	credentials map[string]GitHubCredential
+	bindings    map[string]SignerBinding
 }
 
 func newMemoryStore() *memoryStore {
@@ -36,6 +37,7 @@ func newMemoryStore() *memoryStore {
 		flows: make(map[[32]byte]OAuthFlow), accounts: make(map[string]Account), pubkeys: make(map[nostr.PubKey]string),
 		identities: make(map[string]ExternalIdentity), keys: make(map[string]ManagedKey), sessions: make(map[[32]byte]Session),
 		challenges: make(map[[32]byte]NostrChallenge), credentials: make(map[string]GitHubCredential),
+		bindings: make(map[string]SignerBinding),
 	}
 }
 
@@ -81,6 +83,7 @@ func (store *memoryStore) CreateManagedAccount(_ context.Context, identity Exter
 	store.pubkeys[pubkey] = account.ID
 	store.identities[identityKey(identity.Provider, identity.ProviderID)] = identity
 	store.keys[account.ID] = key
+	store.bindings[account.ID] = SignerBinding{AccountID: account.ID, Type: SignerManaged, Pubkey: pubkey, Status: SignerActive}
 	return account, nil
 }
 func (store *memoryStore) CreateExternalAccount(_ context.Context, pubkey nostr.PubKey) (Account, error) {
@@ -90,6 +93,7 @@ func (store *memoryStore) CreateExternalAccount(_ context.Context, pubkey nostr.
 	account := Account{ID: "external-account", Pubkey: pubkey, CreatedAt: time.Now()}
 	store.accounts[account.ID] = account
 	store.pubkeys[pubkey] = account.ID
+	store.bindings[account.ID] = SignerBinding{AccountID: account.ID, Type: SignerExternal, Pubkey: pubkey, Status: SignerActive}
 	return account, nil
 }
 func (store *memoryStore) LinkIdentity(_ context.Context, identity ExternalIdentity) error {
@@ -116,6 +120,31 @@ func (store *memoryStore) LoadManagedKey(_ context.Context, accountID string) (M
 		return key, ErrNotFound
 	}
 	return key, nil
+}
+func (store *memoryStore) SignerBindingByAccount(_ context.Context, accountID string) (SignerBinding, error) {
+	binding, ok := store.bindings[accountID]
+	if !ok {
+		return binding, ErrNotFound
+	}
+	return binding, nil
+}
+func (store *memoryStore) SetNIP46Binding(_ context.Context, accountID string, pubkey nostr.PubKey, metadata []byte, now time.Time) error {
+	binding, ok := store.bindings[accountID]
+	if !ok || binding.Pubkey != pubkey || binding.Type == SignerManaged {
+		return ErrSigningDenied
+	}
+	binding.Type, binding.Status, binding.Metadata, binding.UpdatedAt = SignerNIP46, SignerActive, metadata, now
+	store.bindings[accountID] = binding
+	return nil
+}
+func (store *memoryStore) SetExternalBinding(_ context.Context, accountID string, pubkey nostr.PubKey, now time.Time) error {
+	binding, ok := store.bindings[accountID]
+	if !ok || binding.Pubkey != pubkey || binding.Type != SignerNIP46 {
+		return ErrSigningDenied
+	}
+	binding.Type, binding.Status, binding.Metadata, binding.UpdatedAt = SignerExternal, SignerActive, nil, now
+	store.bindings[accountID] = binding
+	return nil
 }
 func (store *memoryStore) CreateSession(_ context.Context, session Session) error {
 	store.sessions[session.TokenHash] = session

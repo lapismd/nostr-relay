@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip42"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 	"zooid/internal/forge"
@@ -42,6 +43,7 @@ type Service struct {
 	Providers map[string]OAuthProvider
 	Now       func() time.Time
 	refreshMu sync.Mutex
+	NIP46     NIP46Connector
 }
 
 func (service *Service) GitHubCredentialMode(ctx context.Context, pubkey nostr.PubKey) (string, error) {
@@ -126,7 +128,7 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 	if config.ChallengeTTL <= 0 {
 		config.ChallengeTTL = 10 * time.Minute
 	}
-	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now}
+	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}}
 	for _, provider := range providers {
 		if provider != nil {
 			service.Providers[provider.Name()] = provider
@@ -152,6 +154,14 @@ func (service *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		service.logout(w, r)
 	case r.Method == http.MethodDelete && path == "github":
 		service.disconnectGitHub(w, r)
+	case r.Method == http.MethodPost && path == "relay/sign-auth":
+		service.signRelayAuth(w, r)
+	case r.Method == http.MethodPost && path == "nip46/connect":
+		service.connectNIP46(w, r)
+	case r.Method == http.MethodPost && path == "nip46/switch-relays":
+		service.switchNIP46Relays(w, r)
+	case r.Method == http.MethodPost && path == "nip46/logout":
+		service.logoutNIP46(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -433,6 +443,190 @@ func (service *Service) disconnectGitHub(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (service *Service) signerForAccount(ctx context.Context, account Account) (Signer, error) {
+	binding, err := service.Store.SignerBindingByAccount(ctx, account.ID)
+	if err != nil || binding.Status != SignerActive || binding.Pubkey != account.Pubkey {
+		return nil, ErrSignerUnavailable
+	}
+	policy := ApplicationSigningPolicy{RelayURL: service.relayURL()}
+	switch binding.Type {
+	case SignerManaged:
+		return &ManagedSigner{AccountID: account.ID, Pubkey: account.Pubkey, Keys: service.Store, Wrapper: service.Wrapper, Policy: policy}, nil
+	case SignerNIP46:
+		bunkerURL, clientSecret, err := decodeNIP46Binding(account.ID, binding.Metadata, CredentialCodec{Wrapper: service.Wrapper})
+		if err != nil || service.NIP46 == nil {
+			return nil, ErrSignerUnavailable
+		}
+		defer clear(clientSecret[:])
+		remote, err := service.NIP46.Connect(ctx, clientSecret, bunkerURL)
+		if err != nil {
+			return nil, ErrSignerUnavailable
+		}
+		return &NIP46Signer{AccountID: account.ID, Pubkey: account.Pubkey, Remote: remote, Policy: policy}, nil
+	default:
+		return nil, ErrSignerUnavailable
+	}
+}
+
+func (service *Service) signRelayAuth(w http.ResponseWriter, r *http.Request) {
+	if !service.validOrigin(r) {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return
+	}
+	var request struct {
+		Challenge string `json:"challenge"`
+	}
+	if !decodeAuthJSON(w, r, &request) {
+		return
+	}
+	if len(request.Challenge) < 16 || len(request.Challenge) > 512 {
+		writeAuthError(w, http.StatusBadRequest, "invalid_challenge")
+		return
+	}
+	_, account, err := service.Authenticate(r.Context(), r)
+	if err != nil {
+		writeAuthError(w, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	signer, err := service.signerForAccount(r.Context(), account)
+	if err != nil {
+		writeAuthError(w, http.StatusConflict, "signer_unavailable")
+		return
+	}
+	event := nip42.CreateUnsignedAuthEvent(request.Challenge, account.Pubkey, service.relayURL())
+	event.CreatedAt = nostr.Timestamp(service.Now().Unix())
+	signed, err := signer.SignEvent(r.Context(), event, SignContext{
+		AccountID: account.ID, Purpose: SignPurposeRelayAuth, RequestedKind: event.Kind,
+		Source: request.Challenge, CorrelationID: r.Header.Get("X-Correlation-ID"),
+	})
+	if err != nil {
+		writeAuthError(w, http.StatusForbidden, "signing_denied")
+		return
+	}
+	writeAuthJSON(w, http.StatusOK, map[string]any{"event": signed})
+}
+
+func (service *Service) connectNIP46(w http.ResponseWriter, r *http.Request) {
+	if !service.validOrigin(r) {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return
+	}
+	var request struct {
+		BunkerURL string `json:"bunker_url"`
+	}
+	if !decodeAuthJSON(w, r, &request) {
+		return
+	}
+	cleanURL, err := validateAndSanitizeBunkerURL(request.BunkerURL)
+	if err != nil {
+		writeAuthError(w, http.StatusBadRequest, "invalid_bunker_url")
+		return
+	}
+	_, account, err := service.Authenticate(r.Context(), r)
+	if err != nil {
+		writeAuthError(w, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	binding, err := service.Store.SignerBindingByAccount(r.Context(), account.ID)
+	if err != nil || binding.Type == SignerManaged || binding.Pubkey != account.Pubkey {
+		writeAuthError(w, http.StatusConflict, "custody_transfer_required")
+		return
+	}
+	clientSecret := nostr.Generate()
+	defer clear(clientSecret[:])
+	connectCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	remote, err := service.NIP46.Connect(connectCtx, clientSecret, request.BunkerURL)
+	if err != nil {
+		writeAuthError(w, http.StatusBadGateway, "nip46_connection_failed")
+		return
+	}
+	pubkey, err := remote.GetPublicKey(connectCtx)
+	if err != nil || pubkey != account.Pubkey {
+		writeAuthError(w, http.StatusConflict, "nip46_pubkey_mismatch")
+		return
+	}
+	metadata, err := encodeNIP46Binding(account.ID, cleanURL, clientSecret, CredentialCodec{Wrapper: service.Wrapper})
+	if err != nil || service.Store.SetNIP46Binding(r.Context(), account.ID, account.Pubkey, metadata, service.Now()) != nil {
+		writeAuthError(w, http.StatusServiceUnavailable, "nip46_binding_failed")
+		return
+	}
+	writeAuthJSON(w, http.StatusOK, map[string]any{"nostr_pubkey": account.Pubkey.Hex(), "signer_type": SignerNIP46})
+}
+
+func (service *Service) switchNIP46Relays(w http.ResponseWriter, r *http.Request) {
+	if !service.validOrigin(r) {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return
+	}
+	_, account, err := service.Authenticate(r.Context(), r)
+	if err != nil {
+		writeAuthError(w, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	signer, err := service.signerForAccount(r.Context(), account)
+	nip46Signer, ok := signer.(*NIP46Signer)
+	if err != nil || !ok {
+		writeAuthError(w, http.StatusConflict, "nip46_signer_unavailable")
+		return
+	}
+	relays, err := nip46Signer.SwitchRelays(r.Context())
+	if err != nil {
+		writeAuthError(w, http.StatusBadGateway, "nip46_signer_unavailable")
+		return
+	}
+	writeAuthJSON(w, http.StatusOK, map[string]any{"relays": relays})
+}
+
+func (service *Service) logoutNIP46(w http.ResponseWriter, r *http.Request) {
+	if !service.validOrigin(r) {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return
+	}
+	_, account, err := service.Authenticate(r.Context(), r)
+	if err != nil {
+		writeAuthError(w, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	if err := service.Store.SetExternalBinding(r.Context(), account.ID, account.Pubkey, service.Now()); err != nil {
+		writeAuthError(w, http.StatusConflict, "nip46_signer_unavailable")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (service *Service) relayURL() string {
+	relayURL, _ := relayURLForPublicURL(service.Config.PublicURL)
+	return relayURL
+}
+
+func validateAndSanitizeBunkerURL(value string) (string, error) {
+	if len(value) == 0 || len(value) > 4096 {
+		return "", errors.New("invalid bunker URL")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "bunker" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return "", errors.New("invalid bunker URL")
+	}
+	if _, err := nostr.PubKeyFromHex(parsed.Host); err != nil {
+		return "", errors.New("invalid bunker public key")
+	}
+	query := parsed.Query()
+	relays := query["relay"]
+	if len(relays) == 0 {
+		return "", errors.New("bunker relay is required")
+	}
+	for _, relay := range relays {
+		relayURL, err := url.Parse(relay)
+		if err != nil || relayURL.User != nil || relayURL.Host == "" || relayURL.Fragment != "" || relayURL.Scheme != "wss" && relayURL.Scheme != "ws" {
+			return "", errors.New("invalid bunker relay")
+		}
+	}
+	query.Del("secret")
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 func (service *Service) validOrigin(r *http.Request) bool {
