@@ -44,6 +44,34 @@ type GitHubCredential struct {
 	UpdatedAt             time.Time
 }
 
+type PasskeyRecord struct {
+	AccountID           string
+	CredentialIDHash    [32]byte
+	EncryptedCredential string
+	Label               string
+	CreatedAt           time.Time
+	LastUsedAt          time.Time
+}
+
+type WebAuthnFlow struct {
+	FlowHash         [32]byte
+	AccountID        string
+	Kind             string
+	EncryptedSession string
+	DevicePublicKey  []byte
+	ExpiresAt        time.Time
+}
+
+type CustodyTransfer struct {
+	ID            string
+	AccountID     string
+	ChallengeHash [32]byte
+	State         string
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+	CompletedAt   *time.Time
+}
+
 type Store interface {
 	BeginOAuthFlow(context.Context, OAuthFlow) error
 	ConsumeOAuthFlow(context.Context, [32]byte, time.Time) (OAuthFlow, error)
@@ -71,6 +99,14 @@ type Store interface {
 	GitHubCredentialByAccount(context.Context, string) (GitHubCredential, error)
 	UpdateGitHubCredentialStatus(context.Context, string, string, time.Time) error
 	DisconnectGitHubCredential(context.Context, string, time.Time) error
+	PasskeysByAccount(context.Context, string) ([]PasskeyRecord, error)
+	SavePasskey(context.Context, PasskeyRecord) error
+	BeginWebAuthnFlow(context.Context, WebAuthnFlow) error
+	ConsumeWebAuthnFlow(context.Context, [32]byte, string, string, time.Time) (WebAuthnFlow, error)
+	CreateCustodyTransfer(context.Context, CustodyTransfer) error
+	CustodyTransferByID(context.Context, string, string, time.Time) (CustodyTransfer, error)
+	CompleteCustodyTransfer(context.Context, string, string, nostr.PubKey, []byte, time.Time) error
+	SaveAuditEvent(context.Context, AuditEvent) error
 }
 
 type CredentialCodec struct{ Wrapper KeyWrapper }

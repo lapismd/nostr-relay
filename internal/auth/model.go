@@ -74,6 +74,21 @@ type Session struct {
 	RevokedAt    *time.Time
 }
 
+type AuditEvent struct {
+	ID                   string
+	AccountID            string
+	Pubkey               nostr.PubKey
+	AuthProvider         string
+	SignerType           SignerType
+	Operation            string
+	GitHubActorID        string
+	GitHubCredentialType string
+	SourceEventID        string
+	CorrelationID        string
+	Result               string
+	CreatedAt            time.Time
+}
+
 type SignPurpose string
 
 const (

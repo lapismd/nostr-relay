@@ -371,6 +371,164 @@ func (store *SQLStore) DisconnectGitHubCredential(ctx context.Context, accountID
 	return err
 }
 
+func (store *SQLStore) PasskeysByAccount(ctx context.Context, accountID string) ([]PasskeyRecord, error) {
+	rows, err := store.DB.QueryContext(ctx, `SELECT account_id,credential_id_hash,encrypted_credential,label,created_at,last_used_at
+		FROM `+store.table("passkeys")+` WHERE account_id=$1 ORDER BY created_at`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]PasskeyRecord, 0)
+	for rows.Next() {
+		var record PasskeyRecord
+		var rawHash []byte
+		var lastUsed sql.NullTime
+		if err := rows.Scan(&record.AccountID, &rawHash, &record.EncryptedCredential, &record.Label, &record.CreatedAt, &lastUsed); err != nil {
+			return nil, err
+		}
+		if len(rawHash) != len(record.CredentialIDHash) {
+			return nil, errors.New("invalid passkey credential hash")
+		}
+		copy(record.CredentialIDHash[:], rawHash)
+		if lastUsed.Valid {
+			record.LastUsedAt = lastUsed.Time
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+func (store *SQLStore) SavePasskey(ctx context.Context, record PasskeyRecord) error {
+	_, err := store.DB.ExecContext(ctx, `INSERT INTO `+store.table("passkeys")+`
+		(account_id,credential_id_hash,encrypted_credential,label,created_at,last_used_at)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (account_id,credential_id_hash) DO UPDATE SET
+		encrypted_credential=EXCLUDED.encrypted_credential,label=EXCLUDED.label,last_used_at=EXCLUDED.last_used_at`,
+		record.AccountID, record.CredentialIDHash[:], record.EncryptedCredential, record.Label,
+		record.CreatedAt, nullableTime(record.LastUsedAt))
+	return classifyConflict(err)
+}
+
+func (store *SQLStore) BeginWebAuthnFlow(ctx context.Context, flow WebAuthnFlow) error {
+	_, err := store.DB.ExecContext(ctx, `INSERT INTO `+store.table("webauthn_flows")+`
+		(flow_hash,account_id,flow_kind,encrypted_session,device_public_key,expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6)`, flow.FlowHash[:], flow.AccountID, flow.Kind,
+		flow.EncryptedSession, nullableBytes(flow.DevicePublicKey), flow.ExpiresAt)
+	return err
+}
+
+func (store *SQLStore) ConsumeWebAuthnFlow(ctx context.Context, hash [32]byte, kind, accountID string, now time.Time) (WebAuthnFlow, error) {
+	var flow WebAuthnFlow
+	var rawHash []byte
+	err := store.DB.QueryRowContext(ctx, `DELETE FROM `+store.table("webauthn_flows")+`
+		WHERE flow_hash=$1 AND flow_kind=$2 AND account_id=$3 AND expires_at>$4
+		RETURNING flow_hash,account_id,flow_kind,encrypted_session,device_public_key,expires_at`,
+		hash[:], kind, accountID, now).Scan(&rawHash, &flow.AccountID, &flow.Kind,
+		&flow.EncryptedSession, &flow.DevicePublicKey, &flow.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return flow, ErrNotFound
+	}
+	copy(flow.FlowHash[:], rawHash)
+	return flow, err
+}
+
+func (store *SQLStore) CreateCustodyTransfer(ctx context.Context, transfer CustodyTransfer) error {
+	tx, err := store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE `+store.table("signer_bindings")+`
+		SET status='migration_pending',updated_at=$2
+		WHERE account_id=$1 AND signer_type='managed' AND status IN ('active','migration_pending')`, transfer.AccountID, transfer.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return ErrSigningDenied
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE `+store.table("custody_transfers")+`
+		SET transfer_state='cancelled' WHERE account_id=$1 AND transfer_state='key_received_by_device'`, transfer.AccountID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO `+store.table("custody_transfers")+`
+		(transfer_id,account_id,challenge_hash,transfer_state,expires_at,created_at)
+		VALUES ($1,$2,$3,$4,$5,$6)`, transfer.ID, transfer.AccountID, transfer.ChallengeHash[:],
+		transfer.State, transfer.ExpiresAt, transfer.CreatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (store *SQLStore) CustodyTransferByID(ctx context.Context, transferID, accountID string, now time.Time) (CustodyTransfer, error) {
+	var transfer CustodyTransfer
+	var rawHash []byte
+	err := store.DB.QueryRowContext(ctx, `SELECT transfer_id,account_id,challenge_hash,transfer_state,expires_at,created_at,completed_at
+		FROM `+store.table("custody_transfers")+`
+		WHERE transfer_id=$1 AND account_id=$2 AND expires_at>$3`, transferID, accountID, now).Scan(
+		&transfer.ID, &transfer.AccountID, &rawHash, &transfer.State, &transfer.ExpiresAt, &transfer.CreatedAt, &transfer.CompletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return transfer, ErrNotFound
+	}
+	copy(transfer.ChallengeHash[:], rawHash)
+	return transfer, err
+}
+
+func (store *SQLStore) CompleteCustodyTransfer(ctx context.Context, transferID, accountID string, pubkey nostr.PubKey, metadata []byte, now time.Time) error {
+	tx, err := store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var state string
+	if err = tx.QueryRowContext(ctx, `SELECT transfer_state FROM `+store.table("custody_transfers")+`
+		WHERE transfer_id=$1 AND account_id=$2 AND expires_at>$3 FOR UPDATE`, transferID, accountID, now).Scan(&state); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if state != "key_received_by_device" {
+		return ErrSigningDenied
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE `+store.table("signer_bindings")+`
+		SET signer_type='nip46',status='active',metadata=$3,updated_at=$4
+		WHERE account_id=$1 AND public_key=$2 AND signer_type='managed' AND status='migration_pending'`,
+		accountID, pubkey.Hex(), metadata, now)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return ErrSigningDenied
+	}
+	result, err = tx.ExecContext(ctx, `DELETE FROM `+store.table("managed_keys")+` WHERE account_id=$1 AND public_key=$2`, accountID, pubkey.Hex())
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return ErrSigningDenied
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE `+store.table("custody_transfers")+`
+		SET transfer_state='complete',completed_at=$3 WHERE transfer_id=$1 AND account_id=$2`, transferID, accountID, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (store *SQLStore) SaveAuditEvent(ctx context.Context, event AuditEvent) error {
+	pubkey := ""
+	if event.Pubkey != nostr.ZeroPK {
+		pubkey = event.Pubkey.Hex()
+	}
+	_, err := store.DB.ExecContext(ctx, `INSERT INTO `+store.table("audit")+`
+		(audit_id,account_id,nostr_pubkey,auth_provider,signer_type,operation,github_actor_id,
+		 github_credential_type,source_event_id,correlation_id,result,created_at)
+		VALUES ($1,NULLIF($2,''),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, event.ID, event.AccountID,
+		pubkey, event.AuthProvider, event.SignerType, event.Operation, event.GitHubActorID,
+		event.GitHubCredentialType, event.SourceEventID, event.CorrelationID, event.Result, event.CreatedAt)
+	return err
+}
+
 func classifyConflict(err error) error {
 	if err == nil {
 		return nil
@@ -384,6 +542,13 @@ func classifyConflict(err error) error {
 
 func nullableTime(value time.Time) any {
 	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
+func nullableBytes(value []byte) any {
+	if len(value) == 0 {
 		return nil
 	}
 	return value

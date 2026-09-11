@@ -16,6 +16,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip42"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 	"zooid/internal/forge"
@@ -44,6 +45,7 @@ type Service struct {
 	Now       func() time.Time
 	refreshMu sync.Mutex
 	NIP46     NIP46Connector
+	WebAuthn  *webauthn.WebAuthn
 }
 
 func (service *Service) GitHubCredentialMode(ctx context.Context, pubkey nostr.PubKey) (string, error) {
@@ -77,6 +79,7 @@ func (service *Service) ResolveGitHubUserToken(ctx context.Context, pubkey nostr
 		return "", forge.ErrGitHubUserReconnectRequired
 	}
 	if credential.AccessTokenExpiresAt.IsZero() || credential.AccessTokenExpiresAt.After(service.Now().Add(5*time.Minute)) {
+		service.audit(ctx, AuditEvent{AccountID: credential.AccountID, Pubkey: pubkey, Operation: "github_credential_resolve", GitHubActorID: credential.GitHubUserID, GitHubCredentialType: "user", Result: "success"})
 		return accessToken, nil
 	}
 	refreshToken, err := codec.Decrypt(credential.AccountID, "github-refresh", credential.EncryptedRefreshToken)
@@ -97,6 +100,7 @@ func (service *Service) ResolveGitHubUserToken(ctx context.Context, pubkey nostr
 	if err != nil || service.Store.SaveGitHubCredential(ctx, updated) != nil {
 		return "", errors.New("store refreshed GitHub credential")
 	}
+	service.audit(ctx, AuditEvent{AccountID: credential.AccountID, Pubkey: pubkey, Operation: "github_credential_refresh", GitHubActorID: credential.GitHubUserID, GitHubCredentialType: "user", Result: "success"})
 	return refreshed.AccessToken, nil
 }
 
@@ -128,7 +132,13 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 	if config.ChallengeTTL <= 0 {
 		config.ChallengeTTL = 10 * time.Minute
 	}
-	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}}
+	webAuthn, err := webauthn.New(&webauthn.Config{
+		RPDisplayName: "Lapis", RPID: publicURL.Hostname(), RPOrigins: []string{publicURL.Scheme + "://" + publicURL.Host},
+	})
+	if err != nil {
+		return nil, err
+	}
+	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}, WebAuthn: webAuthn}
 	for _, provider := range providers {
 		if provider != nil {
 			service.Providers[provider.Name()] = provider
@@ -162,6 +172,16 @@ func (service *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		service.switchNIP46Relays(w, r)
 	case r.Method == http.MethodPost && path == "nip46/logout":
 		service.logoutNIP46(w, r)
+	case r.Method == http.MethodPost && path == "passkeys/register/begin":
+		service.beginPasskeyRegistration(w, r)
+	case r.Method == http.MethodPost && path == "passkeys/register/finish":
+		service.finishPasskeyRegistration(w, r)
+	case r.Method == http.MethodPost && path == "custody/transfer/begin":
+		service.beginCustodyTransfer(w, r)
+	case r.Method == http.MethodPost && path == "custody/transfer/authorize":
+		service.authorizeCustodyTransfer(w, r)
+	case r.Method == http.MethodPost && path == "custody/transfer/complete":
+		service.completeCustodyTransfer(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -270,6 +290,7 @@ func (service *Service) finishOAuth(w http.ResponseWriter, r *http.Request, prov
 		writeAuthError(w, http.StatusServiceUnavailable, "session_store_failed")
 		return
 	}
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: providerName, Operation: "login", Result: "success"})
 	http.Redirect(w, r, flow.ReturnTo, http.StatusFound)
 }
 
@@ -340,10 +361,15 @@ func (service *Service) loginWithNostr(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, ErrNotFound) {
 		account, err = service.Store.CreateExternalAccount(r.Context(), authEvent.PubKey)
 	}
-	if err != nil || service.establishSession(w, r.Context(), account, "nostr") != nil {
+	if err != nil {
 		writeAuthError(w, http.StatusServiceUnavailable, "session_store_failed")
 		return
 	}
+	if err := service.establishSession(w, r.Context(), account, "nostr"); err != nil {
+		writeAuthError(w, http.StatusServiceUnavailable, "session_store_failed")
+		return
+	}
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: "nostr", Operation: "login", Result: "success"})
 	writeAuthJSON(w, http.StatusOK, publicAccount(account))
 }
 
@@ -409,9 +435,20 @@ func (service *Service) getSession(w http.ResponseWriter, r *http.Request) {
 	if credentialErr == nil {
 		githubStatus = credential.Status
 	}
+	binding, bindingErr := service.Store.SignerBindingByAccount(r.Context(), account.ID)
+	if bindingErr != nil {
+		writeAuthError(w, http.StatusServiceUnavailable, "auth_store_unavailable")
+		return
+	}
+	passkeys, passkeyErr := service.Store.PasskeysByAccount(r.Context(), account.ID)
+	if passkeyErr != nil {
+		writeAuthError(w, http.StatusServiceUnavailable, "auth_store_unavailable")
+		return
+	}
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"account": publicAccount(account), "auth_provider": session.AuthProvider,
 		"expires_at": session.ExpiresAt, "identities": publicIdentities(identities), "github_status": githubStatus,
+		"signer_type": binding.Type, "signer_status": binding.Status, "passkey_count": len(passkeys),
 	})
 }
 
@@ -485,7 +522,7 @@ func (service *Service) signRelayAuth(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusBadRequest, "invalid_challenge")
 		return
 	}
-	_, account, err := service.Authenticate(r.Context(), r)
+	session, account, err := service.Authenticate(r.Context(), r)
 	if err != nil {
 		writeAuthError(w, http.StatusUnauthorized, "authentication_required")
 		return
@@ -502,9 +539,12 @@ func (service *Service) signRelayAuth(w http.ResponseWriter, r *http.Request) {
 		Source: request.Challenge, CorrelationID: r.Header.Get("X-Correlation-ID"),
 	})
 	if err != nil {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: "sign_relay_auth", CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
 		writeAuthError(w, http.StatusForbidden, "signing_denied")
 		return
 	}
+	binding, _ := service.Store.SignerBindingByAccount(r.Context(), account.ID)
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, SignerType: binding.Type, Operation: "sign_relay_auth", CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "success"})
 	writeAuthJSON(w, http.StatusOK, map[string]any{"event": signed})
 }
 
@@ -627,6 +667,16 @@ func validateAndSanitizeBunkerURL(value string) (string, error) {
 	query.Del("secret")
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
+}
+
+func (service *Service) audit(ctx context.Context, event AuditEvent) {
+	if event.ID == "" {
+		event.ID = uuid.NewString()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = service.Now()
+	}
+	_ = service.Store.SaveAuditEvent(ctx, event)
 }
 
 func (service *Service) validOrigin(r *http.Request) bool {

@@ -21,15 +21,19 @@ import (
 )
 
 type memoryStore struct {
-	flows       map[[32]byte]OAuthFlow
-	accounts    map[string]Account
-	pubkeys     map[nostr.PubKey]string
-	identities  map[string]ExternalIdentity
-	keys        map[string]ManagedKey
-	sessions    map[[32]byte]Session
-	challenges  map[[32]byte]NostrChallenge
-	credentials map[string]GitHubCredential
-	bindings    map[string]SignerBinding
+	flows         map[[32]byte]OAuthFlow
+	accounts      map[string]Account
+	pubkeys       map[nostr.PubKey]string
+	identities    map[string]ExternalIdentity
+	keys          map[string]ManagedKey
+	sessions      map[[32]byte]Session
+	challenges    map[[32]byte]NostrChallenge
+	credentials   map[string]GitHubCredential
+	bindings      map[string]SignerBinding
+	passkeys      map[string]map[[32]byte]PasskeyRecord
+	webAuthnFlows map[[32]byte]WebAuthnFlow
+	transfers     map[string]CustodyTransfer
+	audit         []AuditEvent
 }
 
 func newMemoryStore() *memoryStore {
@@ -38,6 +42,8 @@ func newMemoryStore() *memoryStore {
 		identities: make(map[string]ExternalIdentity), keys: make(map[string]ManagedKey), sessions: make(map[[32]byte]Session),
 		challenges: make(map[[32]byte]NostrChallenge), credentials: make(map[string]GitHubCredential),
 		bindings: make(map[string]SignerBinding),
+		passkeys: make(map[string]map[[32]byte]PasskeyRecord), webAuthnFlows: make(map[[32]byte]WebAuthnFlow),
+		transfers: make(map[string]CustodyTransfer),
 	}
 }
 
@@ -208,6 +214,76 @@ func (store *memoryStore) UpdateGitHubCredentialStatus(_ context.Context, id, st
 	store.credentials[id] = value
 	return nil
 }
+func (store *memoryStore) PasskeysByAccount(_ context.Context, accountID string) ([]PasskeyRecord, error) {
+	values := store.passkeys[accountID]
+	result := make([]PasskeyRecord, 0, len(values))
+	for _, record := range values {
+		result = append(result, record)
+	}
+	return result, nil
+}
+func (store *memoryStore) SavePasskey(_ context.Context, record PasskeyRecord) error {
+	if store.passkeys[record.AccountID] == nil {
+		store.passkeys[record.AccountID] = make(map[[32]byte]PasskeyRecord)
+	}
+	store.passkeys[record.AccountID][record.CredentialIDHash] = record
+	return nil
+}
+func (store *memoryStore) BeginWebAuthnFlow(_ context.Context, flow WebAuthnFlow) error {
+	store.webAuthnFlows[flow.FlowHash] = flow
+	return nil
+}
+func (store *memoryStore) ConsumeWebAuthnFlow(_ context.Context, hash [32]byte, kind, accountID string, now time.Time) (WebAuthnFlow, error) {
+	flow, ok := store.webAuthnFlows[hash]
+	delete(store.webAuthnFlows, hash)
+	if !ok || flow.Kind != kind || flow.AccountID != accountID || !flow.ExpiresAt.After(now) {
+		return WebAuthnFlow{}, ErrNotFound
+	}
+	return flow, nil
+}
+func (store *memoryStore) CreateCustodyTransfer(_ context.Context, transfer CustodyTransfer) error {
+	binding, ok := store.bindings[transfer.AccountID]
+	if !ok || binding.Type != SignerManaged || binding.Status == SignerDisabled {
+		return ErrSigningDenied
+	}
+	for id, active := range store.transfers {
+		if active.AccountID == transfer.AccountID && active.State == "key_received_by_device" {
+			active.State = "cancelled"
+			store.transfers[id] = active
+		}
+	}
+	binding.Status = SignerMigrationPending
+	store.bindings[transfer.AccountID] = binding
+	store.transfers[transfer.ID] = transfer
+	return nil
+}
+func (store *memoryStore) CustodyTransferByID(_ context.Context, transferID, accountID string, now time.Time) (CustodyTransfer, error) {
+	transfer, ok := store.transfers[transferID]
+	if !ok || transfer.AccountID != accountID || !transfer.ExpiresAt.After(now) {
+		return CustodyTransfer{}, ErrNotFound
+	}
+	return transfer, nil
+}
+func (store *memoryStore) CompleteCustodyTransfer(_ context.Context, transferID, accountID string, pubkey nostr.PubKey, metadata []byte, now time.Time) error {
+	transfer, ok := store.transfers[transferID]
+	binding := store.bindings[accountID]
+	key, hasKey := store.keys[accountID]
+	if !ok || transfer.AccountID != accountID || transfer.State != "key_received_by_device" || !transfer.ExpiresAt.After(now) ||
+		binding.Type != SignerManaged || binding.Status != SignerMigrationPending || binding.Pubkey != pubkey || !hasKey || key.Pubkey != pubkey.Hex() {
+		return ErrSigningDenied
+	}
+	binding.Type, binding.Status, binding.Metadata, binding.UpdatedAt = SignerNIP46, SignerActive, metadata, now
+	store.bindings[accountID] = binding
+	delete(store.keys, accountID)
+	transfer.State = "complete"
+	transfer.CompletedAt = &now
+	store.transfers[transferID] = transfer
+	return nil
+}
+func (store *memoryStore) SaveAuditEvent(_ context.Context, event AuditEvent) error {
+	store.audit = append(store.audit, event)
+	return nil
+}
 
 type fakeProvider struct{ identity ProviderIdentity }
 
@@ -334,4 +410,41 @@ func TestGitHubCredentialModeAndFreshUserToken(t *testing.T) {
 	require.Equal(t, "system", mode)
 	_, err = service.ResolveGitHubUserToken(context.Background(), account.Pubkey)
 	require.Error(t, err)
+}
+
+func TestExpiredGitHubUserTokenIsRefreshed(t *testing.T) {
+	refreshServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		require.Equal(t, "refresh_token", r.Form.Get("grant_type"))
+		require.Equal(t, "old-refresh-token", r.Form.Get("refresh_token"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new-user-token", "refresh_token": "new-refresh-token",
+			"token_type": "bearer", "expires_in": 28800,
+		})
+	}))
+	defer refreshServer.Close()
+	store := newMemoryStore()
+	provider := &GitHubProvider{config: &oauth2.Config{
+		ClientID: "github-client", ClientSecret: "client-secret",
+		Endpoint: oauth2.Endpoint{TokenURL: refreshServer.URL, AuthStyle: oauth2.AuthStyleInParams},
+	}, client: refreshServer.Client()}
+	service := newTestService(t, store, provider)
+	secret := nostr.Generate()
+	account, err := store.CreateExternalAccount(context.Background(), secret.Public())
+	require.NoError(t, err)
+	credential, err := GitHubCredentialFromToken(account.ID, "123", "octo", "github-client", &oauth2.Token{
+		AccessToken: "expired-user-token", RefreshToken: "old-refresh-token", Expiry: time.Now().Add(-time.Minute),
+	}, CredentialCodec{Wrapper: service.Wrapper})
+	require.NoError(t, err)
+	require.NoError(t, store.SaveGitHubCredential(context.Background(), credential))
+
+	token, err := service.ResolveGitHubUserToken(context.Background(), account.Pubkey)
+	require.NoError(t, err)
+	require.Equal(t, "new-user-token", token)
+	stored := store.credentials[account.ID]
+	require.Equal(t, "active", stored.Status)
+	plain, err := (CredentialCodec{Wrapper: service.Wrapper}).Decrypt(account.ID, "github-refresh", stored.EncryptedRefreshToken)
+	require.NoError(t, err)
+	require.Equal(t, "new-refresh-token", plain)
 }
