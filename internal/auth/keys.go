@@ -1,14 +1,31 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 )
+
+func ParseMasterKey(value []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(value)
+	if len(trimmed) == 64 {
+		if decoded, err := hex.DecodeString(string(trimmed)); err == nil && len(decoded) == 32 {
+			return decoded, nil
+		}
+	}
+	for _, encoding := range []*base64.Encoding{base64.RawURLEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.StdEncoding} {
+		if decoded, err := encoding.DecodeString(string(trimmed)); err == nil && len(decoded) == 32 {
+			return decoded, nil
+		}
+	}
+	return nil, errors.New("master key must decode to exactly 32 bytes")
+}
 
 type KeyWrapper interface {
 	Version() string

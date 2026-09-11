@@ -19,6 +19,7 @@ import (
 	"github.com/fasthttp/websocket"
 	"github.com/gosimple/slug"
 	"zooid/buzzagents/protocol"
+	authn "zooid/internal/auth"
 	"zooid/internal/forge"
 	"zooid/internal/gitforge"
 	"zooid/internal/githubforge"
@@ -41,6 +42,7 @@ type Instance struct {
 	ProjectTasks *ProjectTaskPolicy
 	GitForge     *GitForgePolicy
 	Agents       *AgentPolicy
+	Auth         *authn.Service
 }
 
 func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
@@ -152,6 +154,71 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 
 	if err := instance.Events.Init(); err != nil {
 		log.Fatal("Failed to initialize event store: ", err)
+	}
+
+	if config.Auth.Enabled {
+		credentials := githubforge.RuntimeCredentials{SecretDir: config.Auth.CredentialDir}
+		masterValue, err := credentials.Load(config.Auth.MasterKeyRef)
+		if err != nil {
+			instance.Events.Close()
+			return nil, fmt.Errorf("load auth master key: %w", err)
+		}
+		masterKey, err := authn.ParseMasterKey(masterValue)
+		clear(masterValue)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		wrapper, err := authn.NewAESKeyWrapper(config.Auth.MasterKeyVersion, masterKey)
+		clear(masterKey)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		store, err := authn.NewSQLStore(GetDb(), events.Schema.Name)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		providers := make([]authn.OAuthProvider, 0, 2)
+		if config.Auth.GitHub.ClientID != "" {
+			secret, err := credentials.Load(config.Auth.GitHub.ClientSecretRef)
+			if err != nil {
+				instance.Events.Close()
+				return nil, fmt.Errorf("load GitHub OAuth secret: %w", err)
+			}
+			provider, providerErr := authn.NewGitHubProvider(config.Auth.GitHub.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/github", nil)
+			clear(secret)
+			if providerErr != nil {
+				instance.Events.Close()
+				return nil, providerErr
+			}
+			providers = append(providers, provider)
+		}
+		if config.Auth.Google.ClientID != "" {
+			secret, err := credentials.Load(config.Auth.Google.ClientSecretRef)
+			if err != nil {
+				instance.Events.Close()
+				return nil, fmt.Errorf("load Google OAuth secret: %w", err)
+			}
+			provider, providerErr := authn.NewGoogleProvider(ctx, config.Auth.Google.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/google")
+			clear(secret)
+			if providerErr != nil {
+				instance.Events.Close()
+				return nil, providerErr
+			}
+			providers = append(providers, provider)
+		}
+		instance.Auth, err = authn.NewService(authn.ServiceConfig{
+			PublicURL: config.Auth.PublicURL, SessionLifetime: config.AuthSessionLifetime(),
+			SessionIdle: config.AuthSessionIdle(), ChallengeTTL: config.AuthChallengeTTL(),
+			GitHubClientID: config.Auth.GitHub.ClientID,
+		}, store, wrapper, providers...)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		router.Handle("/api/auth/", instance.Auth)
 	}
 
 	// Warm caches

@@ -39,6 +39,24 @@ type GitHubConfig struct {
 	MaxWebhookBytes   int64  `toml:"max_webhook_bytes"`
 }
 
+type OAuthProviderConfig struct {
+	ClientID        string `toml:"client_id"`
+	ClientSecretRef string `toml:"client_secret_ref"`
+}
+
+type AuthConfig struct {
+	Enabled          bool                `toml:"enabled"`
+	PublicURL        string              `toml:"public_url"`
+	CredentialDir    string              `toml:"credential_dir"`
+	MasterKeyRef     string              `toml:"master_key_ref"`
+	MasterKeyVersion string              `toml:"master_key_version"`
+	SessionLifetime  string              `toml:"session_lifetime"`
+	SessionIdle      string              `toml:"session_idle"`
+	ChallengeTTL     string              `toml:"challenge_ttl"`
+	GitHub           OAuthProviderConfig `toml:"github"`
+	Google           OAuthProviderConfig `toml:"google"`
+}
+
 type AgentConfig struct {
 	Enabled                bool `toml:"enabled"`
 	AllowOwnerAuth         bool `toml:"allow_owner_auth"`
@@ -95,6 +113,7 @@ type Config struct {
 
 	Git    GitConfig    `toml:"git"`
 	GitHub GitHubConfig `toml:"github"`
+	Auth   AuthConfig   `toml:"auth"`
 
 	Roles map[string]Role `toml:"roles"`
 
@@ -137,6 +156,9 @@ func LoadConfig(filename string) (*Config, error) {
 	if err := config.validateGitHub(); err != nil {
 		return nil, fmt.Errorf("invalid github config in %s: %w", path, err)
 	}
+	if err := config.validateAuth(); err != nil {
+		return nil, fmt.Errorf("invalid auth config in %s: %w", path, err)
+	}
 
 	secret, err := nostr.SecretKeyFromHex(config.Secret)
 	if err != nil {
@@ -166,8 +188,60 @@ func decodeConfigFile(path string) (Config, error) {
 	config.GitHub.WorkerInterval = "2s"
 	config.GitHub.ReconcileInterval = "5m"
 	config.GitHub.MaxWebhookBytes = 4 << 20
+	config.Auth.CredentialDir = "/run/secrets"
+	config.Auth.MasterKeyVersion = "v1"
+	config.Auth.SessionLifetime = "168h"
+	config.Auth.SessionIdle = "24h"
+	config.Auth.ChallengeTTL = "10m"
 	_, err := toml.DecodeFile(path, &config)
 	return config, err
+}
+
+func (config *Config) validateAuth() error {
+	if !config.Auth.Enabled {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(config.Auth.PublicURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Scheme != "https" && !(parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1"))) {
+		return fmt.Errorf("auth.public_url must be HTTPS, except for loopback development")
+	}
+	if !filepath.IsAbs(config.Auth.CredentialDir) {
+		return fmt.Errorf("auth.credential_dir must be absolute")
+	}
+	if strings.TrimSpace(config.Auth.MasterKeyRef) == "" || strings.TrimSpace(config.Auth.MasterKeyVersion) == "" {
+		return fmt.Errorf("auth master key reference and version are required")
+	}
+	for name, raw := range map[string]string{
+		"session_lifetime": config.Auth.SessionLifetime,
+		"session_idle":     config.Auth.SessionIdle,
+		"challenge_ttl":    config.Auth.ChallengeTTL,
+	} {
+		if duration, err := time.ParseDuration(raw); err != nil || duration <= 0 {
+			return fmt.Errorf("auth.%s must be a positive duration", name)
+		}
+	}
+	for name, provider := range map[string]OAuthProviderConfig{"github": config.Auth.GitHub, "google": config.Auth.Google} {
+		if (provider.ClientID == "") != (provider.ClientSecretRef == "") {
+			return fmt.Errorf("auth.%s client ID and secret reference must be configured together", name)
+		}
+	}
+	return nil
+}
+
+func (config *Config) AuthSessionLifetime() time.Duration {
+	duration, _ := time.ParseDuration(config.Auth.SessionLifetime)
+	return duration
+}
+
+func (config *Config) AuthSessionIdle() time.Duration {
+	duration, _ := time.ParseDuration(config.Auth.SessionIdle)
+	return duration
+}
+
+func (config *Config) AuthChallengeTTL() time.Duration {
+	duration, _ := time.ParseDuration(config.Auth.ChallengeTTL)
+	return duration
 }
 
 func (config *Config) validateGit() error {

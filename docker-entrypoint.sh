@@ -41,6 +41,18 @@ GITHUB_CREDENTIAL_DIR="${GITHUB_CREDENTIAL_DIR:-/run/secrets}"
 GITHUB_WORKER_INTERVAL="${GITHUB_WORKER_INTERVAL:-2s}"
 GITHUB_RECONCILE_INTERVAL="${GITHUB_RECONCILE_INTERVAL:-5m}"
 GITHUB_MAX_WEBHOOK_BYTES="${GITHUB_MAX_WEBHOOK_BYTES:-4194304}"
+AUTH_ENABLED="${AUTH_ENABLED:-false}"
+AUTH_PUBLIC_URL="${AUTH_PUBLIC_URL:-https://$RELAY_HOST}"
+AUTH_CREDENTIAL_DIR="${AUTH_CREDENTIAL_DIR:-/run/secrets}"
+AUTH_MASTER_KEY_REF="${AUTH_MASTER_KEY_REF:-file:lapis-auth-master-key}"
+AUTH_MASTER_KEY_VERSION="${AUTH_MASTER_KEY_VERSION:-v1}"
+AUTH_SESSION_LIFETIME="${AUTH_SESSION_LIFETIME:-168h}"
+AUTH_SESSION_IDLE="${AUTH_SESSION_IDLE:-24h}"
+AUTH_CHALLENGE_TTL="${AUTH_CHALLENGE_TTL:-10m}"
+AUTH_GITHUB_CLIENT_ID="${AUTH_GITHUB_CLIENT_ID:-}"
+AUTH_GITHUB_CLIENT_SECRET_REF="${AUTH_GITHUB_CLIENT_SECRET_REF:-}"
+AUTH_GOOGLE_CLIENT_ID="${AUTH_GOOGLE_CLIENT_ID:-}"
+AUTH_GOOGLE_CLIENT_SECRET_REF="${AUTH_GOOGLE_CLIENT_SECRET_REF:-}"
 FORGE_WORKER_MODE="${FORGE_WORKER_MODE:-embedded}"
 LAPIS_PROCESS_BIN="${LAPIS_PROCESS_BIN:-/bin/lapis-relay}"
 
@@ -122,6 +134,24 @@ credential_dir = "$GITHUB_CREDENTIAL_DIR"
 worker_interval = "$GITHUB_WORKER_INTERVAL"
 reconcile_interval = "$GITHUB_RECONCILE_INTERVAL"
 max_webhook_bytes = $GITHUB_MAX_WEBHOOK_BYTES
+
+[auth]
+enabled = $AUTH_ENABLED
+public_url = "$AUTH_PUBLIC_URL"
+credential_dir = "$AUTH_CREDENTIAL_DIR"
+master_key_ref = "$AUTH_MASTER_KEY_REF"
+master_key_version = "$AUTH_MASTER_KEY_VERSION"
+session_lifetime = "$AUTH_SESSION_LIFETIME"
+session_idle = "$AUTH_SESSION_IDLE"
+challenge_ttl = "$AUTH_CHALLENGE_TTL"
+
+[auth.github]
+client_id = "$AUTH_GITHUB_CLIENT_ID"
+client_secret_ref = "$AUTH_GITHUB_CLIENT_SECRET_REF"
+
+[auth.google]
+client_id = "$AUTH_GOOGLE_CLIENT_ID"
+client_secret_ref = "$AUTH_GOOGLE_CLIENT_SECRET_REF"
 EOF
 
     # Add admin role if pubkeys provided
@@ -184,6 +214,32 @@ reconcile_interval = "$GITHUB_RECONCILE_INTERVAL"
 max_webhook_bytes = $GITHUB_MAX_WEBHOOK_BYTES
 EOF
 		echo "Added GitHub configuration to existing auto-generated config"
+	fi
+
+	if [ "$AUTH_ENABLED" = "true" ] \
+		&& grep -q '^# Auto-generated Zooid configuration$' "$CONFIG_FILE" \
+		&& ! grep -q '^\[auth\]$' "$CONFIG_FILE"; then
+		cat >> "$CONFIG_FILE" << EOF
+
+[auth]
+enabled = true
+public_url = "$AUTH_PUBLIC_URL"
+credential_dir = "$AUTH_CREDENTIAL_DIR"
+master_key_ref = "$AUTH_MASTER_KEY_REF"
+master_key_version = "$AUTH_MASTER_KEY_VERSION"
+session_lifetime = "$AUTH_SESSION_LIFETIME"
+session_idle = "$AUTH_SESSION_IDLE"
+challenge_ttl = "$AUTH_CHALLENGE_TTL"
+
+[auth.github]
+client_id = "$AUTH_GITHUB_CLIENT_ID"
+client_secret_ref = "$AUTH_GITHUB_CLIENT_SECRET_REF"
+
+[auth.google]
+client_id = "$AUTH_GOOGLE_CLIENT_ID"
+client_secret_ref = "$AUTH_GOOGLE_CLIENT_SECRET_REF"
+EOF
+		echo "Added authentication configuration to existing auto-generated config"
 	fi
 fi
 

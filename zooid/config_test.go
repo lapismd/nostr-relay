@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 )
@@ -268,5 +269,44 @@ func TestGitHubConfigSupportsGitHubOnlyAndValidatesSecretDirectory(t *testing.T)
 	config.GitHub.CredentialDir = "relative"
 	if err := config.validateGitHub(); err == nil {
 		t.Fatal("expected relative credential directory rejection")
+	}
+}
+
+func TestAuthConfigDefaultsAndRejectsInsecurePublicDeployment(t *testing.T) {
+	configDir := t.TempDir()
+	path := filepath.Join(configDir, "auth.toml")
+	contents := `[auth]
+enabled = true
+public_url = "https://relay.example"
+master_key_ref = "file:lapis-auth-master-key"
+
+[auth.github]
+client_id = "client-id"
+client_secret_ref = "file:github-oauth-secret"
+`
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := decodeConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.validateAuth(); err != nil {
+		t.Fatal(err)
+	}
+	if config.AuthSessionLifetime() != 7*24*time.Hour || config.AuthSessionIdle() != 24*time.Hour || config.AuthChallengeTTL() != 10*time.Minute {
+		t.Fatalf("unexpected auth defaults: %+v", config.Auth)
+	}
+	config.Auth.PublicURL = "http://relay.example"
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected public HTTP auth URL rejection")
+	}
+	config.Auth.PublicURL = "http://localhost:8281"
+	if err := config.validateAuth(); err != nil {
+		t.Fatalf("loopback development URL should be allowed: %v", err)
+	}
+	config.Auth.Google.ClientID = "google-client"
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected incomplete Google configuration rejection")
 	}
 }
