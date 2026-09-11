@@ -2,13 +2,35 @@ package protocol
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"fiatjaf.com/nostr"
 )
+
+const MaxPersonaContentBytes = 65_535
+
+// Persona is the owner-controlled presentation and configuration subset that
+// the relay validates. Unknown fields remain forward-compatible and opaque.
+type Persona struct {
+	DisplayName  string
+	AvatarURL    string
+	SystemPrompt string
+}
+
+// ManagedAgent is the public instance/link subset used by relay authorization.
+// Empty content remains valid for legacy standalone records.
+type ManagedAgent struct {
+	PersonaID   string
+	Name        string
+	NameMode    string
+	RespondTo   string
+	Parallelism int
+}
 
 // ValidateDurableEnvelope enforces the public portions of Buzz agent events
 // before storage. Ciphertext remains opaque to the relay.
@@ -65,16 +87,22 @@ func ValidateDurableEnvelope(event nostr.Event) error {
 		if err != nil {
 			return err
 		}
-		for index, char := range []byte(d) {
-			if index == 0 {
-				if !isASCIILower(char) && !isASCIIDigit(char) {
-					return errors.New("persona event d tag must start with a lowercase letter or digit")
-				}
-				continue
-			}
-			if !isASCIILower(char) && !isASCIIDigit(char) && char != '_' && char != '-' {
-				return errors.New("persona event d tag must match [a-z0-9_-] after the first character")
-			}
+		if err := ValidatePersonaSlug(d); err != nil {
+			return fmt.Errorf("persona event %w", err)
+		}
+		if _, err := ParsePersona(event.Content); err != nil {
+			return fmt.Errorf("persona event content %w", err)
+		}
+	case KindManagedAgent:
+		d, err := boundedDTag(event.Tags, "managed-agent event")
+		if err != nil {
+			return err
+		}
+		if !isLowerHex(d, 64) {
+			return errors.New("managed-agent event d tag must be an agent public key")
+		}
+		if _, err := ParseManagedAgent(event.Content); err != nil {
+			return fmt.Errorf("managed-agent event content %w", err)
 		}
 	case KindSharedTeamCatalog:
 		if err := ValidateSharing(event.Tags); err != nil {
@@ -83,6 +111,127 @@ func ValidateDurableEnvelope(event nostr.Event) error {
 		if _, err := boundedDTag(event.Tags, "team-catalog event"); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ValidatePersonaSlug enforces the NIP-AP address grammar.
+func ValidatePersonaSlug(value string) error {
+	if value == "" || len(value) > 64 {
+		return errors.New("d tag must contain between 1 and 64 ASCII characters")
+	}
+	for index, char := range []byte(value) {
+		if index == 0 {
+			if !isASCIILower(char) && !isASCIIDigit(char) {
+				return errors.New("d tag must start with a lowercase letter or digit")
+			}
+			continue
+		}
+		if !isASCIILower(char) && !isASCIIDigit(char) && char != '_' && char != '-' {
+			return errors.New("d tag must match [a-z0-9_-] after the first character")
+		}
+	}
+	return nil
+}
+
+// ParsePersona validates the plaintext NIP-AP content that affects management
+// presentation. It does not execute prompt or runtime fields.
+func ParsePersona(content string) (Persona, error) {
+	var persona Persona
+	if len([]byte(content)) > MaxPersonaContentBytes {
+		return persona, fmt.Errorf("is larger than %d bytes", MaxPersonaContentBytes)
+	}
+	fields, err := objectFields(content)
+	if err != nil {
+		return persona, err
+	}
+	for key := range fields {
+		normalized := strings.NewReplacer("_", "", "-", "", ".", "").Replace(strings.ToLower(key))
+		switch normalized {
+		case "credential", "credentials", "privatekey", "secretkey", "secrets",
+			"environmentsecrets", "envsecrets", "envvars", "apikey", "apikeys",
+			"token", "tokens":
+			return persona, fmt.Errorf("must not contain plaintext secret field %q", key)
+		}
+	}
+	if err := requiredJSONText(fields, "display_name", &persona.DisplayName); err != nil {
+		return persona, err
+	}
+	if strings.TrimSpace(persona.DisplayName) == "" {
+		return persona, errors.New("display_name must not be empty")
+	}
+	if err := optionalJSONText(fields, "avatar_url", &persona.AvatarURL); err != nil {
+		return persona, err
+	}
+	if err := optionalJSONText(fields, "system_prompt", &persona.SystemPrompt); err != nil {
+		return persona, err
+	}
+	return persona, nil
+}
+
+// ParseManagedAgent validates the optional persona link and Lapis name-mode
+// extension while retaining compatibility with Buzz's legacy empty object.
+func ParseManagedAgent(content string) (ManagedAgent, error) {
+	var instance ManagedAgent
+	fields, err := objectFields(content)
+	if err != nil {
+		return instance, err
+	}
+	for key, target := range map[string]*string{
+		"persona_id": &instance.PersonaID,
+		"name":       &instance.Name,
+		"name_mode":  &instance.NameMode,
+		"respond_to": &instance.RespondTo,
+	} {
+		if err := optionalJSONText(fields, key, target); err != nil {
+			return instance, err
+		}
+	}
+	if instance.PersonaID != "" {
+		if err := ValidatePersonaSlug(instance.PersonaID); err != nil {
+			return instance, fmt.Errorf("persona_id %w", err)
+		}
+	}
+	if instance.NameMode != "" && instance.NameMode != "inherited" && instance.NameMode != "instance" {
+		return instance, errors.New("name_mode must be inherited or instance")
+	}
+	if raw, ok := fields["parallelism"]; ok {
+		if err := json.Unmarshal(raw, &instance.Parallelism); err != nil || instance.Parallelism < 1 {
+			return instance, errors.New("parallelism must be a positive integer")
+		}
+	}
+	return instance, nil
+}
+
+func objectFields(content string) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &fields); err != nil || fields == nil {
+		return nil, errors.New("must be a JSON object")
+	}
+	return fields, nil
+}
+
+func requiredJSONText(fields map[string]json.RawMessage, key string, target *string) error {
+	raw, ok := fields[key]
+	if !ok {
+		return fmt.Errorf("must contain %s", key)
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		return fmt.Errorf("%s must be a string", key)
+	}
+	return nil
+}
+
+func optionalJSONText(fields map[string]json.RawMessage, key string, target *string) error {
+	raw, ok := fields[key]
+	if !ok {
+		return nil
+	}
+	if string(raw) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		return fmt.Errorf("%s must be a string", key)
 	}
 	return nil
 }

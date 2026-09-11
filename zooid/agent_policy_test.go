@@ -3,6 +3,7 @@ package zooid
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +124,160 @@ func TestAgentPolicyRejectsClientMembershipNotifications(t *testing.T) {
 		if reason := agentPolicy.CheckWrite(t.Context(), nostr.Event{Kind: kind}); !strings.Contains(reason, "relay-signed only") {
 			t.Fatalf("kind %d rejection = %q", kind, reason)
 		}
+	}
+}
+
+func TestAgentPolicyRequiresExactCurrentPersonaLink(t *testing.T) {
+	owner := nostr.Generate().Public()
+	agent := nostr.Generate().Public()
+	sibling := nostr.Generate().Public()
+	config := &Config{}
+	management := &ManagementStore{Config: config, cachesWarmed: true}
+	management.relayMembers.Store(owner, struct{}{})
+	agentPolicy := NewAgentPolicy(config, management, &GroupStore{Config: config, Management: management})
+	agentPolicy.rememberOwner(agent, owner)
+	agentPolicy.rememberOwner(sibling, owner)
+	agentPolicy.linkResolver = func(candidate, candidateOwner nostr.PubKey, personaID string) bool {
+		return candidate == agent && candidateOwner == owner && personaID == "research"
+	}
+
+	persona := nostr.Event{
+		Kind: protocol.KindPersona, PubKey: owner,
+		Tags: nostr.Tags{{"d", "research"}}, Content: `{"display_name":"Research"}`,
+	}
+	if !agentPolicy.CanRead(owner, persona) {
+		t.Fatal("owner could not read private persona")
+	}
+	if !agentPolicy.CanRead(agent, persona) {
+		t.Fatal("exact linked agent could not read private persona")
+	}
+	if agentPolicy.CanRead(sibling, persona) {
+		t.Fatal("sibling agent inherited persona access")
+	}
+	if agentPolicy.CanRead(nostr.Generate().Public(), persona) {
+		t.Fatal("stranger could read private persona")
+	}
+
+	filter := nostr.Filter{
+		Kinds: []nostr.Kind{protocol.KindPersona}, Authors: []nostr.PubKey{owner},
+		Tags: nostr.TagMap{"d": []string{"research"}},
+	}
+	if !agentPolicy.CanReadPersonaFilter(agent, filter) {
+		t.Fatal("exact linked persona count was rejected")
+	}
+	filter.Tags["d"] = []string{"other"}
+	if agentPolicy.CanReadPersonaFilter(agent, filter) {
+		t.Fatal("sibling persona count was accepted")
+	}
+}
+
+func TestAgentPolicyProfileDeletionRevokesDerivedOwner(t *testing.T) {
+	owner := nostr.Generate().Public()
+	agent := nostr.Generate().Public()
+	config := &Config{}
+	management := &ManagementStore{Config: config, cachesWarmed: true}
+	management.relayMembers.Store(owner, struct{}{})
+	agentPolicy := NewAgentPolicy(config, management, &GroupStore{Config: config, Management: management})
+	agentPolicy.rememberOwner(agent, owner)
+	if !agentPolicy.isOwner(agent, owner) {
+		t.Fatal("owner relation was not established")
+	}
+	agentPolicy.ForgetStored(nostr.Event{Kind: nostr.KindProfileMetadata, PubKey: agent})
+	if agentPolicy.isOwner(agent, owner) {
+		t.Fatal("deleted profile retained derived owner relation")
+	}
+}
+
+func TestAgentPolicyProfileReplacementRevokesDerivedOwner(t *testing.T) {
+	ownerSecret := nostr.Generate()
+	agentSecret := nostr.Generate()
+	owner := ownerSecret.Public()
+	agent := agentSecret.Public()
+	config := &Config{}
+	management := &ManagementStore{Config: config, cachesWarmed: true}
+	management.relayMembers.Store(owner, struct{}{})
+	agentPolicy := NewAgentPolicy(config, management, &GroupStore{Config: config, Management: management})
+
+	var authTag nostr.Tag
+	if err := json.Unmarshal([]byte(makeOwnerAuthTag(t, ownerSecret, agent, "")), &authTag); err != nil {
+		t.Fatal(err)
+	}
+	profile := nostr.Event{Kind: nostr.KindProfileMetadata, PubKey: agent, CreatedAt: 10, Tags: nostr.Tags{authTag}}
+	agentPolicy.RememberStored(profile)
+	if !agentPolicy.isOwner(agent, owner) {
+		t.Fatal("valid profile did not establish derived owner relation")
+	}
+
+	profile.CreatedAt = 11
+	profile.Tags = nil
+	agentPolicy.RememberStored(profile)
+	if agentPolicy.isOwner(agent, owner) {
+		t.Fatal("replacement without a valid credential retained derived owner relation")
+	}
+}
+
+func TestAgentPolicyReadsCurrentManagedAgentLink(t *testing.T) {
+	store := createTestEventStore()
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	ownerSecret := nostr.Generate()
+	owner := ownerSecret.Public()
+	agentSecret := nostr.Generate()
+	agent := agentSecret.Public()
+	config := store.Config
+	management := &ManagementStore{Config: config, Events: store, cachesWarmed: true}
+	management.relayMembers.Store(owner, struct{}{})
+	persona := nostr.Event{Kind: protocol.KindPersona, PubKey: owner, Tags: nostr.Tags{{"d", "research"}}}
+	var authTag nostr.Tag
+	if err := json.Unmarshal([]byte(makeOwnerAuthTag(t, ownerSecret, agent, "")), &authTag); err != nil {
+		t.Fatal(err)
+	}
+	profile := nostr.Event{Kind: nostr.KindProfileMetadata, CreatedAt: 9, Tags: nostr.Tags{authTag}, Content: `{}`}
+	profile.Sign(agentSecret)
+
+	link := nostr.Event{
+		Kind: protocol.KindManagedAgent, CreatedAt: 10,
+		Tags: nostr.Tags{{"d", agent.Hex()}}, Content: `{"persona_id":"research","name_mode":"inherited"}`,
+	}
+	link.Sign(ownerSecret)
+	if err := store.StoreEvent(link); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate restart reconstruction: current signed profiles and links in the
+	// event store are the authority for derived access.
+	agentPolicy := NewAgentPolicy(config, management, &GroupStore{Config: config, Management: management})
+	agentPolicy.Events = store
+	agentPolicy.rememberOwner(agent, owner)
+	if agentPolicy.CanRead(agent, persona) {
+		t.Fatal("connection credential granted persona access without a current kind:0 proof")
+	}
+	if err := store.StoreEvent(profile); err != nil {
+		t.Fatal(err)
+	}
+	for event := range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{nostr.KindProfileMetadata}}, 0) {
+		agentPolicy.RememberStored(event)
+	}
+	if !agentPolicy.CanRead(agent, persona) {
+		t.Fatal("restart reconstruction did not grant the current exact persona link")
+	}
+
+	relinked := link
+	relinked.CreatedAt = 11
+	relinked.Content = `{"persona_id":"writer","name_mode":"inherited"}`
+	relinked.Sign(ownerSecret)
+	if err := store.StoreEvent(relinked); err != nil {
+		t.Fatal(err)
+	}
+	if agentPolicy.CanRead(agent, persona) {
+		t.Fatal("replaced link retained access to old persona")
+	}
+	if err := store.DeleteEvent(relinked.ID); err != nil {
+		t.Fatal(err)
+	}
+	if agentPolicy.CanRead(agent, nostr.Event{Kind: protocol.KindPersona, PubKey: owner, Tags: nostr.Tags{{"d", "writer"}}}) {
+		t.Fatal("deleted link retained persona access")
 	}
 }
 

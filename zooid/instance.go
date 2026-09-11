@@ -100,6 +100,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	instance.Registry = NewRegistryPolicy(config, groups, events)
 	instance.ProjectTasks = NewProjectTaskPolicy(events, groups)
 	instance.Agents = NewAgentPolicy(config, management, groups)
+	instance.Agents.Events = events
 
 	// NIP 11 info
 
@@ -131,6 +132,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	instance.Relay.CountMany = instance.CountStored
 	instance.Relay.OnEvent = instance.OnEvent
 	instance.Relay.OnEventSaved = instance.OnEventSaved
+	instance.Relay.OnEventDeleted = instance.OnEventDeleted
 	instance.Relay.OnEphemeralEvent = instance.OnEphemeralEvent
 
 	// Todo: when there's a new version of khatru
@@ -469,6 +471,24 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 		} else {
 			pubkey, authenticated := authenticatedPubkey(ctx)
 			generated := make([]nostr.Event, 0)
+			visible := func(event nostr.Event) bool {
+				if event.Kind == RELAY_INVITE || instance.IsInternalEvent(event) || instance.IsWriteOnlyEvent(event) {
+					return false
+				}
+				if instance.ProjectTasks != nil && instance.ProjectTasks.IsTombstoned(ctx, event) {
+					return false
+				}
+				if !authenticated {
+					return !isMembershipNotification(event.Kind) && instance.Config.Policy.AnonymousRead && instance.CanAnonymousRead(event)
+				}
+				if instance.Agents != nil && !instance.Agents.CanRead(pubkey, event) {
+					return false
+				}
+				if instance.Groups.IsGroupEvent(event) && !isMembershipNotification(event.Kind) && !protocol.IsGlobalOnly(event.Kind) && !instance.Groups.CanRead(pubkey, event) {
+					return false
+				}
+				return instance.ProjectTasks == nil || instance.ProjectTasks.CanRead(ctx, pubkey, event)
+			}
 
 			if slices.Contains(filter.Kinds, RELAY_INVITE) && instance.Config.CanInvite(pubkey) {
 				generated = append(generated, instance.GenerateInviteEvent(pubkey))
@@ -483,53 +503,50 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 				}
 			}
 
-			for event := range instance.Events.QueryEventsBefore(ctx, filter, beforeID, 1000) {
-				if event.Kind == RELAY_INVITE {
-					continue
-				}
-
-				if instance.IsInternalEvent(event) {
-					continue
-				}
-
-				if instance.IsWriteOnlyEvent(event) {
-					continue
-				}
-
-				if instance.ProjectTasks != nil && instance.ProjectTasks.IsTombstoned(ctx, event) {
-					continue
-				}
-
-				if !authenticated {
-					if isMembershipNotification(event.Kind) {
-						continue
-					}
-					if !instance.Config.Policy.AnonymousRead || !instance.CanAnonymousRead(event) {
-						continue
-					}
-					if !yield(instance.StripSignature(ctx, event)) {
+			personaMayMatch := len(filter.Kinds) == 0 || slices.Contains(filter.Kinds, protocol.KindPersona)
+			if !personaMayMatch {
+				for event := range instance.Events.QueryEventsBefore(ctx, filter, beforeID, 1000) {
+					if visible(event) && !yield(instance.StripSignature(ctx, event)) {
 						return
 					}
-					continue
 				}
+				return
+			}
 
-				if instance.Agents != nil && !instance.Agents.CanRead(pubkey, event) {
-					continue
-				}
-
-				if instance.Groups.IsGroupEvent(event) && !isMembershipNotification(event.Kind) && !protocol.IsGlobalOnly(event.Kind) {
-					if !instance.Groups.CanRead(pubkey, event) {
+			// Persona visibility depends on the authenticated reader and the current
+			// owner-to-instance link. Scan storage pages until the requested number
+			// of authorized rows has been produced so newer private personas cannot
+			// consume the client's limit and hide an older visible head.
+			if filter.LimitZero {
+				return
+			}
+			requested := filter.Limit
+			if requested <= 0 || requested > 1000 {
+				requested = 1000
+			}
+			scanFilter := filter
+			scanFilter.Limit = 1000
+			cursor := beforeID
+			delivered := 0
+			for delivered < requested {
+				scanned := 0
+				var last nostr.Event
+				for event := range instance.Events.QueryEventsBefore(ctx, scanFilter, cursor, 1000) {
+					scanned++
+					last = event
+					if !visible(event) {
 						continue
 					}
+					delivered++
+					if !yield(instance.StripSignature(ctx, event)) || delivered >= requested {
+						return
+					}
 				}
-
-				if instance.ProjectTasks != nil && !instance.ProjectTasks.CanRead(ctx, pubkey, event) {
-					continue
-				}
-
-				if !yield(instance.StripSignature(ctx, event)) {
+				if scanned < scanFilter.Limit || last.ID == (nostr.ID{}) {
 					return
 				}
+				scanFilter.Until = last.CreatedAt
+				cursor = last.ID.Hex()
 			}
 		}
 	}
@@ -762,6 +779,12 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 
 	if event.Kind == nostr.KindSimpleGroupDeleteGroup {
 		instance.Groups.DeleteGroup(h)
+	}
+}
+
+func (instance *Instance) OnEventDeleted(_ context.Context, event nostr.Event) {
+	if instance.Agents != nil {
+		instance.Agents.ForgetStored(event)
 	}
 }
 

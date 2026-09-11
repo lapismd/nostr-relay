@@ -36,11 +36,13 @@ type rateWindow struct {
 // It owns only relay session/projection state; ACP and model execution stay in
 // external harnesses.
 type AgentPolicy struct {
-	Config     *Config
-	Management *ManagementStore
-	Groups     *GroupStore
-	Presence   *presence.Store
-	now        func() time.Time
+	Config       *Config
+	Management   *ManagementStore
+	Groups       *GroupStore
+	Events       *EventStore
+	Presence     *presence.Store
+	now          func() time.Time
+	linkResolver func(agent, owner nostr.PubKey, personaID string) bool
 
 	mu       sync.RWMutex
 	sessions map[string]map[nostr.PubKey]authenticatedPrincipal
@@ -176,7 +178,6 @@ func (agentPolicy *AgentPolicy) CheckWrite(ctx context.Context, event nostr.Even
 	}
 
 	if event.Kind == nostr.KindProfileMetadata {
-		agentPolicy.rememberProfile(event)
 		return ""
 	}
 
@@ -271,6 +272,12 @@ func (agentPolicy *AgentPolicy) PresenceEvents(filters []nostr.Filter) ([]nostr.
 }
 
 func (agentPolicy *AgentPolicy) CanRead(reader nostr.PubKey, event nostr.Event) bool {
+	if event.Kind == protocol.KindPersona {
+		if policy.CanReadPrivateEvent(reader, event) {
+			return true
+		}
+		return agentPolicy.canReadLinkedPersona(reader, event)
+	}
 	if !policy.CanReadPrivateEvent(reader, event) {
 		return false
 	}
@@ -279,6 +286,80 @@ func (agentPolicy *AgentPolicy) CanRead(reader nostr.PubKey, event nostr.Event) 
 		return err == nil && agentPolicy.isOwner(route.Agent, route.Owner) && (reader == route.Agent || reader == route.Owner)
 	}
 	return true
+}
+
+// CanReadPersonaFilter reports whether an exact persona COUNT filter is safe
+// for the authenticated reader. Broader filters stay rejected because their
+// mixed private/shared visibility cannot be represented by the count SQL.
+func (agentPolicy *AgentPolicy) CanReadPersonaFilter(reader nostr.PubKey, filter nostr.Filter) bool {
+	if filter.Search != "" || len(filter.Kinds) != 1 || filter.Kinds[0] != protocol.KindPersona || len(filter.Authors) != 1 {
+		return false
+	}
+	owner := filter.Authors[0]
+	if owner == reader {
+		return true
+	}
+	if shared := filter.Tags["shared"]; len(shared) == 1 && shared[0] == "true" {
+		return true
+	}
+	personaIDs := filter.Tags["d"]
+	return len(personaIDs) == 1 && agentPolicy.hasCurrentPersonaLink(reader, owner, personaIDs[0])
+}
+
+func (agentPolicy *AgentPolicy) canReadLinkedPersona(agent nostr.PubKey, persona nostr.Event) bool {
+	personaID, err := exactRequiredTag(persona.Tags, "d")
+	return err == nil && agentPolicy.hasCurrentPersonaLink(agent, persona.PubKey, personaID)
+}
+
+func (agentPolicy *AgentPolicy) hasCurrentPersonaLink(agent, owner nostr.PubKey, personaID string) bool {
+	if protocol.ValidatePersonaSlug(personaID) != nil {
+		return false
+	}
+	if agentPolicy.Events != nil {
+		currentOwner, ok := agentPolicy.currentProfileOwner(agent)
+		if !ok || currentOwner != owner {
+			return false
+		}
+	} else if !agentPolicy.isOwner(agent, owner) {
+		return false
+	}
+	if agentPolicy.linkResolver != nil {
+		return agentPolicy.linkResolver(agent, owner, personaID)
+	}
+	if agentPolicy.Events == nil {
+		return false
+	}
+	filter := nostr.Filter{
+		Kinds:   []nostr.Kind{protocol.KindManagedAgent},
+		Authors: []nostr.PubKey{owner},
+		Tags:    nostr.TagMap{"d": []string{agent.Hex()}},
+	}
+	for event := range agentPolicy.Events.QueryEvents(filter, 1) {
+		instance, err := protocol.ParseManagedAgent(event.Content)
+		return err == nil && instance.PersonaID == personaID
+	}
+	return false
+}
+
+// currentProfileOwner keeps private persona access tied to the current public
+// ownership proof. A connection-scoped NIP-AA credential can admit the agent
+// to the relay, but it does not replace the agent-signed kind:0 authority.
+func (agentPolicy *AgentPolicy) currentProfileOwner(agent nostr.PubKey) (nostr.PubKey, bool) {
+	if agentPolicy.Events == nil {
+		return nostr.PubKey{}, false
+	}
+	filter := nostr.Filter{
+		Kinds:   []nostr.Kind{nostr.KindProfileMetadata},
+		Authors: []nostr.PubKey{agent},
+	}
+	for event := range agentPolicy.Events.QueryEvents(filter, 1) {
+		credential, err := agentauth.VerifyEvent(event)
+		if err != nil || !agentPolicy.ownerIsActive(credential.Owner) {
+			return nostr.PubKey{}, false
+		}
+		return credential.Owner, true
+	}
+	return nostr.PubKey{}, false
 }
 
 func (agentPolicy *AgentPolicy) IsKnownActiveAgent(agent nostr.PubKey) bool {
@@ -301,9 +382,28 @@ func (agentPolicy *AgentPolicy) PreserveSignature(event nostr.Event) bool {
 }
 
 func (agentPolicy *AgentPolicy) RememberStored(event nostr.Event) {
-	if event.Kind == nostr.KindProfileMetadata {
-		agentPolicy.rememberProfile(event)
+	if event.Kind != nostr.KindProfileMetadata {
+		return
 	}
+	credential, err := agentauth.VerifyEvent(event)
+	agentPolicy.mu.Lock()
+	defer agentPolicy.mu.Unlock()
+	if err != nil {
+		delete(agentPolicy.owners, event.PubKey)
+		return
+	}
+	agentPolicy.owners[event.PubKey] = credential.Owner
+}
+
+// ForgetStored removes ownership derived from a deleted public profile. Persona
+// links are read from the authoritative current 30177 head and need no cache.
+func (agentPolicy *AgentPolicy) ForgetStored(event nostr.Event) {
+	if event.Kind != nostr.KindProfileMetadata {
+		return
+	}
+	agentPolicy.mu.Lock()
+	delete(agentPolicy.owners, event.PubKey)
+	agentPolicy.mu.Unlock()
 }
 
 func (agentPolicy *AgentPolicy) principal(ctx context.Context, pubkey nostr.PubKey) (authenticatedPrincipal, bool) {
@@ -318,13 +418,6 @@ func (agentPolicy *AgentPolicy) principal(ctx context.Context, pubkey nostr.PubK
 	principal, ok := agentPolicy.sessions[connection.GetID()][pubkey]
 	agentPolicy.mu.RUnlock()
 	return principal, ok
-}
-
-func (agentPolicy *AgentPolicy) rememberProfile(event nostr.Event) {
-	credential, err := agentauth.VerifyEvent(event)
-	if err == nil {
-		agentPolicy.rememberOwner(credential.Agent, credential.Owner)
-	}
 }
 
 func (agentPolicy *AgentPolicy) rememberOwner(agent, owner nostr.PubKey) bool {

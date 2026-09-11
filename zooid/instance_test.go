@@ -2,6 +2,7 @@ package zooid
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"fiatjaf.com/nostr"
@@ -135,10 +136,44 @@ func TestInstanceTreatsBuzzAgentDefinitionsAsGlobal(t *testing.T) {
 	ctx := withAuthenticatedPrincipal(t.Context(), authenticatedPrincipal{PubKey: secret.Public()})
 	event := nostr.Event{
 		Kind: protocol.KindPersona, PubKey: secret.Public(),
-		Tags: nostr.Tags{{"d", "reviewer"}, {"h", "metadata-only"}},
+		Tags: nostr.Tags{{"d", "reviewer"}, {"h", "metadata-only"}}, Content: `{"display_name":"Reviewer"}`,
 	}
 	if reject, reason := instance.OnEvent(ctx, event); reject {
 		t.Fatalf("global Buzz agent definition was channel-scoped: %s", reason)
+	}
+}
+
+func TestInstanceAppliesPersonaVisibilityBeforeLimit(t *testing.T) {
+	instance := createTestInstance()
+	instance.Config.Policy.Open = true
+	instance.Agents = NewAgentPolicy(instance.Config, instance.Management, instance.Groups)
+	instance.Agents.Events = instance.Events
+	reader := nostr.Generate().Public()
+
+	for index, shared := range []bool{true, false, false} {
+		owner := nostr.Generate()
+		tags := nostr.Tags{{"d", fmt.Sprintf("persona-%d", index)}}
+		if shared {
+			tags = append(tags, nostr.Tag{"shared", "true"})
+		}
+		event := nostr.Event{
+			Kind: protocol.KindPersona, CreatedAt: nostr.Timestamp(100 + index),
+			Tags: tags, Content: `{"display_name":"Persona"}`,
+		}
+		event.Sign(owner)
+		if err := instance.Events.StoreEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var events []nostr.Event
+	for event := range instance.QueryStored(withAuthenticatedPubkey(t.Context(), reader), nostr.Filter{
+		Kinds: []nostr.Kind{protocol.KindPersona}, Limit: 1,
+	}) {
+		events = append(events, event)
+	}
+	if len(events) != 1 || exactTag(events[0].Tags, "shared") != "true" {
+		t.Fatalf("limited persona query returned %#v, want the older shared head", events)
 	}
 }
 

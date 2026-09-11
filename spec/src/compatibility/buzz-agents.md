@@ -7,7 +7,7 @@ The project, task, pull-request, and Git contract retains its separate audit pin
 in [Buzz Desktop compatibility](buzz-desktop.md).
 
 The relay implements the collaboration boundary needed by unmodified Buzz
-Desktop and an external `buzz-acp` process. It verifies identities, owner
+Desktop and independently launched external agents. It verifies identities, owner
 credentials, relay admission, channel access, event envelopes, storage, private
 reads, and ephemeral delivery. ACP sessions, models, prompts, context, tools,
 and agent execution remain outside the Go process.
@@ -87,9 +87,9 @@ admin privilege, invite power, or access to the owner's private groups. Existing
 | `20002` | Typing/working indicator | WebSocket only | Ephemeral; exactly one `h` is required and the author must be a channel member. |
 | `24200` | NIP-AO observer frame | WebSocket only | Ephemeral, private agent/owner fan-out, never stored. |
 | `30174` | NIP-AE encrypted engram | WebSocket or HTTP | Addressable and private to author and exact `p` owner; excluded from full-text search. |
-| `30175` | NIP-AP persona | WebSocket or HTTP | Addressable; author-only unless exactly `['shared','true']`. |
+| `30175` | NIP-AP persona | WebSocket or HTTP | Validated addressable JSON; author-only unless shared, plus access for the exact currently linked verified agent; excluded from full-text search. |
 | `30176` | Agent team | WebSocket or HTTP | Normal public addressable global event. |
-| `30177` | Managed-agent discovery | WebSocket or HTTP | Normal public addressable global event. |
+| `30177` | Managed-agent instance/link | WebSocket or HTTP | Public addressable event keyed by the agent pubkey; content is validated but does not grant membership or ownership. |
 | `30178` | Shared-team catalog | WebSocket or HTTP | Addressable; author-only unless exactly `['shared','true']`. |
 | `30179` | Private managed agent | Rejected | Reserved until complete CAS and privacy semantics are implemented. |
 | `40902` | Presence snapshot selector | HTTP query only | Relay-generated signed `20001` result; never accepted from clients. |
@@ -162,7 +162,43 @@ standard-base64 NIP-44 v2 envelope. Turn metrics require exact owner `p` and
 relationship, and the same opaque-envelope checks. Metrics are limited to 60
 events per agent per minute.
 
-Persona identifiers match `[a-z0-9][a-z0-9_-]{0,63}`. Shared-team catalog
+Persona identifiers match `[a-z0-9][a-z0-9_-]{0,63}`. Persona content is a
+JSON string of at most 65,535 bytes with a required nonblank `display_name`
+and optional string `avatar_url` and `system_prompt`. Unknown fields remain
+opaque for forward compatibility. Known credential, private-key, secret-key,
+secret, and environment-secret fields are rejected; arbitrary plaintext,
+including a prompt, cannot be guaranteed secret-free and should be treated as
+visible to every reader authorized for that persona.
+
+Managed-agent kind `30177` is independently addressed by the 64-character
+lowercase agent pubkey. Its optional `persona_id` uses the exact persona slug;
+`name`, `respond_to`, and positive integer `parallelism` remain instance state.
+Lapis adds `name_mode: "inherited" | "instance"`. Missing legacy modes mean
+instance naming, even when the stored name happens to equal the persona name.
+This prevents persona and instance identity from being inferred from matching
+strings.
+
+An unshared persona is readable by its author and by an authenticated agent
+only while all of these facts remain current: the agent has a valid NIP-OA
+owner credential, that owner is active, and the owner's winning `30177` head
+links that exact agent to that exact persona slug. Relinking immediately removes
+access to the previous persona; deletion of the link or the credential-bearing
+kind-0 profile removes derived access. Sibling agents receive no access. The
+same rules apply to historical queries, ID lookup, HTTP results, live delivery,
+and exact authorized counts before limits. Broader private count shapes are
+rejected, and persona content is never included in full-text search.
+
+Community keeps three records distinct: owner-signed persona `30175`,
+owner-signed instance `30177`, and agent-signed public profile kind `0`. The
+shared presentation resolver applies an explicitly inherited persona name and
+persona avatar immediately, falling back to kind `0` for an unresolved link or
+missing avatar. Instance names stay independent. Persona edits preserve unknown
+configuration and stable slugs, and unlinking preserves the public profile and
+instance name without copying the private prompt. System prompts are saved as
+plaintext desired configuration and are labelled inactive; this release does
+not run them or reconcile kind `0` on an agent's behalf.
+
+Shared-team catalog
 identifiers are nonempty, contain at most 64 Unicode characters, and contain no
 whitespace or control characters. For both kinds the only public-sharing marker
 is exactly one `['shared','true']` tag; malformed or duplicate markers are
@@ -175,11 +211,11 @@ validation belong to the endpoints that possess the decryption keys.
 ## Deferred protocols and limits
 
 Private managed-agent kind `30179` is explicitly rejected until its compare and
-swap plus privacy lifecycle can be enforced across writes and reads. Agent
-management requests, model selection, prompt/context assembly, tool execution,
-ACP lifecycle, and runtime progress production remain external. The relay can
-store and authorize the supported persona, team, engram, and metrics events; it
-does not interpret them as execution commands.
+swap plus privacy lifecycle can be enforced across writes and reads. Model
+selection, prompt/context assembly, tool execution, runtime reconciliation, and
+runtime progress production remain external. The relay can store and authorize
+the supported persona, team, engram, and metrics events; it does not interpret
+them as execution commands or fork an agent harness.
 
 Presence, owner bindings, and rate windows are process-local. Durable agent
 events and owner credentials in kind-0 profiles survive restart, while live

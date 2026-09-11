@@ -155,7 +155,7 @@ func (events *EventStore) initFTS() error {
 		events.Schema.Render(`
 			CREATE OR REPLACE FUNCTION {{.Name}}_update_search_vector() RETURNS trigger AS $$
 			BEGIN
-				IF NEW.kind IN (30174, 30179, 44100, 44101, 44200) THEN
+				IF NEW.kind IN (30174, 30175, 30179, 44100, 44101, 44200) THEN
 					NEW.search_vector := NULL;
 				ELSE
 					NEW.search_vector := to_tsvector('english', COALESCE(NEW.content, ''));

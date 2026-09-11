@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fiatjaf.com/nostr"
+	"zooid/buzzagents/protocol"
 )
 
 func TestCountStoredCountsFilterUnionExactlyAndIgnoresLimit(t *testing.T) {
@@ -40,6 +41,37 @@ func TestCountStoredCountsFilterUnionExactlyAndIgnoresLimit(t *testing.T) {
 	}
 	if result.Approximate || result.Count != 3 {
 		t.Fatalf("CountStored() = %#v, want exact union count 3", result)
+	}
+}
+
+func TestPersonaCountsRequireOwnerOrExactLinkedAgent(t *testing.T) {
+	instance := createTestInstance()
+	owner := nostr.Generate().Public()
+	agent := nostr.Generate().Public()
+	sibling := nostr.Generate().Public()
+	instance.Management.relayMembers.Store(owner, struct{}{})
+	instance.Agents = NewAgentPolicy(instance.Config, instance.Management, instance.Groups)
+	instance.Agents.rememberOwner(agent, owner)
+	instance.Agents.rememberOwner(sibling, owner)
+	instance.Agents.linkResolver = func(candidate, candidateOwner nostr.PubKey, personaID string) bool {
+		return candidate == agent && candidateOwner == owner && personaID == "research"
+	}
+	filter := nostr.Filter{
+		Kinds: []nostr.Kind{protocol.KindPersona}, Authors: []nostr.PubKey{owner},
+		Tags: nostr.TagMap{"d": []string{"research"}},
+	}
+	if err := instance.validateCountVisibility(withAuthenticatedPubkey(t.Context(), owner), filter); err != nil {
+		t.Fatalf("owner persona count rejected: %v", err)
+	}
+	if err := instance.validateCountVisibility(withAuthenticatedPubkey(t.Context(), agent), filter); err != nil {
+		t.Fatalf("linked-agent persona count rejected: %v", err)
+	}
+	if err := instance.validateCountVisibility(withAuthenticatedPubkey(t.Context(), sibling), filter); err == nil {
+		t.Fatal("sibling-agent persona count was accepted")
+	}
+	filter.Tags = nil
+	if err := instance.validateCountVisibility(withAuthenticatedPubkey(t.Context(), agent), filter); err == nil {
+		t.Fatal("broad linked-agent persona count was accepted")
 	}
 }
 

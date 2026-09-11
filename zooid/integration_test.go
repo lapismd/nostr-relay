@@ -615,6 +615,69 @@ func TestIntegration_BuzzAgentOwnerAuthAndPresence(t *testing.T) {
 	if result := agent.sendEvent(ctx, t, snapshot); !strings.Contains(result, "query projections only") {
 		t.Fatalf("client-generated presence snapshot was not rejected: %s", result)
 	}
+
+	var profileAuth nostr.Tag
+	if err := json.Unmarshal([]byte(makeOwnerAuthTag(t, adminSecret, agentSecret.Public(), "")), &profileAuth); err != nil {
+		t.Fatal(err)
+	}
+	profile := &nostr.Event{
+		Kind: nostr.KindProfileMetadata, CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{profileAuth}, Content: `{"name":"Harness identity","picture":"https://example.invalid/public.png"}`,
+	}
+	if result := agent.sendEvent(ctx, t, profile); result != "ok" {
+		t.Fatalf("publish agent ownership profile: %s", result)
+	}
+
+	admin := newNostrClient(ctx, t, relay.URI, adminSecret)
+	defer admin.close()
+	persona := &nostr.Event{
+		Kind: protocol.KindPersona, CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{{"d", "research"}}, Content: `{"display_name":"Research","avatar_url":"https://example.invalid/persona.png","system_prompt":"Saved only"}`,
+	}
+	if result := admin.sendEvent(ctx, t, persona); result != "ok" {
+		t.Fatalf("publish private persona: %s", result)
+	}
+	instance := &nostr.Event{
+		Kind: protocol.KindManagedAgent, CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{{"d", agentSecret.Public().Hex()}}, Content: `{"persona_id":"research","name":"Harness identity","name_mode":"inherited","respond_to":"owner-only","parallelism":10}`,
+	}
+	if result := admin.sendEvent(ctx, t, instance); result != "ok" {
+		t.Fatalf("publish managed-agent link: %s", result)
+	}
+	personaFilter := map[string]interface{}{
+		"kinds":   []int{int(protocol.KindPersona)},
+		"authors": []string{adminSecret.Public().Hex()},
+		"#d":      []string{"research"},
+	}
+	if events := agent.subscribe(ctx, t, "linked-persona", personaFilter); len(events) != 1 || events[0].ID != persona.ID {
+		t.Fatalf("exact linked agent did not receive its persona: %#v", events)
+	}
+
+	siblingSecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000005")
+	sibling := newOwnerDerivedNostrClient(ctx, t, relay.URI, siblingSecret, adminSecret)
+	defer sibling.close()
+	var siblingAuth nostr.Tag
+	if err := json.Unmarshal([]byte(makeOwnerAuthTag(t, adminSecret, siblingSecret.Public(), "")), &siblingAuth); err != nil {
+		t.Fatal(err)
+	}
+	if result := sibling.sendEvent(ctx, t, &nostr.Event{
+		Kind: nostr.KindProfileMetadata, CreatedAt: nostr.Now(), Tags: nostr.Tags{siblingAuth}, Content: `{"name":"Sibling"}`,
+	}); result != "ok" {
+		t.Fatalf("publish sibling ownership profile: %s", result)
+	}
+	if events := sibling.subscribe(ctx, t, "sibling-persona", personaFilter); len(events) != 0 {
+		t.Fatalf("sibling agent received an unlinked persona: %#v", events)
+	}
+
+	relinked := *instance
+	relinked.CreatedAt++
+	relinked.Content = `{"persona_id":"writer","name":"Harness identity","name_mode":"inherited","respond_to":"owner-only","parallelism":10}`
+	if result := admin.sendEvent(ctx, t, &relinked); result != "ok" {
+		t.Fatalf("replace managed-agent link: %s", result)
+	}
+	if events := agent.subscribe(ctx, t, "stale-persona-link", personaFilter); len(events) != 0 {
+		t.Fatalf("relinked agent retained the old persona: %#v", events)
+	}
 }
 
 func TestIntegration_AdminCanCreateGroup(t *testing.T) {

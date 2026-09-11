@@ -10,6 +10,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"github.com/stretchr/testify/require"
+	"zooid/buzzagents/protocol"
 )
 
 func createTestEventStore() *EventStore {
@@ -61,6 +62,22 @@ func TestEventStore_SaveEvent(t *testing.T) {
 	err = store.SaveEvent(event)
 	if err == nil {
 		t.Error("EventStore.SaveEvent() should return error for duplicate event")
+	}
+}
+
+func TestEventStorePersonaContentIsNotSearchable(t *testing.T) {
+	store := createTestEventStore()
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	event := createTestEvent(protocol.KindPersona, `{"display_name":"UniquePersonaSearchToken"}`)
+	event.Tags = nostr.Tags{{"d", "research"}}
+	event.Sign(nostr.Generate())
+	if err := store.StoreEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	for match := range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{protocol.KindPersona}, Search: "UniquePersonaSearchToken"}, 10) {
+		t.Fatalf("private persona leaked through search: %s", match.ID.Hex())
 	}
 }
 

@@ -149,6 +149,17 @@ func (instance *Instance) validateCountVisibility(ctx context.Context, filter no
 		return errUnsafeCountFilter
 	}
 
+	if containsAnyKind(filter.Kinds, protocol.KindPersona) {
+		pubkey, authenticated := authenticatedPubkey(ctx)
+		if !authenticated {
+			return errors.New("authentication is required for persona counts")
+		}
+		if instance.Agents == nil || !instance.Agents.CanReadPersonaFilter(pubkey, filter) {
+			return errUnsafeCountFilter
+		}
+		return nil
+	}
+
 	groups := filter.Tags["h"]
 	if len(groups) > 0 {
 		if len(filter.Kinds) == 0 {
