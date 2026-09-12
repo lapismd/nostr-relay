@@ -12,6 +12,7 @@ without changing that pubkey.
 [auth]
 enabled = true
 public_url = "https://relay.example"
+allowed_browser_origins = ["https://community.example"]
 credential_dir = "/run/secrets"
 master_key_ref = "file:lapis_auth_master_key"
 master_key_version = "v1"
@@ -28,7 +29,10 @@ client_id = "<google-oidc-client-id>"
 client_secret_ref = "file:lapis_auth_google_client_secret"
 ```
 
-`auth.public_url` must be HTTPS except on a loopback development host. The
+`auth.public_url` is the relay and OAuth callback origin. It must be HTTPS
+except on a loopback development host. `auth.allowed_browser_origins` contains
+exact Community origins; entries must be HTTPS except for `localhost`
+development names. The
 master key file contains exactly 32 bytes encoded as hexadecimal or base64.
 Provider secrets and the master key are loaded from the configured credential
 directory and are never stored in PostgreSQL.
@@ -64,6 +68,7 @@ All paths are below `/api/auth/`:
 
 | Method and path | Purpose |
 | --- | --- |
+| `GET config` | Discover enabled providers and safe browser capabilities. |
 | `GET login/github` | Start GitHub login; `intent=link` connects GitHub to the current account. |
 | `GET login/google` | Start Google OIDC login. |
 | `GET callback/<provider>` | Provider callback used by the OAuth client. |
@@ -73,6 +78,9 @@ All paths are below `/api/auth/`:
 | `POST logout` | Revoke the current application session. |
 | `DELETE github` | Remove forge credentials without deleting the account or GitHub login identity. |
 | `POST relay/sign-auth` | Sign a NIP-42 response through the active managed or NIP-46 signer. |
+| `POST events/sign` | Sign an allowlisted Community event template through the active managed or NIP-46 signer. |
+| `POST nip44/encrypt` | Encrypt a bounded value for a validated peer pubkey. |
+| `POST nip44/decrypt` | Decrypt a bounded value from a validated peer pubkey. |
 | `POST nip46/connect` | Connect an externally controlled account to a `bunker://` signer with the same pubkey. |
 | `POST nip46/switch-relays` | Ask the connected signer for its current relay set. |
 | `POST nip46/logout` | Remove the local NIP-46 binding and return to an external signer binding. |
@@ -82,9 +90,31 @@ All paths are below `/api/auth/`:
 | `POST custody/transfer/authorize` | Consume the assertion and return the encrypted key envelope. |
 | `POST custody/transfer/complete` | Verify same-key possession and NIP-46 availability, then complete transfer. |
 
-State-changing session routes require an exact `Origin` match with
-`auth.public_url`. OAuth callbacks use one-time state; Nostr login uses a
-one-time challenge and a NIP-98 signature over the exact request body.
+Browser requests under `/api/auth/` bypass the relay's wildcard public-resource
+CORS wrapper. An exact `auth.public_url` or `auth.allowed_browser_origins`
+match receives its own origin, `Access-Control-Allow-Credentials: true`, and
+`Vary: Origin`; credentialed preflight supports only the auth methods and
+headers. Other browser origins are denied. State-changing session routes also
+require an allowed `Origin`.
+
+OAuth `return_to` accepts a root-relative path or an absolute URL whose origin
+is allowlisted. The callback returns to that URL after success. Known provider
+failures return only a stable `auth_error` code; OAuth code, state, and provider
+error text are never forwarded. OAuth callbacks use one-time state; Nostr
+login uses a one-time challenge and a NIP-98 signature over the exact request
+body.
+
+`events/sign` accepts only `kind`, `created_at`, `content`, and `tags`. It
+rejects caller-supplied `pubkey`, `id`, or `sig`, binds the resulting author to
+the session account, and accepts timestamps within five minutes of relay time.
+The kind allowlist is `0`, `1`, `3`, `5`, `7`, `9`, `11`, `13`, `1111`,
+`1618`, `1619`, `1621`, `1630` through `1633`, `9000` through `9002`, `9005`,
+`9007` through `9009`, `9021`, `9022`, `22242`, `27235`, `30030`, `30078`,
+`30175`, `30177`, `30315`, `30617`, `30621`, and `40003`. Group operations
+require `h`; repository and project operations require their protocol anchors.
+NIP-42 `relay` and NIP-98 `u` values must target the configured relay origin.
+These signing checks limit custody use; NIP-29, project, and Forge permission
+checks still run when the signed event is published.
 
 ## NIP-46 signer boundary
 
@@ -98,6 +128,12 @@ pubkey, and has a valid ID and signature.
 The saved bunker URL contains signer pubkey and relay locators. Its one-time
 connection secret is removed before persistence. The relay's NIP-46 client key
 is encrypted with the auth master-key wrapper.
+
+Managed and NIP-46 signers also expose bounded NIP-44 encryption and decryption
+through the authenticated browser contract. Peer keys must be 32-byte Nostr
+pubkeys. Audit records include account, signer, operation, result, and optional
+correlation ID, without plaintext, ciphertext, remote RPC payloads, or key
+material.
 
 ## Managed-to-device custody transfer
 

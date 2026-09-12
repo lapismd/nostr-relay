@@ -301,7 +301,7 @@ func newTestService(t *testing.T, store Store, providers ...OAuthProvider) *Serv
 	_, _ = rand.Read(master)
 	wrapper, err := NewAESKeyWrapper("v1", master)
 	require.NoError(t, err)
-	service, err := NewService(ServiceConfig{PublicURL: "https://relay.example", GitHubClientID: "github-client"}, store, wrapper, providers...)
+	service, err := NewService(ServiceConfig{PublicURL: "https://relay.example", GitHubClientID: "github-client", AllowedBrowserOrigins: []string{"https://community.example"}}, store, wrapper, providers...)
 	require.NoError(t, err)
 	return service
 }

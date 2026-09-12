@@ -3,6 +3,7 @@ services:
     environment:
       AUTH_ENABLED: "true"
       AUTH_MASTER_KEY_REF: file:lapis_auth_master_key
+      AUTH_ALLOWED_BROWSER_ORIGINS: '${LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS:-["http://community.localhost:5173"]}'
     secrets:
       - lapis_auth_master_key
 
@@ -10,6 +11,7 @@ services:
     environment:
       AUTH_ENABLED: "true"
       AUTH_MASTER_KEY_REF: file:lapis_auth_master_key
+      AUTH_ALLOWED_BROWSER_ORIGINS: '${LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS:-["http://community.localhost:5173"]}'
     secrets:
       - lapis_auth_master_key
 

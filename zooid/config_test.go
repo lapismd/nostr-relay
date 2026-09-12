@@ -278,6 +278,7 @@ func TestAuthConfigDefaultsAndRejectsInsecurePublicDeployment(t *testing.T) {
 	contents := `[auth]
 enabled = true
 public_url = "https://relay.example"
+allowed_browser_origins = ["https://community.example", "http://community.localhost:5173"]
 master_key_ref = "file:lapis-auth-master-key"
 
 [auth.github]
@@ -297,6 +298,9 @@ client_secret_ref = "file:github-oauth-secret"
 	if config.AuthSessionLifetime() != 7*24*time.Hour || config.AuthSessionIdle() != 24*time.Hour || config.AuthChallengeTTL() != 10*time.Minute {
 		t.Fatalf("unexpected auth defaults: %+v", config.Auth)
 	}
+	if len(config.Auth.AllowedBrowserOrigins) != 2 {
+		t.Fatalf("unexpected browser origins: %+v", config.Auth.AllowedBrowserOrigins)
+	}
 	config.Auth.PublicURL = "http://relay.example"
 	if err := config.validateAuth(); err == nil {
 		t.Fatal("expected public HTTP auth URL rejection")
@@ -308,5 +312,14 @@ client_secret_ref = "file:github-oauth-secret"
 	config.Auth.Google.ClientID = "google-client"
 	if err := config.validateAuth(); err == nil {
 		t.Fatal("expected incomplete Google configuration rejection")
+	}
+	config.Auth.Google.ClientID = ""
+	config.Auth.AllowedBrowserOrigins = []string{"https://community.example/path"}
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected browser origin path rejection")
+	}
+	config.Auth.AllowedBrowserOrigins = []string{"http://community.example"}
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected insecure browser origin rejection")
 	}
 }

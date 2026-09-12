@@ -82,8 +82,10 @@ docker compose -f docker-compose.yml \
   config --quiet
 ```
 
-Set `LAPIS_AUTH_PUBLIC_URL` to the exact browser-facing HTTPS origin. Register
-these provider callbacks:
+Set `LAPIS_AUTH_PUBLIC_URL` to the relay's browser-facing HTTPS origin. Set
+`LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS` to a TOML array of exact Community HTTPS
+origins, for example `'["https://community.example"]'`. Register these provider
+callbacks:
 
 ```text
 https://<relay>/api/auth/callback/github

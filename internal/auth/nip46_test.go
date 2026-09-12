@@ -13,6 +13,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip42"
+	"fiatjaf.com/nostr/nip44"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,6 +31,22 @@ func (remote *fakeNIP46Remote) SignEvent(_ context.Context, event *nostr.Event) 
 		event.Content = "changed by remote"
 	}
 	return event.Sign(remote.secret)
+}
+
+func (remote *fakeNIP46Remote) NIP44Encrypt(_ context.Context, recipient nostr.PubKey, plaintext string) (string, error) {
+	conversationKey, err := nip44.GenerateConversationKey(recipient, remote.secret)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Encrypt(plaintext, conversationKey)
+}
+
+func (remote *fakeNIP46Remote) NIP44Decrypt(_ context.Context, sender nostr.PubKey, ciphertext string) (string, error) {
+	conversationKey, err := nip44.GenerateConversationKey(sender, remote.secret)
+	if err != nil {
+		return "", err
+	}
+	return nip44.Decrypt(ciphertext, conversationKey)
 }
 
 func (*fakeNIP46Remote) SwitchRelays(context.Context) ([]string, error) {
@@ -51,7 +68,7 @@ func TestNIP46SignerVerifiesRemoteResultAndPolicy(t *testing.T) {
 	remote := &fakeNIP46Remote{secret: secret}
 	signer := &NIP46Signer{
 		AccountID: "account-a", Pubkey: secret.Public(), Remote: remote,
-		Policy: ApplicationSigningPolicy{RelayURL: "wss://relay.example"},
+		Policy: ApplicationSigningPolicy{PublicURL: "https://relay.example", RelayURL: "wss://relay.example"},
 	}
 	event := nostr.Event{Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "hello"}
 	signed, err := signer.SignEvent(context.Background(), event, SignContext{

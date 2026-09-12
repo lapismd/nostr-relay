@@ -9,6 +9,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 	"zooid/zooid"
@@ -57,6 +58,10 @@ func relayHandler(metricsHandler http.Handler) http.Handler {
 
 		instance, exists := zooid.Dispatch(r.Host)
 		if exists {
+			if instance.Auth != nil && strings.HasPrefix(r.URL.Path, "/api/auth/") {
+				instance.Auth.ServeHTTP(w, r)
+				return
+			}
 			instance.Relay.ServeHTTP(w, r)
 			return
 		}

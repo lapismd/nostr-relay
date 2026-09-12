@@ -212,13 +212,12 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		instance.Auth, err = authn.NewService(authn.ServiceConfig{
 			PublicURL: config.Auth.PublicURL, SessionLifetime: config.AuthSessionLifetime(),
 			SessionIdle: config.AuthSessionIdle(), ChallengeTTL: config.AuthChallengeTTL(),
-			GitHubClientID: config.Auth.GitHub.ClientID,
+			GitHubClientID: config.Auth.GitHub.ClientID, AllowedBrowserOrigins: config.Auth.AllowedBrowserOrigins,
 		}, store, wrapper, providers...)
 		if err != nil {
 			instance.Events.Close()
 			return nil, err
 		}
-		router.Handle("/api/auth/", instance.Auth)
 	}
 
 	// Warm caches

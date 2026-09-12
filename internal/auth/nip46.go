@@ -12,11 +12,35 @@ import (
 type NIP46Remote interface {
 	GetPublicKey(context.Context) (nostr.PubKey, error)
 	SignEvent(context.Context, *nostr.Event) error
+	NIP44Encrypt(context.Context, nostr.PubKey, string) (string, error)
+	NIP44Decrypt(context.Context, nostr.PubKey, string) (string, error)
 	SwitchRelays(context.Context) ([]string, error)
 }
 
 type NIP46Connector interface {
 	Connect(context.Context, nostr.SecretKey, string) (NIP46Remote, error)
+}
+
+func (signer *NIP46Signer) Encrypt(ctx context.Context, plaintext string, recipient nostr.PubKey) (string, error) {
+	if signer == nil || signer.Remote == nil || recipient == nostr.ZeroPK {
+		return "", ErrSignerUnavailable
+	}
+	value, err := signer.Remote.NIP44Encrypt(ctx, recipient, plaintext)
+	if err != nil {
+		return "", ErrSignerUnavailable
+	}
+	return value, nil
+}
+
+func (signer *NIP46Signer) Decrypt(ctx context.Context, ciphertext string, sender nostr.PubKey) (string, error) {
+	if signer == nil || signer.Remote == nil || sender == nostr.ZeroPK {
+		return "", ErrSignerUnavailable
+	}
+	value, err := signer.Remote.NIP44Decrypt(ctx, sender, ciphertext)
+	if err != nil {
+		return "", ErrSignerUnavailable
+	}
+	return value, nil
 }
 
 type RemoteNIP46Connector struct{}

@@ -98,6 +98,7 @@ const (
 	SignPurposeRepository SignPurpose = "repository"
 	SignPurposeRelayAuth  SignPurpose = "relay_auth"
 	SignPurposeHTTPAuth   SignPurpose = "http_auth"
+	SignPurposeCommunity  SignPurpose = "community"
 )
 
 type SignContext struct {
@@ -111,6 +112,8 @@ type SignContext struct {
 type Signer interface {
 	PublicKey(context.Context) (nostr.PubKey, error)
 	SignEvent(context.Context, nostr.Event, SignContext) (nostr.Event, error)
+	Encrypt(context.Context, string, nostr.PubKey) (string, error)
+	Decrypt(context.Context, string, nostr.PubKey) (string, error)
 }
 
 type SigningPolicy interface {

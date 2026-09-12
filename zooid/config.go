@@ -45,16 +45,17 @@ type OAuthProviderConfig struct {
 }
 
 type AuthConfig struct {
-	Enabled          bool                `toml:"enabled"`
-	PublicURL        string              `toml:"public_url"`
-	CredentialDir    string              `toml:"credential_dir"`
-	MasterKeyRef     string              `toml:"master_key_ref"`
-	MasterKeyVersion string              `toml:"master_key_version"`
-	SessionLifetime  string              `toml:"session_lifetime"`
-	SessionIdle      string              `toml:"session_idle"`
-	ChallengeTTL     string              `toml:"challenge_ttl"`
-	GitHub           OAuthProviderConfig `toml:"github"`
-	Google           OAuthProviderConfig `toml:"google"`
+	Enabled               bool                `toml:"enabled"`
+	PublicURL             string              `toml:"public_url"`
+	AllowedBrowserOrigins []string            `toml:"allowed_browser_origins"`
+	CredentialDir         string              `toml:"credential_dir"`
+	MasterKeyRef          string              `toml:"master_key_ref"`
+	MasterKeyVersion      string              `toml:"master_key_version"`
+	SessionLifetime       string              `toml:"session_lifetime"`
+	SessionIdle           string              `toml:"session_idle"`
+	ChallengeTTL          string              `toml:"challenge_ttl"`
+	GitHub                OAuthProviderConfig `toml:"github"`
+	Google                OAuthProviderConfig `toml:"google"`
 }
 
 type AgentConfig struct {
@@ -225,6 +226,22 @@ func (config *Config) validateAuth() error {
 		if (provider.ClientID == "") != (provider.ClientSecretRef == "") {
 			return fmt.Errorf("auth.%s client ID and secret reference must be configured together", name)
 		}
+	}
+	seenOrigins := make(map[string]struct{}, len(config.Auth.AllowedBrowserOrigins))
+	for _, value := range config.Auth.AllowedBrowserOrigins {
+		origin, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+			return fmt.Errorf("auth.allowed_browser_origins entries must be absolute origins")
+		}
+		localhost := origin.Hostname() == "localhost" || origin.Hostname() == "127.0.0.1" || origin.Hostname() == "::1" || strings.HasSuffix(origin.Hostname(), ".localhost")
+		if origin.Scheme != "https" && !(origin.Scheme == "http" && localhost) {
+			return fmt.Errorf("auth.allowed_browser_origins entries must use HTTPS, except for localhost development")
+		}
+		normalized := origin.Scheme + "://" + origin.Host
+		if _, duplicate := seenOrigins[normalized]; duplicate {
+			return fmt.Errorf("auth.allowed_browser_origins entries must be unique")
+		}
+		seenOrigins[normalized] = struct{}{}
 	}
 	return nil
 }

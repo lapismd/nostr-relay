@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,23 +30,25 @@ const (
 )
 
 type ServiceConfig struct {
-	PublicURL       string
-	CookieDomain    string
-	SessionLifetime time.Duration
-	SessionIdle     time.Duration
-	ChallengeTTL    time.Duration
-	GitHubClientID  string
+	PublicURL             string
+	CookieDomain          string
+	SessionLifetime       time.Duration
+	SessionIdle           time.Duration
+	ChallengeTTL          time.Duration
+	GitHubClientID        string
+	AllowedBrowserOrigins []string
 }
 
 type Service struct {
-	Config    ServiceConfig
-	Store     Store
-	Wrapper   KeyWrapper
-	Providers map[string]OAuthProvider
-	Now       func() time.Time
-	refreshMu sync.Mutex
-	NIP46     NIP46Connector
-	WebAuthn  *webauthn.WebAuthn
+	Config         ServiceConfig
+	Store          Store
+	Wrapper        KeyWrapper
+	Providers      map[string]OAuthProvider
+	Now            func() time.Time
+	refreshMu      sync.Mutex
+	NIP46          NIP46Connector
+	WebAuthn       *webauthn.WebAuthn
+	allowedOrigins map[string]struct{}
 }
 
 func (service *Service) GitHubCredentialMode(ctx context.Context, pubkey nostr.PubKey) (string, error) {
@@ -138,7 +141,17 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 	if err != nil {
 		return nil, err
 	}
-	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}, WebAuthn: webAuthn}
+	allowedOrigins := make(map[string]struct{}, len(config.AllowedBrowserOrigins)+1)
+	publicOrigin := strings.ToLower(publicURL.Scheme + "://" + publicURL.Host)
+	allowedOrigins[publicOrigin] = struct{}{}
+	for _, value := range config.AllowedBrowserOrigins {
+		origin, err := normalizeBrowserOrigin(value)
+		if err != nil {
+			return nil, err
+		}
+		allowedOrigins[origin] = struct{}{}
+	}
+	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}, WebAuthn: webAuthn, allowedOrigins: allowedOrigins}
 	for _, provider := range providers {
 		if provider != nil {
 			service.Providers[provider.Name()] = provider
@@ -148,8 +161,13 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 }
 
 func (service *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if service.handleCORS(w, r) {
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/auth/")
 	switch {
+	case r.Method == http.MethodGet && path == "config":
+		service.getConfig(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "login/"):
 		service.beginOAuth(w, r, strings.TrimPrefix(path, "login/"))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "callback/"):
@@ -166,6 +184,12 @@ func (service *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		service.disconnectGitHub(w, r)
 	case r.Method == http.MethodPost && path == "relay/sign-auth":
 		service.signRelayAuth(w, r)
+	case r.Method == http.MethodPost && path == "events/sign":
+		service.signApplicationEvent(w, r)
+	case r.Method == http.MethodPost && path == "nip44/encrypt":
+		service.nip44Encrypt(w, r)
+	case r.Method == http.MethodPost && path == "nip44/decrypt":
+		service.nip44Decrypt(w, r)
 	case r.Method == http.MethodPost && path == "nip46/connect":
 		service.connectNIP46(w, r)
 	case r.Method == http.MethodPost && path == "nip46/switch-relays":
@@ -187,6 +211,51 @@ func (service *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (service *Service) handleCORS(w http.ResponseWriter, r *http.Request) bool {
+	rawOrigin := strings.TrimSpace(r.Header.Get("Origin"))
+	if rawOrigin == "" {
+		return false
+	}
+	w.Header().Add("Vary", "Origin")
+	origin, err := normalizeBrowserOrigin(rawOrigin)
+	if err != nil {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return true
+	}
+	if _, allowed := service.allowedOrigins[origin]; !allowed {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return true
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	if r.Method != http.MethodOptions {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Correlation-ID")
+	w.Header().Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+func (service *Service) getConfig(w http.ResponseWriter, _ *http.Request) {
+	providers := make([]string, 0, len(service.Providers))
+	for name := range service.Providers {
+		providers = append(providers, name)
+	}
+	sort.Strings(providers)
+	writeAuthJSON(w, http.StatusOK, map[string]any{
+		"providers": providers,
+		"capabilities": map[string]bool{
+			"github_linking":  service.Providers["github"] != nil,
+			"managed_signing": true,
+			"nip44":           true,
+			"nip46":           true,
+			"nostr_login":     true,
+		},
+	})
+}
+
 func (service *Service) beginOAuth(w http.ResponseWriter, r *http.Request, providerName string) {
 	provider, ok := service.Providers[providerName]
 	if !ok {
@@ -197,7 +266,12 @@ func (service *Service) beginOAuth(w http.ResponseWriter, r *http.Request, provi
 	if intent == "" {
 		intent = "login"
 	}
-	flow := OAuthFlow{Provider: providerName, Intent: intent, ReturnTo: safeReturnTo(r.URL.Query().Get("return_to")), ExpiresAt: service.Now().Add(service.Config.ChallengeTTL)}
+	returnTo, ok := service.safeReturnTo(r.URL.Query().Get("return_to"))
+	if !ok {
+		writeAuthError(w, http.StatusBadRequest, "invalid_return_url")
+		return
+	}
+	flow := OAuthFlow{Provider: providerName, Intent: intent, ReturnTo: returnTo, ExpiresAt: service.Now().Add(service.Config.ChallengeTTL)}
 	if intent == "link" {
 		_, account, err := service.Authenticate(r.Context(), r)
 		if err != nil {
@@ -235,7 +309,7 @@ func (service *Service) beginOAuth(w http.ResponseWriter, r *http.Request, provi
 
 func (service *Service) finishOAuth(w http.ResponseWriter, r *http.Request, providerName string) {
 	provider, ok := service.Providers[providerName]
-	if !ok || r.URL.Query().Get("code") == "" || r.URL.Query().Get("state") == "" {
+	if !ok || r.URL.Query().Get("state") == "" {
 		writeAuthError(w, http.StatusBadRequest, "invalid_oauth_callback")
 		return
 	}
@@ -245,15 +319,19 @@ func (service *Service) finishOAuth(w http.ResponseWriter, r *http.Request, prov
 		writeAuthError(w, http.StatusBadRequest, "invalid_oauth_state")
 		return
 	}
+	if r.URL.Query().Get("error") != "" || r.URL.Query().Get("code") == "" {
+		redirectOAuthFailure(w, r, flow.ReturnTo, "provider_authentication_failed")
+		return
+	}
 	identity, err := provider.Exchange(r.Context(), r.URL.Query().Get("code"), flow.Verifier, flow.Nonce)
 	if err != nil {
-		writeAuthError(w, http.StatusUnauthorized, "provider_authentication_failed")
+		redirectOAuthFailure(w, r, flow.ReturnTo, "provider_authentication_failed")
 		return
 	}
 	account, lookupErr := service.Store.FindAccountByIdentity(r.Context(), providerName, identity.ProviderID)
 	if flow.Intent == "link" {
 		if lookupErr == nil && account.ID != flow.AccountID {
-			writeAuthError(w, http.StatusConflict, "identity_already_linked")
+			redirectOAuthFailure(w, r, flow.ReturnTo, "identity_already_linked")
 			return
 		}
 		if errors.Is(lookupErr, ErrNotFound) {
@@ -262,11 +340,11 @@ func (service *Service) finishOAuth(w http.ResponseWriter, r *http.Request, prov
 				Login: identity.Login, DisplayName: identity.DisplayName, Email: identity.Email,
 			})
 			if err != nil {
-				writeAuthError(w, http.StatusConflict, "identity_already_linked")
+				redirectOAuthFailure(w, r, flow.ReturnTo, "identity_already_linked")
 				return
 			}
 		} else if lookupErr != nil {
-			writeAuthError(w, http.StatusServiceUnavailable, "auth_store_unavailable")
+			redirectOAuthFailure(w, r, flow.ReturnTo, "auth_store_unavailable")
 			return
 		}
 		account, err = service.Store.AccountByID(r.Context(), flow.AccountID)
@@ -276,18 +354,18 @@ func (service *Service) finishOAuth(w http.ResponseWriter, r *http.Request, prov
 		err = lookupErr
 	}
 	if err != nil {
-		writeAuthError(w, http.StatusServiceUnavailable, "account_update_failed")
+		redirectOAuthFailure(w, r, flow.ReturnTo, "account_update_failed")
 		return
 	}
 	if providerName == "github" {
 		credential, credentialErr := GitHubCredentialFromToken(account.ID, identity.ProviderID, identity.Login, service.Config.GitHubClientID, identity.Token, CredentialCodec{Wrapper: service.Wrapper})
 		if credentialErr != nil || service.Store.SaveGitHubCredential(r.Context(), credential) != nil {
-			writeAuthError(w, http.StatusServiceUnavailable, "github_credential_store_failed")
+			redirectOAuthFailure(w, r, flow.ReturnTo, "github_credential_store_failed")
 			return
 		}
 	}
 	if err := service.establishSession(w, r.Context(), account, providerName); err != nil {
-		writeAuthError(w, http.StatusServiceUnavailable, "session_store_failed")
+		redirectOAuthFailure(w, r, flow.ReturnTo, "session_store_failed")
 		return
 	}
 	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: providerName, Operation: "login", Result: "success"})
@@ -487,7 +565,7 @@ func (service *Service) signerForAccount(ctx context.Context, account Account) (
 	if err != nil || binding.Status != SignerActive || binding.Pubkey != account.Pubkey {
 		return nil, ErrSignerUnavailable
 	}
-	policy := ApplicationSigningPolicy{RelayURL: service.relayURL()}
+	policy := ApplicationSigningPolicy{PublicURL: service.Config.PublicURL, RelayURL: service.relayURL()}
 	switch binding.Type {
 	case SignerManaged:
 		return &ManagedSigner{AccountID: account.ID, Pubkey: account.Pubkey, Keys: service.Store, Wrapper: service.Wrapper, Policy: policy}, nil
@@ -546,6 +624,140 @@ func (service *Service) signRelayAuth(w http.ResponseWriter, r *http.Request) {
 	binding, _ := service.Store.SignerBindingByAccount(r.Context(), account.ID)
 	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, SignerType: binding.Type, Operation: "sign_relay_auth", CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "success"})
 	writeAuthJSON(w, http.StatusOK, map[string]any{"event": signed})
+}
+
+func (service *Service) signApplicationEvent(w http.ResponseWriter, r *http.Request) {
+	if !service.validOrigin(r) {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return
+	}
+	var request struct {
+		Event struct {
+			Kind      nostr.Kind      `json:"kind"`
+			CreatedAt nostr.Timestamp `json:"created_at"`
+			Content   string          `json:"content"`
+			Tags      nostr.Tags      `json:"tags"`
+		} `json:"event"`
+	}
+	if !decodeAuthJSON(w, r, &request) {
+		return
+	}
+	event := nostr.Event{Kind: request.Event.Kind, CreatedAt: request.Event.CreatedAt, Content: request.Event.Content, Tags: request.Event.Tags}
+	session, account, err := service.Authenticate(r.Context(), r)
+	if err != nil {
+		writeAuthError(w, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	purpose, allowed := CommunitySignPurpose(event.Kind)
+	if !allowed {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: "sign_event", CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusForbidden, "event_kind_not_allowed")
+		return
+	}
+	now := service.Now()
+	createdAt := time.Unix(int64(event.CreatedAt), 0)
+	if createdAt.Before(now.Add(-5*time.Minute)) || createdAt.After(now.Add(5*time.Minute)) {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: "sign_event", CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusBadRequest, "event_timestamp_out_of_range")
+		return
+	}
+	signer, err := service.signerForAccount(r.Context(), account)
+	if err != nil {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: "sign_event", CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusConflict, "signer_unavailable")
+		return
+	}
+	source := ""
+	if purpose == SignPurposeRelayAuth {
+		if tag := event.Tags.Find("challenge"); len(tag) >= 2 {
+			source = tag[1]
+		}
+	} else if purpose == SignPurposeHTTPAuth {
+		if tag := event.Tags.Find("u"); len(tag) >= 2 {
+			source = tag[1]
+		}
+	}
+	signed, err := signer.SignEvent(r.Context(), event, SignContext{
+		AccountID: account.ID, Purpose: purpose, RequestedKind: event.Kind,
+		Source: source, CorrelationID: r.Header.Get("X-Correlation-ID"),
+	})
+	if err != nil {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: "sign_event", CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusForbidden, "signing_denied")
+		return
+	}
+	binding, _ := service.Store.SignerBindingByAccount(r.Context(), account.ID)
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, SignerType: binding.Type, Operation: "sign_event", SourceEventID: signed.ID.Hex(), CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "success"})
+	writeAuthJSON(w, http.StatusOK, map[string]any{"event": signed})
+}
+
+func (service *Service) nip44Encrypt(w http.ResponseWriter, r *http.Request) {
+	service.nip44Operation(w, r, true)
+}
+
+func (service *Service) nip44Decrypt(w http.ResponseWriter, r *http.Request) {
+	service.nip44Operation(w, r, false)
+}
+
+func (service *Service) nip44Operation(w http.ResponseWriter, r *http.Request, encrypt bool) {
+	if !service.validOrigin(r) {
+		writeAuthError(w, http.StatusForbidden, "invalid_origin")
+		return
+	}
+	var request struct {
+		Pubkey     string `json:"pubkey"`
+		Plaintext  string `json:"plaintext,omitempty"`
+		Ciphertext string `json:"ciphertext,omitempty"`
+	}
+	if !decodeAuthJSON(w, r, &request) {
+		return
+	}
+	session, account, authErr := service.Authenticate(r.Context(), r)
+	if authErr != nil {
+		writeAuthError(w, http.StatusUnauthorized, "authentication_required")
+		return
+	}
+	peer, err := nostr.PubKeyFromHex(request.Pubkey)
+	value := request.Ciphertext
+	operation := "nip44_decrypt"
+	if encrypt {
+		value = request.Plaintext
+		operation = "nip44_encrypt"
+	}
+	if err != nil || len(value) > 96<<10 || encrypt && request.Ciphertext != "" || !encrypt && request.Plaintext != "" {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: operation, CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusBadRequest, "invalid_nip44_request")
+		return
+	}
+	signer, err := service.signerForAccount(r.Context(), account)
+	if err != nil {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: operation, CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusConflict, "signer_unavailable")
+		return
+	}
+	if signerPubkey, keyErr := signer.PublicKey(r.Context()); keyErr != nil || signerPubkey != account.Pubkey {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: operation, CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusConflict, "signer_unavailable")
+		return
+	}
+	var result string
+	if encrypt {
+		result, err = signer.Encrypt(r.Context(), value, peer)
+	} else {
+		result, err = signer.Decrypt(r.Context(), value, peer)
+	}
+	if err != nil || len(result) > 128<<10 {
+		service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, Operation: operation, CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "denied"})
+		writeAuthError(w, http.StatusForbidden, "nip44_operation_denied")
+		return
+	}
+	binding, _ := service.Store.SignerBindingByAccount(r.Context(), account.ID)
+	service.audit(r.Context(), AuditEvent{AccountID: account.ID, Pubkey: account.Pubkey, AuthProvider: session.AuthProvider, SignerType: binding.Type, Operation: operation, CorrelationID: r.Header.Get("X-Correlation-ID"), Result: "success"})
+	key := "plaintext"
+	if encrypt {
+		key = "ciphertext"
+	}
+	writeAuthJSON(w, http.StatusOK, map[string]string{key: result})
 }
 
 func (service *Service) connectNIP46(w http.ResponseWriter, r *http.Request) {
@@ -682,19 +894,56 @@ func (service *Service) audit(ctx context.Context, event AuditEvent) {
 }
 
 func (service *Service) validOrigin(r *http.Request) bool {
-	origin := strings.TrimRight(r.Header.Get("Origin"), "/")
-	configured, err := url.Parse(service.Config.PublicURL)
+	origin, err := normalizeBrowserOrigin(r.Header.Get("Origin"))
 	if err != nil {
 		return false
 	}
-	return origin == configured.Scheme+"://"+configured.Host
+	_, allowed := service.allowedOrigins[origin]
+	return allowed
 }
 
-func safeReturnTo(value string) string {
-	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.ContainsAny(value, "\r\n") {
-		return "/"
+func (service *Service) safeReturnTo(value string) (string, bool) {
+	if value == "" {
+		return "/", true
 	}
-	return value
+	if strings.ContainsAny(value, "\r\n") || strings.HasPrefix(value, "//") {
+		return "", false
+	}
+	if strings.HasPrefix(value, "/") {
+		return value, true
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	origin := strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+	_, allowed := service.allowedOrigins[origin]
+	return value, allowed
+}
+
+func normalizeBrowserOrigin(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", errors.New("auth browser origin must be an absolute origin")
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	localhost := hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || strings.HasSuffix(hostname, ".localhost")
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && localhost) {
+		return "", errors.New("auth browser origin must use HTTPS, except for localhost development")
+	}
+	return strings.ToLower(parsed.Scheme + "://" + parsed.Host), nil
+}
+
+func redirectOAuthFailure(w http.ResponseWriter, r *http.Request, returnTo, code string) {
+	target, err := url.Parse(returnTo)
+	if err != nil {
+		writeAuthError(w, http.StatusUnauthorized, code)
+		return
+	}
+	query := target.Query()
+	query.Set("auth_error", code)
+	target.RawQuery = query.Encode()
+	http.Redirect(w, r, target.String(), http.StatusFound)
 }
 
 func randomToken(size int) (string, error) {
