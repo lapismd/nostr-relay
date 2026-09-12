@@ -16,13 +16,16 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
+	"fiatjaf.com/nostr/nip11"
 	"github.com/fasthttp/websocket"
 	"github.com/gosimple/slug"
 	"zooid/buzzagents/protocol"
+	"zooid/internal/agentbunker"
 	authn "zooid/internal/auth"
 	"zooid/internal/forge"
 	"zooid/internal/gitforge"
 	"zooid/internal/githubforge"
+	"zooid/internal/keywrap"
 	"zooid/internal/khatru"
 )
 
@@ -43,6 +46,7 @@ type Instance struct {
 	GitForge     *GitForgePolicy
 	Agents       *AgentPolicy
 	Auth         *authn.Service
+	AgentBunker  *agentbunker.Service
 }
 
 func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
@@ -154,6 +158,82 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 
 	if err := instance.Events.Init(); err != nil {
 		log.Fatal("Failed to initialize event store: ", err)
+	}
+
+	if config.Agents.Bunker.Enabled {
+		credentials := githubforge.RuntimeCredentials{SecretDir: config.Agents.Bunker.CredentialDir}
+		masterValue, err := credentials.Load(config.Agents.Bunker.MasterKeyRef)
+		if err != nil {
+			instance.Events.Close()
+			return nil, fmt.Errorf("load agent bunker master key: %w", err)
+		}
+		masterKey, err := keywrap.ParseMasterKey(masterValue)
+		clear(masterValue)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		wrapper, err := keywrap.NewAESWrapper(config.Agents.Bunker.MasterKeyVersion, masterKey)
+		clear(masterKey)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		store, err := agentbunker.NewSQLStore(GetDb(), events.Schema.Name)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		instance.AgentBunker, err = agentbunker.NewService(agentbunker.Config{
+			PublicURL:             config.Agents.Bunker.PublicURL,
+			AllowedBrowserOrigins: config.Agents.Bunker.AllowedBrowserOrigins,
+			InvitationLifetime:    config.AgentBunkerInvitationLifetime(),
+			MaxActivePerOwner:     config.Agents.Bunker.MaxActivePerOwner,
+			MaxPendingPerOwner:    config.Agents.Bunker.MaxPendingPerOwner,
+			CreationsPerHour:      config.Agents.Bunker.CreationsPerHour,
+			RequestsPerMinute:     config.Agents.Bunker.RequestsPerMinute,
+			RelayPubkey:           self,
+		}, store, wrapper)
+		if err != nil {
+			instance.Events.Close()
+			return nil, err
+		}
+		instance.AgentBunker.AdmitOwner = func(_ context.Context, pubkey nostr.PubKey) bool {
+			return !instance.Management.PubkeyIsBanned(pubkey) && (config.Policy.Open || instance.Management.IsMember(pubkey))
+		}
+		instance.AgentBunker.IsMember = instance.Groups.IsMember
+		instance.AgentBunker.PersistEvent = func(event nostr.Event) error {
+			deleted, err := instance.Events.ReplaceEvent(event)
+			if err != nil && !errors.Is(err, eventstore.ErrDupEvent) {
+				return err
+			}
+			for _, old := range deleted {
+				instance.Agents.ForgetStored(old)
+			}
+			instance.Agents.RememberStored(event)
+			instance.Relay.BroadcastEvent(event)
+			return nil
+		}
+		instance.AgentBunker.CurrentEvent = func(kind nostr.Kind, author nostr.PubKey, d string) *nostr.Event {
+			filter := nostr.Filter{Kinds: []nostr.Kind{kind}, Authors: []nostr.PubKey{author}}
+			if d != "" {
+				filter.Tags = nostr.TagMap{"d": []string{d}}
+			}
+			for event := range instance.Events.QueryEvents(filter, 1) {
+				result := event
+				return &result
+			}
+			return nil
+		}
+		instance.Agents.managedResolver = instance.AgentBunker.VerifyActiveOwnership
+		instance.Relay.Info.AddSupportedNIP("46")
+		instance.Relay.OverwriteRelayInformation = func(_ context.Context, _ *http.Request, info nip11.RelayInformationDocument) nip11.RelayInformationDocument {
+			if info.Malformed == nil {
+				info.Malformed = map[string]any{}
+			}
+			info.Malformed["lapis_managed_agents"] = instance.AgentBunker.NIP11()
+			return info
+		}
 	}
 
 	if config.Auth.Enabled {

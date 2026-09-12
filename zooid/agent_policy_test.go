@@ -58,6 +58,25 @@ func TestAgentPolicyHTTPAdmissionAndOwnerScopedEvents(t *testing.T) {
 	}
 }
 
+func TestManagedAuthTagRequiresOneExactRelayScopedTag(t *testing.T) {
+	owner := nostr.Generate().Public().Hex()
+	relay := nostr.Generate().Public().Hex()
+	tag, found := managedAuthTag(nostr.Tags{{"relay", "challenge"}, {"lapis-managed", owner, relay}})
+	if !found || tag == nil || tag[1] != owner || tag[2] != relay {
+		t.Fatalf("valid managed tag was not extracted: %#v, %v", tag, found)
+	}
+	for _, tags := range []nostr.Tags{
+		{{"lapis-managed", owner}},
+		{{"lapis-managed", owner, relay, "extra"}},
+		{{"lapis-managed", owner, relay}, {"lapis-managed", owner, relay}},
+		{{"lapis-managed", "invalid", relay}},
+	} {
+		if tag, found := managedAuthTag(tags); !found || tag != nil {
+			t.Fatalf("malformed managed tags were accepted: %#v", tags)
+		}
+	}
+}
+
 func TestAgentPolicyEnforcesCredentialKind(t *testing.T) {
 	now := time.Unix(1_750_000_000, 0)
 	ownerSecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000001")

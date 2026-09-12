@@ -58,6 +58,10 @@ func relayHandler(metricsHandler http.Handler) http.Handler {
 
 		instance, exists := zooid.Dispatch(r.Host)
 		if exists {
+			if instance.AgentBunker != nil && (r.URL.Path == "/nip46" || strings.HasPrefix(r.URL.Path, "/api/agents/managed")) {
+				instance.AgentBunker.ServeHTTP(w, r)
+				return
+			}
 			if instance.Auth != nil && strings.HasPrefix(r.URL.Path, "/api/auth/") {
 				instance.Auth.ServeHTTP(w, r)
 				return

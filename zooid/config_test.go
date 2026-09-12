@@ -39,6 +39,34 @@ func TestLoadConfig_AnonymousReadDefaultsOnAndCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestConfigAgentBunkerDefaultsAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.toml")
+	contents := `[agents.bunker]
+enabled = true
+public_url = "https://relay.example"
+allowed_browser_origins = ["https://community.example"]
+credential_dir = "/run/secrets"
+master_key_ref = "file:agent_bunker_master_key"
+`
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := decodeConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.validateAgentBunker(); err != nil {
+		t.Fatal(err)
+	}
+	if config.Agents.Bunker.MasterKeyVersion != "v1" || config.AgentBunkerInvitationLifetime() != 24*time.Hour || config.Agents.Bunker.MaxActivePerOwner != 10 || config.Agents.Bunker.MaxPendingPerOwner != 3 || config.Agents.Bunker.CreationsPerHour != 5 || config.Agents.Bunker.RequestsPerMinute != 120 {
+		t.Fatalf("unexpected agent bunker defaults: %+v", config.Agents.Bunker)
+	}
+	config.Agents.Bunker.PublicURL = "http://relay.example"
+	if err := config.validateAgentBunker(); err == nil {
+		t.Fatal("expected insecure public URL rejection")
+	}
+}
+
 func TestConfig_IsOwner(t *testing.T) {
 	ownerPubkey := nostr.MustPubKeyFromHex("1234567890123456789012345678901234567890123456789012345678901234")
 	otherPubkey := nostr.MustPubKeyFromHex("abcdef1234567890123456789012345678901234567890123456789012345678")

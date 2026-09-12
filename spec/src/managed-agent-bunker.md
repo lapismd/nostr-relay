@@ -6,6 +6,10 @@ separate from application authentication: enabling `[agents.bunker]` neither
 enables `nostr-auth` nor makes an application account authoritative for agent
 custody.
 
+The targeted `lapis-managed-v1` bunker, provisioning API, relay admission, and
+controller policy are implemented. Arbitrary-client bunkers and the deferred
+execution and forge features listed below remain outside this capability.
+
 A signed-in human owner creates a pending agent with a supplied NIP-46 client
 public key. The relay generates a distinct agent key, encrypts it with a
 bunker-specific wrapping key, and returns a one-time `bunker://` invitation.

@@ -14,6 +14,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"github.com/BurntSushi/toml"
+	"zooid/internal/githubforge"
 )
 
 type Role struct {
@@ -69,9 +70,24 @@ type AuthConfig struct {
 }
 
 type AgentConfig struct {
-	Enabled                bool `toml:"enabled"`
-	AllowOwnerAuth         bool `toml:"allow_owner_auth"`
-	EnforceCredentialKinds bool `toml:"enforce_credential_kinds"`
+	Enabled                bool              `toml:"enabled"`
+	AllowOwnerAuth         bool              `toml:"allow_owner_auth"`
+	EnforceCredentialKinds bool              `toml:"enforce_credential_kinds"`
+	Bunker                 AgentBunkerConfig `toml:"bunker"`
+}
+
+type AgentBunkerConfig struct {
+	Enabled               bool     `toml:"enabled"`
+	PublicURL             string   `toml:"public_url"`
+	AllowedBrowserOrigins []string `toml:"allowed_browser_origins"`
+	CredentialDir         string   `toml:"credential_dir"`
+	MasterKeyRef          string   `toml:"master_key_ref"`
+	MasterKeyVersion      string   `toml:"master_key_version"`
+	InvitationLifetime    string   `toml:"invitation_lifetime"`
+	MaxActivePerOwner     int      `toml:"max_active_per_owner"`
+	MaxPendingPerOwner    int      `toml:"max_pending_per_owner"`
+	CreationsPerHour      int      `toml:"creations_per_hour"`
+	RequestsPerMinute     int      `toml:"requests_per_minute"`
 }
 
 type Config struct {
@@ -171,6 +187,9 @@ func LoadConfig(filename string) (*Config, error) {
 	if err := config.validateAuth(); err != nil {
 		return nil, fmt.Errorf("invalid auth config in %s: %w", path, err)
 	}
+	if err := config.validateAgentBunker(); err != nil {
+		return nil, fmt.Errorf("invalid agents.bunker config in %s: %w", path, err)
+	}
 
 	secret, err := nostr.SecretKeyFromHex(config.Secret)
 	if err != nil {
@@ -193,6 +212,13 @@ func decodeConfigFile(path string) (Config, error) {
 	config.Agents.Enabled = true
 	config.Agents.AllowOwnerAuth = true
 	config.Agents.EnforceCredentialKinds = true
+	config.Agents.Bunker.CredentialDir = "/run/secrets"
+	config.Agents.Bunker.MasterKeyVersion = "v1"
+	config.Agents.Bunker.InvitationLifetime = "24h"
+	config.Agents.Bunker.MaxActivePerOwner = 10
+	config.Agents.Bunker.MaxPendingPerOwner = 3
+	config.Agents.Bunker.CreationsPerHour = 5
+	config.Agents.Bunker.RequestsPerMinute = 120
 	config.Git.ReconcileInterval = "5s"
 	config.Git.MaxDiffBytes = 8 << 20
 	config.Git.MaxDiffFiles = 2000
@@ -207,6 +233,54 @@ func decodeConfigFile(path string) (Config, error) {
 	config.Auth.ChallengeTTL = "10m"
 	_, err := toml.DecodeFile(path, &config)
 	return config, err
+}
+
+func (config *Config) validateAgentBunker() error {
+	value := config.Agents.Bunker
+	if !value.Enabled {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(value.PublicURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLocalDevelopmentHost(parsed.Hostname()))) {
+		return fmt.Errorf("public_url must be HTTPS, except for loopback development")
+	}
+	if !filepath.IsAbs(value.CredentialDir) {
+		return fmt.Errorf("credential_dir must be absolute")
+	}
+	if err := githubforge.ValidateCredentialReference(value.MasterKeyRef); err != nil {
+		return fmt.Errorf("invalid master_key_ref")
+	}
+	if strings.TrimSpace(value.MasterKeyVersion) == "" {
+		return fmt.Errorf("master_key_version is required")
+	}
+	if duration, err := time.ParseDuration(value.InvitationLifetime); err != nil || duration <= 0 {
+		return fmt.Errorf("invitation_lifetime must be positive")
+	}
+	if value.MaxActivePerOwner <= 0 || value.MaxPendingPerOwner <= 0 || value.CreationsPerHour <= 0 || value.RequestsPerMinute <= 0 {
+		return fmt.Errorf("quotas and rate limits must be positive")
+	}
+	seen := map[string]struct{}{}
+	for _, raw := range value.AllowedBrowserOrigins {
+		origin, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+			return fmt.Errorf("allowed_browser_origins entries must be absolute origins")
+		}
+		if origin.Scheme != "https" && !(origin.Scheme == "http" && isLocalDevelopmentHost(origin.Hostname())) {
+			return fmt.Errorf("allowed browser origins must use HTTPS, except for localhost development")
+		}
+		normalized := strings.ToLower(origin.Scheme + "://" + origin.Host)
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("allowed browser origins must be unique")
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func (config *Config) AgentBunkerInvitationLifetime() time.Duration {
+	duration, _ := time.ParseDuration(config.Agents.Bunker.InvitationLifetime)
+	return duration
 }
 
 func (config *Config) validateAuth() error {

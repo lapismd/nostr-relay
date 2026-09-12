@@ -22,6 +22,7 @@ type authenticatedPrincipal struct {
 	PubKey     nostr.PubKey
 	Owner      nostr.PubKey
 	Virtual    bool
+	Managed    bool
 	Credential agentauth.Credential
 }
 
@@ -36,13 +37,14 @@ type rateWindow struct {
 // It owns only relay session/projection state; ACP and model execution stay in
 // external harnesses.
 type AgentPolicy struct {
-	Config       *Config
-	Management   *ManagementStore
-	Groups       *GroupStore
-	Events       *EventStore
-	Presence     *presence.Store
-	now          func() time.Time
-	linkResolver func(agent, owner nostr.PubKey, personaID string) bool
+	Config          *Config
+	Management      *ManagementStore
+	Groups          *GroupStore
+	Events          *EventStore
+	Presence        *presence.Store
+	now             func() time.Time
+	linkResolver    func(agent, owner nostr.PubKey, personaID string) bool
+	managedResolver func(context.Context, nostr.PubKey, nostr.PubKey, nostr.PubKey) bool
 
 	mu       sync.RWMutex
 	sessions map[string]map[nostr.PubKey]authenticatedPrincipal
@@ -71,6 +73,33 @@ func principalFromContext(ctx context.Context) (authenticatedPrincipal, bool) {
 // OnAuth extends the verified NIP-42 flow with NIP-AA admission. Direct relay
 // members follow the existing path. Virtual membership is connection-local.
 func (agentPolicy *AgentPolicy) OnAuth(ctx context.Context, event nostr.Event) (bool, string) {
+	if managed, found := managedAuthTag(event.Tags); found {
+		if managed == nil || !agentPolicy.authTimestampFresh(uint64(event.CreatedAt)) || agentPolicy.Management.PubkeyIsBanned(event.PubKey) {
+			return true, "restricted: managed agent authentication is not permitted"
+		}
+		owner, ownerErr := nostr.PubKeyFromHex(managed[1])
+		relay, relayErr := nostr.PubKeyFromHex(managed[2])
+		ownerAdmitted := ownerErr == nil && !agentPolicy.Management.PubkeyIsBanned(owner) && (agentPolicy.Config.Policy.Open || agentPolicy.Management.IsMember(owner))
+		if relayErr != nil || relay != agentPolicy.Config.GetSelf() || !ownerAdmitted || agentPolicy.managedResolver == nil || !agentPolicy.managedResolver(ctx, event.PubKey, owner, relay) {
+			return true, "restricted: invalid managed agent ownership"
+		}
+		if !agentPolicy.rememberOwner(event.PubKey, owner) {
+			return true, "restricted: agent is already bound to another owner"
+		}
+		connection := khatru.GetConnection(ctx)
+		if connection == nil {
+			return true, "restricted: agent authentication requires a WebSocket connection"
+		}
+		agentPolicy.mu.Lock()
+		byPubkey := agentPolicy.sessions[connection.GetID()]
+		if byPubkey == nil {
+			byPubkey = make(map[nostr.PubKey]authenticatedPrincipal)
+			agentPolicy.sessions[connection.GetID()] = byPubkey
+		}
+		byPubkey[event.PubKey] = authenticatedPrincipal{PubKey: event.PubKey, Owner: owner, Virtual: !agentPolicy.Config.Policy.Open, Managed: true}
+		agentPolicy.mu.Unlock()
+		return false, ""
+	}
 	if !agentPolicy.Config.Agents.Enabled || agentPolicy.Config.Policy.Open {
 		return false, ""
 	}
@@ -166,7 +195,7 @@ func (agentPolicy *AgentPolicy) IsRelayMember(ctx context.Context, pubkey nostr.
 
 func (agentPolicy *AgentPolicy) CheckWrite(ctx context.Context, event nostr.Event) string {
 	principal, virtual := agentPolicy.principal(ctx, event.PubKey)
-	if virtual && agentPolicy.Config.Agents.EnforceCredentialKinds && !principal.Credential.AllowsKind(event.Kind) {
+	if virtual && !principal.Managed && agentPolicy.Config.Agents.EnforceCredentialKinds && !principal.Credential.AllowsKind(event.Kind) {
 		return "restricted: owner credential does not allow this event kind"
 	}
 
@@ -229,6 +258,20 @@ func (agentPolicy *AgentPolicy) CheckWrite(ctx context.Context, event nostr.Even
 		}
 	}
 	return ""
+}
+
+func managedAuthTag(tags nostr.Tags) (nostr.Tag, bool) {
+	var found nostr.Tag
+	for _, tag := range tags {
+		if len(tag) == 0 || tag[0] != "lapis-managed" {
+			continue
+		}
+		if found != nil || len(tag) != 3 || !nostr.IsValid32ByteHex(tag[1]) || !nostr.IsValid32ByteHex(tag[2]) {
+			return nil, true
+		}
+		found = tag
+	}
+	return found, found != nil
 }
 
 func (agentPolicy *AgentPolicy) OnEphemeral(event nostr.Event) {
