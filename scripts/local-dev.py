@@ -361,11 +361,14 @@ def compose(directory, args, capture=False):
     )
 
 
-def wait_url(url, timeout=90):
+def wait_url(url, timeout=90, host=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=5) as response:
+            request = urllib.request.Request(
+                url, headers={} if host is None else {"Host": host}
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
                 if response.status == 200:
                     return
         except Exception:
@@ -786,7 +789,7 @@ def main():
         if old:
             invoke(["docker", "stop", *old.splitlines()], capture=True)
         compose(directory, ["up", "-d", "--no-build", "--wait", "relay", "cloudflared"])
-        wait_url(env["LAPIS_AUTH_PUBLIC_URL"] + "/health")
+        wait_url("http://127.0.0.1:" + env["LAPIS_RELAY_PORT"] + "/health")
         if args.command == "reset":
             admin(directory, "restore", env)
     if args.command in ("up", "reset", "rehydrate"):
@@ -810,7 +813,10 @@ def main():
             stderr=log,
             start_new_session=True,
         )
-        wait_url(env["LAPIS_COMMUNITY_PUBLIC_URL"])
+        wait_url(
+            "http://127.0.0.1:7036",
+            host=urlparse(env["LAPIS_COMMUNITY_PUBLIC_URL"]).netloc,
+        )
         print("Community ready: " + env["LAPIS_COMMUNITY_PUBLIC_URL"])
 
 

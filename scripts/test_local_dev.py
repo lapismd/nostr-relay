@@ -1,9 +1,11 @@
 import contextlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import importlib.util
 import io
 from pathlib import Path
 import stat
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +17,31 @@ spec.loader.exec_module(dev)
 
 
 class CredentialsTest(unittest.TestCase):
+    def test_wait_url_can_preserve_a_public_virtual_host_over_loopback(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(
+                    200 if self.headers["Host"] == "community.example" else 404
+                )
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            dev.wait_url(
+                f"http://127.0.0.1:{server.server_port}",
+                timeout=1,
+                host="community.example",
+            )
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
     def test_copy_is_private_independent_and_repeatable(self):
         with tempfile.TemporaryDirectory() as temporary:
             source, destination = (
