@@ -230,6 +230,11 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 409, "idempotency_conflict")
 			return
 		}
+		saved, err = s.restorePendingInvitation(r.Context(), input.ClientPubkey, saved)
+		if err != nil {
+			writeError(w, 500, "managed_agent_key_failed")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		_, _ = w.Write(saved)
@@ -274,7 +279,9 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := createResponse{Agent: AgentView{Pubkey: agentPubkey, OwnerPubkey: owner, Status: StatusPending, ConnectionState: ClientPending, CreatedAt: created, ExpiresAt: expires}, BunkerURL: s.bunkerURL(agentPubkey, invitation), ProfileTemplate: s.profileTemplate(agent)}
-	encoded, _ := json.Marshal(response)
+	cached := response
+	cached.BunkerURL = s.bunkerURL(agentPubkey, "")
+	encoded, _ := json.Marshal(cached)
 	_ = s.Store.SaveHTTPResult(r.Context(), owner, input.IdempotencyKey, requestHash, encoded, created)
 	s.audit(r.Context(), Audit{OwnerPubkey: owner, AgentPubkey: agentPubkey, ClientPubkey: input.ClientPubkey, Operation: "create", Result: "success", CreatedAt: created})
 	writeJSON(w, 201, response)
@@ -456,7 +463,28 @@ func (s *Service) bunkerURL(agent, secret string) string {
 	} else {
 		u.Scheme = "ws"
 	}
-	return "bunker://" + agent + "?relay=" + url.QueryEscape(u.String()) + "&secret=" + url.QueryEscape(secret)
+	result := "bunker://" + agent + "?relay=" + url.QueryEscape(u.String())
+	if secret != "" {
+		result += "&secret=" + url.QueryEscape(secret)
+	}
+	return result
+}
+func (s *Service) restorePendingInvitation(ctx context.Context, clientPubkey string, encoded []byte) ([]byte, error) {
+	var response createResponse
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		return nil, err
+	}
+	client, err := s.Store.Client(ctx, response.Agent.Pubkey, clientPubkey)
+	if err != nil || client.Status != ClientPending {
+		return encoded, nil
+	}
+	invitation, err := client.Invitation.Decrypt(s.invitationAAD(client.AgentPubkey, client.ClientPubkey), s.Wrapper)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(invitation)
+	response.BunkerURL = s.bunkerURL(response.Agent.Pubkey, string(invitation))
+	return json.Marshal(response)
 }
 func (s *Service) profileTemplate(a Agent) eventTemplate {
 	return eventTemplate{Kind: 0, CreatedAt: a.ProfileCreatedAt, Tags: [][]string{{"lapis-managed", a.OwnerPubkey, a.RelayPubkey}}, Content: a.ProfileContent}
