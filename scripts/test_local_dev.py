@@ -4,6 +4,7 @@ import importlib.util
 import io
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -97,6 +98,19 @@ class CredentialsTest(unittest.TestCase):
                 env["LAPIS_GITHUB_APP_KEY_FILE"],
                 str(destination / "github-app-private-key.pem"),
             )
+            self.assertEqual(
+                env["LAPIS_AGENT_BUNKER_PUBLIC_URL"],
+                "https://local-relay.lapis.md",
+            )
+            self.assertEqual(
+                env["LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS"],
+                '["https://local-community.lapis.md"]',
+            )
+            self.assertEqual(
+                env["LAPIS_AGENT_BUNKER_MASTER_KEY_FILE"],
+                str(destination / "agent-bunker-master-key"),
+            )
+            bunker_key = destination.joinpath("agent-bunker-master-key").read_bytes()
             env["LAPIS_AUTH_GOOGLE_CLIENT_ID"] = "preserved-client"
             dev.save_env(destination / "relay.env", env)
             with (destination / "relay.env").open("a") as stream:
@@ -112,10 +126,17 @@ class CredentialsTest(unittest.TestCase):
             self.assertEqual(
                 content, {p.name: p.read_bytes() for p in destination.iterdir()}
             )
+            self.assertEqual(
+                bunker_key,
+                destination.joinpath("agent-bunker-master-key").read_bytes(),
+            )
             public = dev.read_env(destination / "public.env")
             self.assertTrue(all(k.startswith("VITE_") for k in public))
             self.assertEqual(
                 public["VITE_COMMUNITY_KEYTR_GATEWAYS"], "custom.example=Custom"
+            )
+            self.assertFalse(
+                any("BUNKER" in key or "MASTER_KEY" in key for key in public)
             )
 
     def test_freshness_clock_renews_without_changing_fixture_clock(self):
@@ -164,6 +185,98 @@ class CredentialsTest(unittest.TestCase):
                 },
             )
             self.assertEqual(dev.read_env(path)["SAFE"], "$(touch should-not-exist)")
+
+    def test_public_configuration_discards_bunker_and_master_key_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            dev.private_write(
+                directory / "fixture-public.json",
+                '{"curator":"c","publisher":"p"}\n',
+            )
+            dev.private_write(
+                directory / "public.env",
+                "VITE_CUSTOM=preserved\nVITE_AGENT_BUNKER_SECRET=remove\nMASTER_KEY=remove\n",
+            )
+            dev.public_configuration(
+                directory,
+                {
+                    "LAPIS_RELAY_HOST": "relay.example",
+                    "LAPIS_COMMUNITY_PUBLIC_URL": "https://community.example",
+                    "LAPIS_AUTH_PUBLIC_URL": "https://relay.example",
+                    "LAPIS_AUTH_WEBAUTHN_RP_ID": "community.example",
+                },
+            )
+            with (directory / "public.env").open("a") as stream:
+                stream.write("VITE_AGENT_BUNKER_SECRET=remove-again\n")
+            dev.public_configuration(
+                directory,
+                {
+                    "LAPIS_RELAY_HOST": "relay.example",
+                    "LAPIS_COMMUNITY_PUBLIC_URL": "https://community.example",
+                    "LAPIS_AUTH_PUBLIC_URL": "https://relay.example",
+                    "LAPIS_AUTH_WEBAUTHN_RP_ID": "community.example",
+                },
+            )
+            public = dev.read_env(directory / "public.env")
+            self.assertEqual(public["VITE_CUSTOM"], "preserved")
+            self.assertFalse(any("BUNKER" in key or "MASTER_KEY" in key for key in public))
+
+    def test_local_compose_mounts_bunker_key_without_rendering_its_value(self):
+        if not __import__("shutil").which("docker"):
+            self.skipTest("Docker is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "community"
+            with contextlib.redirect_stdout(io.StringIO()):
+                dev.initialize(directory, Path(temporary) / "absent-source")
+            rendered = dev.compose(
+                directory, ["config", "--format", "json"], capture=True
+            )
+            data = dev.json.loads(rendered)
+            relay = data["services"]["relay"]
+            self.assertEqual(relay["environment"]["AGENTS_BUNKER_ENABLED"], "true")
+            self.assertIn(
+                "lapis_agent_bunker_master_key",
+                [secret["source"] for secret in relay["secrets"]],
+            )
+            self.assertEqual(
+                data["secrets"]["lapis_agent_bunker_master_key"]["file"],
+                str(directory / "agent-bunker-master-key"),
+            )
+            secret = (directory / "agent-bunker-master-key").read_text().strip()
+            if secret in rendered:
+                self.fail("Rendered Compose configuration exposed the bunker key")
+
+    def test_entrypoint_adds_bunker_to_existing_generated_configuration_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            config = directory / "config"
+            media = directory / "media"
+            config.mkdir()
+            path = config / "relay.example"
+            path.write_text("# Auto-generated Zooid configuration\nhost = \"relay.example\"\n")
+            env = {
+                **dev.os.environ,
+                "CONFIG": str(config),
+                "MEDIA": str(media),
+                "DATABASE_URL": "postgres://unused",
+                "RELAY_HOST": "relay.example",
+                "AGENTS_BUNKER_ENABLED": "true",
+                "AGENTS_BUNKER_PUBLIC_URL": "https://relay.example",
+                "AGENTS_BUNKER_ALLOWED_BROWSER_ORIGINS": '["https://community.example"]',
+                "AGENTS_BUNKER_MASTER_KEY_REF": "file:lapis_agent_bunker_master_key",
+                "LAPIS_PROCESS_BIN": __import__("shutil").which("true"),
+            }
+            for _ in range(2):
+                subprocess.run(
+                    [str(dev.ROOT / "docker-entrypoint.sh")],
+                    env=env,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            content = path.read_text()
+            self.assertEqual(content.count("[agents.bunker]"), 1)
+            self.assertIn('master_key_ref = "file:lapis_agent_bunker_master_key"', content)
 
 
 if __name__ == "__main__":

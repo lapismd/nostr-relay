@@ -35,7 +35,12 @@ services:
       AUTH_GITHUB_CLIENT_SECRET_REF: file:lapis_auth_github_client_secret
       AUTH_GOOGLE_CLIENT_ID: ${LAPIS_AUTH_GOOGLE_CLIENT_ID}
       AUTH_GOOGLE_CLIENT_SECRET_REF: file:lapis_auth_google_client_secret
-    secrets: [relay_secret, database_url, walgit_relay_token, walgit_webhook_secret, github_app_private_key, github_webhook_secret, github_bridge_secret, lapis_auth_master_key, lapis_auth_github_client_secret, lapis_auth_google_client_secret]
+      AGENTS_BUNKER_ENABLED: 'true'
+      AGENTS_BUNKER_PUBLIC_URL: ${LAPIS_AGENT_BUNKER_PUBLIC_URL}
+      AGENTS_BUNKER_ALLOWED_BROWSER_ORIGINS: ${LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS}
+      AGENTS_BUNKER_MASTER_KEY_REF: file:lapis_agent_bunker_master_key
+      AGENTS_BUNKER_MASTER_KEY_VERSION: ${LAPIS_AGENT_BUNKER_MASTER_KEY_VERSION}
+    secrets: [relay_secret, database_url, walgit_relay_token, walgit_webhook_secret, github_app_private_key, github_webhook_secret, github_bridge_secret, lapis_auth_master_key, lapis_agent_bunker_master_key, lapis_auth_github_client_secret, lapis_auth_google_client_secret]
     tmpfs: ['/app/config:mode=1777']
     entrypoint: [/bin/sh, /local-entrypoint.sh, relay]
     volumes: [relay-media:/app/media, "${LAPIS_RELAY_PATH}/scripts/local-container-entrypoint.sh:/local-entrypoint.sh:ro"]
@@ -166,6 +171,7 @@ secrets:
   github_webhook_secret: {file: '${LAPIS_GITHUB_WEBHOOK_SECRET_FILE}'}
   github_bridge_secret: {file: '${LAPIS_GITHUB_BRIDGE_SECRET_FILE}'}
   lapis_auth_master_key: {file: '${LAPIS_AUTH_MASTER_KEY_FILE}'}
+  lapis_agent_bunker_master_key: {file: '${LAPIS_AGENT_BUNKER_MASTER_KEY_FILE}'}
   lapis_auth_github_client_secret: {file: '${LAPIS_AUTH_GITHUB_CLIENT_SECRET_FILE}'}
   lapis_auth_google_client_secret: {file: '${LAPIS_AUTH_GOOGLE_CLIENT_SECRET_FILE}'}
   postgres_password: {file: '${LAPIS_COMMUNITY_DIR}/postgres-password'}

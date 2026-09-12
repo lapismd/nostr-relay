@@ -46,6 +46,8 @@ with tempfile.TemporaryDirectory(prefix="lapis-unified-acceptance-") as temporar
         LAPIS_RELAY_HOST="registry.localhost",
         LAPIS_GIT_PUBLIC_URL=origin,
         LAPIS_AUTH_PUBLIC_URL=origin,
+        LAPIS_AGENT_BUNKER_PUBLIC_URL=origin,
+        LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS='["http://community.localhost:7036"]',
     )
     dev.save_env(directory / "relay.env", values)
     dev.prepare_fixture_heads(directory)
@@ -63,7 +65,15 @@ with tempfile.TemporaryDirectory(prefix="lapis-unified-acceptance-") as temporar
                     },
                     "fixture": {
                         "environment": {
-                            "REGISTRY_RELAY": origin.replace("http:", "ws:")
+                            "REGISTRY_RELAY": origin.replace("http:", "ws:"),
+                            "MANAGED_AGENT_API": origin
+                            + "/api/agents/managed",
+                            "MANAGED_AGENT_BUNKER_RELAY": origin.replace(
+                                "http:", "ws:"
+                            )
+                            + "/nip46",
+                            "MANAGED_AGENT_CREATED_AT": str(int(time.time())),
+                            "MANAGED_AGENT_ORIGIN": "http://community.localhost:7036",
                         },
                     },
                 }
@@ -127,6 +137,66 @@ const event=finalizeEvent({kind:31777,created_at:Math.floor(Date.now()/1000),con
 await relay.publish(event);
 relay.close();
 """
+    managed_agent_contract = """
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import WebSocket from 'ws';
+import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46';
+import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
+globalThis.WebSocket = WebSocket;
+const keys=JSON.parse(await readFile(process.env.REGISTRY_FIXTURE_SECRETS_FILE,'utf8')).keys;
+const ownerSecret=Buffer.from(keys.operator,'hex');
+const clientSecret=Buffer.from(keys.communityTwo,'hex');
+const ownerPubkey=getPublicKey(ownerSecret);
+const clientPubkey=getPublicKey(clientSecret);
+const phase=process.argv[1];
+const expected=process.argv[2] ?? '';
+const api=process.env.MANAGED_AGENT_API;
+const requestOrigin=process.env.MANAGED_AGENT_ORIGIN;
+async function managedRequest(url,method,input) {
+ const body=input===undefined?'':JSON.stringify(input);
+ const tags=[['u',url],['method',method],['nonce',crypto.randomUUID()]];
+ if(method!=='GET') tags.push(['payload',createHash('sha256').update(body).digest('hex')]);
+ const auth=finalizeEvent({kind:27235,created_at:Math.floor(Date.now()/1000),tags,content:''},ownerSecret);
+ const response=await fetch(url,{method,headers:{Authorization:`Nostr ${Buffer.from(JSON.stringify(auth)).toString('base64')}`,Origin:requestOrigin,...(input===undefined?{}:{'Content-Type':'application/json'})},...(method==='GET'?{}:{body})});
+ if(!response.ok) throw new Error(`managed request failed (${response.status})`);
+ return response.json();
+}
+let bunkerUrl;
+let agentPubkey;
+if(phase==='bootstrap') {
+ const created=await managedRequest(api,'POST',{client_pubkey:clientPubkey,profile_content:JSON.stringify({name:'Disposable managed agent'}),profile_created_at:Number(process.env.MANAGED_AGENT_CREATED_AT),idempotency_key:'disposable-managed-agent'});
+ bunkerUrl=created.bunker_url;
+ agentPubkey=created.agent.pubkey;
+ const pointer=await parseBunkerInput(bunkerUrl);
+ if(!pointer) throw new Error('invalid bunker pointer');
+ const signer=BunkerSigner.fromBunker(clientSecret,pointer);
+ try {
+  await signer.connect({name:'Lapis Nostr Agent Controller'});
+  if(await signer.getPublicKey()!==agentPubkey) throw new Error('managed signer pubkey mismatch');
+  const profile=await signer.signEvent(created.profile_template);
+  if(!verifyEvent(profile)||profile.pubkey!==agentPubkey) throw new Error('invalid managed profile signature');
+  const ownerEvent=finalizeEvent({kind:30177,created_at:Math.floor(Date.now()/1000),tags:[['d',agentPubkey]],content:JSON.stringify({persona_id:'disposable',name_mode:'instance',name:'Disposable managed agent',respond_to:'members',parallelism:1})},ownerSecret);
+  await managedRequest(`${api}/${agentPubkey}/activate`,'POST',{owner_event:ownerEvent,profile_event:profile});
+  const proof=await signer.signEvent({kind:22242,created_at:Math.floor(Date.now()/1000),tags:[['relay',new URL(api).origin],['challenge','bootstrap']],content:''});
+  if(!verifyEvent(proof)||proof.pubkey!==agentPubkey) throw new Error('managed signer activation failed');
+ } finally { await signer.close(); }
+} else if(phase==='reconnect') {
+ agentPubkey=expected;
+ const bunkerUrl=`bunker://${agentPubkey}?relay=${encodeURIComponent(process.env.MANAGED_AGENT_BUNKER_RELAY)}`;
+ const pointer=await parseBunkerInput(bunkerUrl);
+ if(!pointer) throw new Error('invalid reconnect pointer');
+ const signer=BunkerSigner.fromBunker(clientSecret,pointer);
+ try {
+  await signer.connect({name:'Lapis Nostr Agent Controller'});
+  if(await signer.getPublicKey()!==agentPubkey) throw new Error('managed reconnect changed pubkey');
+  const proof=await signer.signEvent({kind:22242,created_at:Math.floor(Date.now()/1000),tags:[['relay',new URL(api).origin],['challenge','restart']],content:''});
+  if(!verifyEvent(proof)||proof.pubkey!==agentPubkey) throw new Error('managed restart signing failed');
+ } finally { await signer.close(); }
+} else { throw new Error('unknown managed-agent phase'); }
+if(ownerPubkey===agentPubkey||clientPubkey===agentPubkey) throw new Error('managed identities are not distinct');
+console.log(agentPubkey);
+"""
     try:
         compose("up", "-d", "--no-build", "--wait", "relay")
         first = json.loads(
@@ -165,8 +235,43 @@ relay.close();
             capture=True,
         )
         assert first["pluginCount"] == 13 and first["projectCount"] == 1
+        managed_pubkey = (
+            compose(
+                "run",
+                "--rm",
+                "--no-deps",
+                "fixture",
+                "node",
+                "--input-type=module",
+                "-e",
+                managed_agent_contract,
+                "bootstrap",
+                capture=True,
+            )
+            .strip()
+            .splitlines()[-1]
+        )
+        assert len(managed_pubkey) == 64
         compose("restart", "relay")
         dev.wait_url(f"http://127.0.0.1:{port}/health")
+        reconnected_pubkey = (
+            compose(
+                "run",
+                "--rm",
+                "--no-deps",
+                "fixture",
+                "node",
+                "--input-type=module",
+                "-e",
+                managed_agent_contract,
+                "reconnect",
+                managed_pubkey,
+                capture=True,
+            )
+            .strip()
+            .splitlines()[-1]
+        )
+        assert reconnected_pubkey == managed_pubkey, "Restart changed managed agent identity"
         verified = json.loads(
             compose(
                 "run",
@@ -222,7 +327,7 @@ relay.close();
         )
         assert restored == first, "Reset changed baseline fixture identity"
         print(
-            "Unified Docker topology: 13 plugins, repeated hydration, additive roles, persistence, Keytr reset and verification passed."
+            "Unified Docker topology: 13 plugins, repeated hydration, additive roles, managed-agent restart reconnect, persistence, Keytr reset and verification passed."
         )
     except Exception:
         compose("logs", "--tail", "25", "relay")

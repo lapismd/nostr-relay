@@ -3,6 +3,7 @@
 
 import argparse
 import fcntl
+import http.client
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import urllib.request
 from urllib.parse import urlparse, quote
 
 ROOT = Path(__file__).resolve().parents[1]
+DOCTOR_USER_AGENT = "Lapis-Local-Doctor/1.0"
 COPIED = (
     "relay.env",
     "relay-secret",
@@ -38,6 +40,7 @@ GENERATED = (
     "s3-access-key-id",
     "s3-secret-access-key",
     "auth-master-key",
+    "agent-bunker-master-key",
     "postgres-password",
 )
 SECRET_PATHS = {
@@ -45,6 +48,7 @@ SECRET_PATHS = {
     "LAPIS_GITHUB_WEBHOOK_SECRET_FILE": "github-webhook-secret.pem",
     "LAPIS_GITHUB_BRIDGE_SECRET_FILE": "github-bridge-secret",
     "LAPIS_AUTH_MASTER_KEY_FILE": "auth-master-key",
+    "LAPIS_AGENT_BUNKER_MASTER_KEY_FILE": "agent-bunker-master-key",
     "LAPIS_AUTH_GITHUB_CLIENT_SECRET_FILE": "github-oauth-client-secret",
     "LAPIS_AUTH_GOOGLE_CLIENT_SECRET_FILE": "google-oauth-client-secret",
 }
@@ -166,6 +170,9 @@ def initialize(directory, source):
         "LAPIS_AUTH_GITHUB_CLIENT_ID": "",
         "LAPIS_AUTH_GOOGLE_CLIENT_ID": "",
         "LAPIS_AUTH_MASTER_KEY_VERSION": "v1",
+        "LAPIS_AGENT_BUNKER_PUBLIC_URL": "https://local-relay.lapis.md",
+        "LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS": '["https://local-community.lapis.md"]',
+        "LAPIS_AGENT_BUNKER_MASTER_KEY_VERSION": "v1",
         "LAPIS_TUNNEL_NAME": "lapis-local-dev",
         "LAPIS_RELAY_IMAGE": "lapis-relay:community-local",
         "LAPIS_WALGIT_IMAGE": "lapis-walgit:local",
@@ -252,9 +259,16 @@ def public_configuration(directory, values):
         "VITE_REGISTRY_AUTHORITY_EPOCH": "local-fixture-v1",
     }
     path = directory / "public.env"
-    existing = read_env(path)
+    raw_existing = read_env(path)
+    existing = {
+        key: value
+        for key, value in raw_existing.items()
+        if key.startswith("VITE_")
+        and "BUNKER" not in key
+        and "MASTER_KEY" not in key
+    }
     merged = {**public, **existing}
-    if not path.exists() or merged != existing:
+    if not path.exists() or merged != raw_existing:
         save_env(path, merged)
 
 
@@ -366,7 +380,11 @@ def wait_url(url, timeout=90, host=None):
     while time.monotonic() < deadline:
         try:
             request = urllib.request.Request(
-                url, headers={} if host is None else {"Host": host}
+                url,
+                headers={
+                    "User-Agent": DOCTOR_USER_AGENT,
+                    **({} if host is None else {"Host": host}),
+                },
             )
             with urllib.request.urlopen(request, timeout=5) as response:
                 if response.status == 200:
@@ -375,6 +393,30 @@ def wait_url(url, timeout=90, host=None):
             pass
         time.sleep(1)
     raise RuntimeError("Public service readiness timed out")
+
+
+def websocket_probe(url, origin):
+    parsed = urlparse(url)
+    connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=10)
+    key = __import__("base64").b64encode(secrets.token_bytes(16)).decode("ascii")
+    connection.request(
+        "GET",
+        parsed.path or "/",
+        headers={
+            "Connection": "Upgrade",
+            "Upgrade": "websocket",
+            "Sec-WebSocket-Key": key,
+            "Sec-WebSocket-Version": "13",
+            "Origin": origin,
+            "User-Agent": DOCTOR_USER_AGENT,
+        },
+    )
+    response = connection.getresponse()
+    try:
+        if response.status != 101:
+            raise RuntimeError("Managed-agent WebSocket upgrade failed")
+    finally:
+        connection.close()
 
 
 def capture_github(directory):
@@ -703,7 +745,10 @@ def main():
         wait_url(env["LAPIS_AUTH_PUBLIC_URL"] + "/health", 10)
         request = urllib.request.Request(
             env["LAPIS_AUTH_PUBLIC_URL"] + "/api/auth/config",
-            headers={"Origin": env["LAPIS_COMMUNITY_PUBLIC_URL"]},
+            headers={
+                "Origin": env["LAPIS_COMMUNITY_PUBLIC_URL"],
+                "User-Agent": DOCTOR_USER_AGENT,
+            },
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             config = json.load(response)
@@ -727,9 +772,50 @@ def main():
         ):
             if not config.get("capabilities", {}).get(capability):
                 raise RuntimeError(f"Missing auth capability: {capability}")
+        relay_info_request = urllib.request.Request(
+            env["LAPIS_AGENT_BUNKER_PUBLIC_URL"],
+            headers={
+                "Accept": "application/nostr+json",
+                "User-Agent": DOCTOR_USER_AGENT,
+            },
+        )
+        with urllib.request.urlopen(relay_info_request, timeout=10) as response:
+            relay_info = json.load(response)
+        managed = relay_info.get("lapis_managed_agents", {})
+        if 46 not in relay_info.get("supported_nips", []) or managed.get("version") != 1:
+            raise RuntimeError("Managed-agent NIP-11 capability is missing")
+        if managed.get("provisioning_url") != env["LAPIS_AGENT_BUNKER_PUBLIC_URL"].rstrip("/") + "/api/agents/managed" or managed.get("bunker_url") != env["LAPIS_AGENT_BUNKER_PUBLIC_URL"].replace("https://", "wss://").rstrip("/") + "/nip46":
+            raise RuntimeError("Managed-agent NIP-11 URLs are incorrect")
+        preflight = urllib.request.Request(
+            env["LAPIS_AGENT_BUNKER_PUBLIC_URL"] + "/api/agents/managed",
+            method="OPTIONS",
+            headers={
+                "Origin": env["LAPIS_COMMUNITY_PUBLIC_URL"],
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Authorization, Content-Type",
+                "User-Agent": DOCTOR_USER_AGENT,
+            },
+        )
+        with urllib.request.urlopen(preflight, timeout=10) as response:
+            allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+            allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+            if (
+                response.headers.get("Access-Control-Allow-Origin")
+                != env["LAPIS_COMMUNITY_PUBLIC_URL"]
+                or not {"authorization", "content-type"}.issubset(
+                    {value.strip().lower() for value in allowed_headers.split(",")}
+                )
+                or not {"post", "delete"}.issubset(
+                    {value.strip().lower() for value in allowed_methods.split(",")}
+                )
+            ):
+                raise RuntimeError("Managed-agent CORS configuration is incorrect")
         denied = urllib.request.Request(
             env["LAPIS_AUTH_PUBLIC_URL"] + "/api/auth/config",
-            headers={"Origin": "https://unapproved.invalid"},
+            headers={
+                "Origin": "https://unapproved.invalid",
+                "User-Agent": DOCTOR_USER_AGENT,
+            },
         )
         try:
             with urllib.request.urlopen(denied, timeout=10) as response:
@@ -740,7 +826,27 @@ def main():
         except urllib.error.HTTPError as error:
             if error.code != 403:
                 raise RuntimeError("Unexpected unapproved-origin response")
-        probe = 'test "$KEYTR_STORAGE_ENABLED" = true && test "$GROUPS_ADMIN_CREATE_ONLY" = true && test -z "$AUTH_TEST_GITHUB_TOKEN_URL$AUTH_TEST_GOOGLE_ISSUER_URL"'
+        managed_denied = urllib.request.Request(
+            env["LAPIS_AGENT_BUNKER_PUBLIC_URL"] + "/api/agents/managed",
+            method="OPTIONS",
+            headers={
+                "Origin": "https://unapproved.invalid",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Authorization, Content-Type",
+                "User-Agent": DOCTOR_USER_AGENT,
+            },
+        )
+        try:
+            urllib.request.urlopen(managed_denied, timeout=10)
+            raise RuntimeError("Unapproved origin reached managed-agent provisioning")
+        except urllib.error.HTTPError as error:
+            if error.code != 403 or error.headers.get("Access-Control-Allow-Origin"):
+                raise RuntimeError("Unexpected managed-agent origin response")
+        websocket_probe(
+            env["LAPIS_AGENT_BUNKER_PUBLIC_URL"].replace("https://", "wss://") + "/nip46",
+            env["LAPIS_COMMUNITY_PUBLIC_URL"],
+        )
+        probe = 'test "$KEYTR_STORAGE_ENABLED" = true && test "$GROUPS_ADMIN_CREATE_ONLY" = true && test "$AGENTS_BUNKER_ENABLED" = true && test -s /run/secrets/lapis_agent_bunker_master_key && test -z "$AUTH_TEST_GITHUB_TOKEN_URL$AUTH_TEST_GOOGLE_ISSUER_URL"'
         compose(directory, ["exec", "-T", "relay", "sh", "-c", probe], capture=True)
         compose(
             directory,

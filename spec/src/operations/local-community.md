@@ -18,6 +18,8 @@ exposes matching `pnpm local:*` aliases. The persistent Compose project is
    each client secret in its referenced file. Keep all provider credentials,
    the auth master key, tunnel certificate and credentials here. Runtime
    account tokens and sessions stay encrypted/hashed in PostgreSQL.
+   `agent-bunker-master-key` is generated independently with mode 0600 and is
+   never reused as the application-auth master key.
 4. Install `cloudflared` and run `scripts/local-dev.sh tunnel:setup`. Authenticate
    the intended Cloudflare zone when prompted. The named tunnel has two routes
    and a final 404 rule; conflicting DNS routes are rejected.
@@ -30,6 +32,8 @@ exposes matching `pnpm local:*` aliases. The persistent Compose project is
 | Google OAuth callback | https://local-relay.lapis.md/api/auth/callback/google |
 | GitHub App webhook | https://local-relay.lapis.md/webhooks/github |
 | OAuth return destination | https://local-community.lapis.md |
+| Managed-agent provisioning | https://local-relay.lapis.md/api/agents/managed |
+| Managed-agent NIP-46 | wss://local-relay.lapis.md/nip46 |
 
 The tunnel's relay route uses `http://relay:3334` inside Docker. Fixture and
 materializer tools resolve the public relay hostname to that service through a
@@ -52,7 +56,7 @@ WebAuthn RP ID and origin belong to the Community domain.
 | `build` | Build local relay, WalGit and fixture images explicitly. |
 | `up` | Check prerequisites, stop the old GitHub worker, start the persistent stack, hydrate, attach GitHub, start Vite and open HTTPS Community. |
 | `rehydrate` | Restore missing baseline groups, additive roles, blobs and events. |
-| `reset --yes` | Quiesce writes, export and verify signed encrypted Keytr records, reset only this project's volumes, restore records and seed. |
+| `reset --yes` | Quiesce writes, export and verify signed encrypted Keytr records, reset only this project's volumes, restore records and seed. Managed agents are removed and their controller bundles become invalid. |
 | `down` | Stop owned Vite and containers, retaining volumes. |
 | `doctor` | Validate credentials, images and service readiness. |
 | `logs`, `ps` | Inspect the owned stack. |
@@ -63,6 +67,11 @@ Blossom, RustFS and WalGit cache are persisted. The forge worker runs inside
 the relay; GitHub user actions never fall back to installation credentials.
 Group creation stays admin-only. The restored GitHub binding uses GitHub for
 content and collaboration, with CI disabled.
+
+`down` followed by `up` retains managed agents in the PostgreSQL volume, and
+the same controller client reconnects to the same agent pubkey. The explicitly
+destructive `reset --yes` removes managed agents with other non-Keytr user
+state; create a new managed agent and controller setup afterward.
 
 Reset backups contain original signed encrypted kind 31777 events, never
 plaintext Nostr keys or PRF output. Each verified export is archived under
@@ -116,6 +125,23 @@ Local container entrypoints read relay, PostgreSQL, WalGit, object-store and
 provider credentials from read-only `/run/secrets` mounts. Secret values are
 not interpolated into the Compose service environment. The original provider
 secret references remain unchanged inside the relay.
+
+`doctor` verifies that NIP-11 advertises NIP-46 and
+`lapis_managed_agents`, the advertised API and bunker URLs resolve to the local
+relay, the Community origin receives provisioning CORS while an unapproved
+origin does not, `/nip46` upgrades to WebSocket, and the relay sees the enabled
+feature and mounted master-key file without reading or printing its contents.
+
+After downloading `lapis.agent-controller-bootstrap/1`, copy each generated
+environment entry into the controller's private environment and add its agent
+and signer objects to the controller configuration. Choose `hostId` and
+`runtimeAgent` locally; the bundle deliberately leaves them unset. For example:
+
+```sh
+export LAPIS_AGENT_0123456789AB_BUNKER_URL='bunker://...'
+export LAPIS_AGENT_0123456789AB_NIP46_CLIENT_SECRET='<private-client-secret>'
+pnpm start
+```
 
 
 ## Implementation verification, 2026-09-12

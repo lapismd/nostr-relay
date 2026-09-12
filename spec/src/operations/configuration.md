@@ -18,6 +18,15 @@
 | `LAPIS_AGENTS_ENABLED` | Enable Buzz agent protocol policy. | `true` |
 | `LAPIS_AGENTS_ALLOW_OWNER_AUTH` | Let a relay member's signed NIP-OA credential grant connection-local NIP-AA admission to an agent. | `true` |
 | `LAPIS_AGENTS_ENFORCE_CREDENTIAL_KINDS` | Enforce NIP-OA `kind=` conditions on owner-derived agent writes. | `true` |
+| `LAPIS_AGENT_BUNKER_PUBLIC_URL` | Public HTTP(S) relay base used to advertise the managed-agent API and NIP-46 endpoint. | relay public URL |
+| `LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS` | Exact JSON array of Community browser origins allowed to call managed provisioning. | `[]` |
+| `LAPIS_AGENT_BUNKER_MASTER_KEY_FILE` | Private file containing the independent 32-byte wrapping key. | none |
+| `LAPIS_AGENT_BUNKER_MASTER_KEY_VERSION` | Version bound into managed-agent ciphertext associated data. | `v1` |
+| `LAPIS_AGENT_BUNKER_INVITATION_LIFETIME` | Lifetime of a new controller invitation. | `24h` |
+| `LAPIS_AGENT_BUNKER_MAX_ACTIVE_PER_OWNER` | Active managed-agent quota for one owner. | `10` |
+| `LAPIS_AGENT_BUNKER_MAX_PENDING_PER_OWNER` | Pending managed-agent draft quota for one owner. | `3` |
+| `LAPIS_AGENT_BUNKER_CREATIONS_PER_HOUR` | Managed-agent creation limit for one owner. | `5` |
+| `LAPIS_AGENT_BUNKER_REQUESTS_PER_MINUTE` | NIP-46 request limit for one controller client. | `120` |
 
 The container entrypoint maps deployment-facing `LAPIS_*` variables into the
 relay configuration and private sidecar environment. The complete WalGit,
@@ -46,6 +55,9 @@ The major sections are:
 - `[groups.retention]`: default and per-group chat retention;
 - `[agents]`: Buzz agent policy, owner-derived admission, and credential-kind
   enforcement;
+- `[agents.bunker]`: optional relay-managed NIP-46 bootstrap, independent
+  wrapping-key reference, browser origins, invitation lifetime, quotas, and
+  rate limit;
 - `[management]`: NIP-86 enablement and method allowlist;
 - `[blossom]`: Blossom enablement;
 - `[registry]`: optional Lapis plugin-release group and curator-role policy;
@@ -88,6 +100,19 @@ private_relay_admin_access = false
 enabled = true
 allow_owner_auth = true
 enforce_credential_kinds = true
+
+[agents.bunker]
+enabled = false
+public_url = "https://relay.example"
+allowed_browser_origins = []
+credential_dir = "/run/secrets"
+master_key_ref = "file:lapis_agent_bunker_master_key"
+master_key_version = "v1"
+invitation_lifetime = "24h"
+max_active_per_owner = 10
+max_pending_per_owner = 3
+creations_per_hour = 5
+requests_per_minute = 120
 
 [management]
 enabled = true
