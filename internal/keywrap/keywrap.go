@@ -149,3 +149,13 @@ func open(aead cipher.AEAD, ciphertext, aad []byte) ([]byte, error) {
 	}
 	return aead.Open(nil, ciphertext[:aead.NonceSize()], ciphertext[aead.NonceSize():], aad)
 }
+
+// Seal and Open support existing protocol envelopes that supply their own
+// AEAD and associated-data contract.
+func Seal(aead cipher.AEAD, random io.Reader, plaintext, aad []byte) ([]byte, error) {
+	return seal(aead, random, plaintext, aad)
+}
+
+func Open(aead cipher.AEAD, ciphertext, aad []byte) ([]byte, error) {
+	return open(aead, ciphertext, aad)
+}

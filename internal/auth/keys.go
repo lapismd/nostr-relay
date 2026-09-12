@@ -1,6 +1,10 @@
 package auth
 
-import "zooid/internal/keywrap"
+import (
+	"crypto/cipher"
+	"io"
+	"zooid/internal/keywrap"
+)
 
 func ParseMasterKey(value []byte) ([]byte, error) { return keywrap.ParseMasterKey(value) }
 
@@ -44,4 +48,12 @@ func RewrapManagedKey(key ManagedKey, oldWrapper, newWrapper KeyWrapper) (Manage
 
 func managedKeyAAD(accountID, pubkey, version string) []byte {
 	return []byte("lapis-auth-managed-key-v1\x00" + accountID + "\x00" + pubkey + "\x00" + version)
+}
+
+func seal(aead cipher.AEAD, random io.Reader, plaintext, aad []byte) ([]byte, error) {
+	return keywrap.Seal(aead, random, plaintext, aad)
+}
+
+func open(aead cipher.AEAD, ciphertext, aad []byte) ([]byte, error) {
+	return keywrap.Open(aead, ciphertext, aad)
 }
