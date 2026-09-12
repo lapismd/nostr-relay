@@ -55,6 +55,8 @@ repository identity, concurrent misses are coalesced, and provider writes or
 verified webhooks invalidate the affected repository without changing signed
 Nostr authority.
 
+The optional managed-agent bunker provides narrowly scoped custody for explicit Community-created agents and remains independent of application authentication. See [Relay-managed agent bunker](managed-agent-bunker.md).
+
 See [Relay surfaces](relay/surfaces.md), [NIP-29 groups and
 policy](relay/groups-and-policy.md), [Plugin registry
 policy](protocol/plugin-registry.md), and the [forge model](forge/model.md) for

@@ -3,6 +3,7 @@
 - [Introduction](index.md)
 - [Architecture](architecture.md)
 - [Application authentication and signing](auth.md)
+- [Relay-managed agent bunker](managed-agent-bunker.md)
 - [Relay surfaces](relay/surfaces.md)
 - [NIP-29 groups and policy](relay/groups-and-policy.md)
 - [Plugin registry policy](protocol/plugin-registry.md)
