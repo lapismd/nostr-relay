@@ -1,0 +1,178 @@
+name: lapis-local-dev
+services:
+  relay:
+    image: ${LAPIS_RELAY_IMAGE:?run local:init}
+    environment:
+      PORT: '3334'
+      RELAY_HOST: ${LAPIS_RELAY_HOST}
+      RELAY_SCHEMA: lapis_registry
+      RELAY_PUBKEY: ${LAPIS_RELAY_OWNER_PUBKEY}
+      ADMIN_PUBKEYS: ${LAPIS_RELAY_ADMIN_PUBKEYS}
+      POLICY_OPEN: 'true'
+      POLICY_ANONYMOUS_READ: 'true'
+      GROUPS_ADMIN_CREATE_ONLY: 'true'
+      GROUPS_AUTO_JOIN: 'true'
+      GROUP_REWRITE_DEBOUNCE_MS: '0'
+      REGISTRY_POLICY_ENABLED: 'true'
+      REGISTRY_RELEASE_GROUP_ID: d792e601-8c97-5ac6-9446-d8215835de3c
+      KEYTR_STORAGE_ENABLED: 'true'
+      BLOSSOM_PUBLIC_URL: ${LAPIS_AUTH_PUBLIC_URL}
+      GIT_ENABLED: 'true'
+      GIT_PUBLIC_URL: ${LAPIS_GIT_PUBLIC_URL}
+      GIT_BACKEND_URL: http://walgit:8080
+      GITHUB_ENABLED: 'true'
+      AUTH_ENABLED: 'true'
+      AUTH_PUBLIC_URL: ${LAPIS_AUTH_PUBLIC_URL}
+      AUTH_ALLOWED_BROWSER_ORIGINS: ${LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS}
+      AUTH_WEBAUTHN_RP_ID: ${LAPIS_AUTH_WEBAUTHN_RP_ID}
+      AUTH_WEBAUTHN_ORIGINS: ${LAPIS_AUTH_WEBAUTHN_ORIGINS}
+      AUTH_MASTER_KEY_REF: file:lapis_auth_master_key
+      AUTH_MASTER_KEY_VERSION: ${LAPIS_AUTH_MASTER_KEY_VERSION}
+      AUTH_GITHUB_CLIENT_ID: ${LAPIS_AUTH_GITHUB_CLIENT_ID}
+      AUTH_GITHUB_CLIENT_SECRET_REF: file:lapis_auth_github_client_secret
+      AUTH_GOOGLE_CLIENT_ID: ${LAPIS_AUTH_GOOGLE_CLIENT_ID}
+      AUTH_GOOGLE_CLIENT_SECRET_REF: file:lapis_auth_google_client_secret
+    secrets: [relay_secret, database_url, walgit_relay_token, walgit_webhook_secret, github_app_private_key, github_webhook_secret, github_bridge_secret, lapis_auth_master_key, lapis_auth_github_client_secret, lapis_auth_google_client_secret]
+    tmpfs: ['/app/config:mode=1777']
+    entrypoint: [/bin/sh, /local-entrypoint.sh, relay]
+    volumes: [relay-media:/app/media, "${LAPIS_RELAY_PATH}/scripts/local-container-entrypoint.sh:/local-entrypoint.sh:ro"]
+    ports: ['127.0.0.1:${LAPIS_RELAY_PORT}:3334']
+    depends_on:
+      postgres: {condition: service_healthy}
+      walgit: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, --spider, 'http://127.0.0.1:3334/health']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  postgres:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_USER: lapis_relay
+      POSTGRES_DB: lapis_relay
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U lapis_relay -d lapis_relay']
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+  rustfs:
+    image: rustfs/rustfs@sha256:b7014e0ce2bc703c1316b3ef760e29dfae61fe4a50d1a66fa89638e0f8ea211f
+    environment:
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_VOLUMES: /data
+    secrets: [s3_access_key_id, s3_secret_access_key]
+    entrypoint: [/bin/sh, /local-entrypoint.sh, rustfs]
+    volumes: [rustfs-data:/data, "${LAPIS_RELAY_PATH}/scripts/local-container-entrypoint.sh:/local-entrypoint.sh:ro"]
+    healthcheck:
+      test: [CMD, curl, -sf, 'http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+  bucket:
+    image: rustfs/rc@sha256:fad686174251b22de1e7b11438b3389932c93d2043c4eec981e1168c59edf92f
+    secrets: [s3_access_key_id, s3_secret_access_key]
+    entrypoint: [/bin/sh, /local-entrypoint.sh, bucket]
+    volumes: ["${LAPIS_RELAY_PATH}/scripts/local-container-entrypoint.sh:/local-entrypoint.sh:ro"]
+    depends_on:
+      rustfs: {condition: service_healthy}
+  walgit:
+    image: ${LAPIS_WALGIT_IMAGE}
+    environment:
+      WALGIT__SERVER__PUBLIC_URL: ${LAPIS_GIT_PUBLIC_URL}
+      WALGIT__STORE__BUCKET: lapis-walgit
+      WALGIT__STORE__S3__ENDPOINT: http://rustfs:9000
+      WALGIT__STORE__S3__REGION: us-east-1
+      WALGIT__STORE__S3__FORCE_PATH_STYLE: 'true'
+    secrets: [walgit_relay_token, walgit_webhook_secret, s3_access_key_id, s3_secret_access_key]
+    entrypoint: [/bin/sh, /local-entrypoint.sh, walgit]
+    volumes: [walgit-cache:/var/lib/walgit, "${LAPIS_RELAY_PATH}/scripts/local-container-entrypoint.sh:/local-entrypoint.sh:ro"]
+    depends_on:
+      bucket: {condition: service_completed_successfully}
+    restart: unless-stopped
+  cloudflared:
+    image: cloudflare/cloudflared@sha256:51c9cefcb4569df44e1ad403ab1d3d8065aa8e84339bcfc6aee75502e1140339
+    command: [tunnel, --no-autoupdate, --config, /etc/cloudflared/config.json, run]
+    secrets: [tunnel_credentials]
+    volumes: ['${LAPIS_COMMUNITY_DIR}/tunnel.json:/etc/cloudflared/config.json:ro']
+    extra_hosts: [host.docker.internal:host-gateway]
+    depends_on:
+      relay: {condition: service_healthy}
+    restart: unless-stopped
+  fixture:
+    profiles: [tools]
+    image: ${LAPIS_FIXTURE_IMAGE}
+    command: [node, dist/fixture/seed.js, --once]
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      REGISTRY_FIXTURE_BUNDLE: /app/deploy/fixture-v1.json.gz
+      REGISTRY_FIXTURE_SECRETS_FILE: /run/secrets/fixture_identities
+      REGISTRY_FIXTURE_CREATED_AT: ${REGISTRY_FIXTURE_CREATED_AT}
+      REGISTRY_FIXTURE_HEAD_HISTORY: ${REGISTRY_FIXTURE_HEAD_HISTORY:-[]}
+      REGISTRY_RELAY: wss://${LAPIS_RELAY_HOST}
+      REGISTRY_RELAY_WRITE_RESTRICTED_RELEASES: 'true'
+      REGISTRY_EXPECT_ADMIN_ONLY_GROUP_CREATION: 'true'
+    secrets: [fixture_identities]
+  registry-materializer:
+    profiles: [site]
+    image: ${LAPIS_FIXTURE_IMAGE}
+    user: '0:0'
+    command: [node, dist/materializer/materialize-registry.js, --output, /projection/registry]
+    environment:
+      BLOSSOM_URL: ${LAPIS_AUTH_PUBLIC_URL}/
+      REGISTRY_CURATOR_PUBKEYS: ${REGISTRY_CURATOR_PUBKEYS}
+      REGISTRY_PUBLISHER_PUBKEYS: ${REGISTRY_PUBLISHER_PUBKEYS}
+      REGISTRY_AUTHORITY_EPOCH: ${REGISTRY_AUTHORITY_EPOCH}
+      REGISTRY_RELAYS: wss://${LAPIS_RELAY_HOST}
+      REGISTRY_PUBLIC_RELAYS: wss://${LAPIS_RELAY_HOST}
+      REGISTRY_READER_SECRET_FILE: /run/secrets/materializer_reader
+    secrets: [materializer_reader]
+    volumes: [registry-projection:/projection]
+  registry-site-builder:
+    profiles: [site]
+    image: lapis-plugin-registry-site:local
+    user: '0:0'
+    command: [node, scripts/build-container-site.mjs]
+    environment:
+      LAPIS_REGISTRY_SOURCE_DIR: /projection/registry
+      LAPIS_REGISTRY_CONTAINER_SITE_DIR: /site
+    volumes: [registry-projection:/projection:ro, registry-site:/site]
+    depends_on:
+      registry-materializer: {condition: service_completed_successfully}
+  registry-site:
+    profiles: [site]
+    image: lapis-plugin-registry-site:local
+    command: [node, scripts/serve-site.mjs, --root, /site]
+    environment: {HOST: 0.0.0.0, PORT: '4321'}
+    volumes: [registry-site:/site:ro]
+    ports: ['127.0.0.1:4322:4321']
+    depends_on:
+      registry-site-builder: {condition: service_completed_successfully}
+secrets:
+  relay_secret: {file: '${LAPIS_COMMUNITY_DIR}/relay-secret'}
+  database_url: {file: '${LAPIS_COMMUNITY_DIR}/postgres-url'}
+  walgit_relay_token: {file: '${LAPIS_COMMUNITY_DIR}/walgit-relay-token'}
+  walgit_webhook_secret: {file: '${LAPIS_COMMUNITY_DIR}/walgit-webhook-secret'}
+  s3_access_key_id: {file: '${LAPIS_COMMUNITY_DIR}/s3-access-key-id'}
+  s3_secret_access_key: {file: '${LAPIS_COMMUNITY_DIR}/s3-secret-access-key'}
+  github_app_private_key: {file: '${LAPIS_GITHUB_APP_KEY_FILE}'}
+  github_webhook_secret: {file: '${LAPIS_GITHUB_WEBHOOK_SECRET_FILE}'}
+  github_bridge_secret: {file: '${LAPIS_GITHUB_BRIDGE_SECRET_FILE}'}
+  lapis_auth_master_key: {file: '${LAPIS_AUTH_MASTER_KEY_FILE}'}
+  lapis_auth_github_client_secret: {file: '${LAPIS_AUTH_GITHUB_CLIENT_SECRET_FILE}'}
+  lapis_auth_google_client_secret: {file: '${LAPIS_AUTH_GOOGLE_CLIENT_SECRET_FILE}'}
+  postgres_password: {file: '${LAPIS_COMMUNITY_DIR}/postgres-password'}
+  tunnel_credentials: {file: '${LAPIS_COMMUNITY_DIR}/tunnel-credentials.json'}
+  fixture_identities: {file: '${LAPIS_COMMUNITY_DIR}/fixture-secrets.json'}
+  materializer_reader: {file: '${LAPIS_COMMUNITY_DIR}/materializer-reader.key'}
+volumes:
+  postgres-data:
+  relay-media:
+  rustfs-data:
+  walgit-cache:
+  registry-projection:
+  registry-site:

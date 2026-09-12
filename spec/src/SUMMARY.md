@@ -54,6 +54,7 @@
 - [Operations](operations/configuration.md)
   - [Clean boot and data population](operations/bootstrap.md)
   - [Deployment and local testing](operations/deployment.md)
+  - [Unified local Community](operations/local-community.md)
   - [Observability](operations/observability.md)
 - [Compatibility](compatibility/buzz-desktop.md)
   - [Buzz agents](compatibility/buzz-agents.md)

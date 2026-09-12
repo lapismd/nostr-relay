@@ -9,3 +9,4 @@ AGENTS.md
 
 # Generated mdBook output
 spec/book/
+scripts/__pycache__/
