@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"fiatjaf.com/nostr"
-	"zooid/internal/khatru"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
+	"zooid/internal/khatru"
 )
 
 func createMetricsTestInstance(t *testing.T) *Instance {

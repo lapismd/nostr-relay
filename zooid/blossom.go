@@ -9,8 +9,8 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
-	"zooid/internal/khatru/blossom"
 	"github.com/spf13/afero"
+	"zooid/internal/khatru/blossom"
 )
 
 type BlossomStore struct {
