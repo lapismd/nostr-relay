@@ -30,9 +30,9 @@ client_secret_ref = "file:lapis_auth_google_client_secret"
 ```
 
 `auth.public_url` is the relay and OAuth callback origin. It must be HTTPS
-except on a loopback development host. `auth.allowed_browser_origins` contains
-exact Community origins; entries must be HTTPS except for `localhost`
-development names. The
+except on a loopback or `*.localhost` development host.
+`auth.allowed_browser_origins` contains exact Community origins; entries must
+be HTTPS except for `localhost` development names. The
 master key file contains exactly 32 bytes encoded as hexadecimal or base64.
 Provider secrets and the master key are loaded from the configured credential
 directory and are never stored in PostgreSQL.
@@ -42,6 +42,14 @@ The Compose overlays are deliberately composable. Start with
 `docker-compose.auth-google.yml`, or both. The GitHub App installation overlay
 remains separate because installation credentials and user OAuth credentials
 serve different actors.
+
+The deterministic Community integration lane may add `[auth.testing]` with
+`github_authorization_url`, `github_token_url`, `github_user_url`, and
+`google_issuer_url`. These overrides are accepted only when the relay public
+URL and every provider endpoint use a localhost development name. Partial
+GitHub endpoint sets, providers without client configuration, and non-local
+targets are rejected. The production provider defaults remain GitHub.com and
+Google.
 
 ## Accounts, sessions, and managed keys
 
@@ -115,6 +123,11 @@ require `h`; repository and project operations require their protocol anchors.
 NIP-42 `relay` and NIP-98 `u` values must target the configured relay origin.
 These signing checks limit custody use; NIP-29, project, and Forge permission
 checks still run when the signed event is published.
+
+NIP-17 gift wraps retain their protocol-defined ephemeral author. An open
+relay accepts a well-addressed kind `1059` wrap from an authenticated
+connection even though the connection pubkey differs from the wrap author.
+Closed relays keep the existing recipient membership gate.
 
 ## NIP-46 signer boundary
 

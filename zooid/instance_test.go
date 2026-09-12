@@ -124,6 +124,31 @@ func TestInstance_AnonymousReadPolicy(t *testing.T) {
 	}
 }
 
+func TestInstance_OpenRelayAcceptsAuthenticatedNIP17GiftWrap(t *testing.T) {
+	instance := createTestInstance()
+	defer instance.Cleanup()
+	instance.Config.Policy.Open = true
+	sender := nostr.Generate()
+	recipient := nostr.Generate().Public()
+	event := nostr.Event{
+		Kind: nostr.KindGiftWrap, PubKey: nostr.Generate().Public(),
+		Tags: nostr.Tags{{"p", recipient.Hex()}},
+	}
+	ctx := withAuthenticatedPrincipal(t.Context(), authenticatedPrincipal{PubKey: sender.Public()})
+	if reject, reason := instance.OnEvent(ctx, event); reject {
+		t.Fatalf("authenticated NIP-17 delivery was rejected: %s", reason)
+	}
+	event.Tags = nil
+	if reject, _ := instance.OnEvent(ctx, event); !reject {
+		t.Fatal("gift wrap without a recipient must be rejected")
+	}
+	event.Tags = nostr.Tags{{"p", recipient.Hex()}}
+	instance.Config.Policy.Open = false
+	if reject, _ := instance.OnEvent(ctx, event); !reject {
+		t.Fatal("closed relay must retain its recipient membership gate")
+	}
+}
+
 func TestInstanceTreatsBuzzAgentDefinitionsAsGlobal(t *testing.T) {
 	secret := nostr.Generate()
 	config := &Config{}

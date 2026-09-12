@@ -34,21 +34,44 @@ type OAuthProvider interface {
 }
 
 type GitHubProvider struct {
-	config *oauth2.Config
-	client *http.Client
+	config  *oauth2.Config
+	client  *http.Client
+	userURL string
+}
+
+type GitHubProviderEndpoints struct {
+	AuthorizationURL string
+	TokenURL         string
+	UserURL          string
+}
+
+var githubProviderEndpoints = GitHubProviderEndpoints{
+	AuthorizationURL: github.Endpoint.AuthURL,
+	TokenURL:         github.Endpoint.TokenURL,
+	UserURL:          "https://api.github.com/user",
 }
 
 func NewGitHubProvider(clientID, clientSecret, redirectURL string, client *http.Client) (*GitHubProvider, error) {
+	return NewGitHubProviderWithEndpoints(clientID, clientSecret, redirectURL, githubProviderEndpoints, client)
+}
+
+// NewGitHubProviderWithEndpoints exists for the localhost-only fake OAuth
+// integration lane. Runtime configuration rejects these overrides outside a
+// local development deployment.
+func NewGitHubProviderWithEndpoints(clientID, clientSecret, redirectURL string, endpoints GitHubProviderEndpoints, client *http.Client) (*GitHubProvider, error) {
 	if clientID == "" || clientSecret == "" || redirectURL == "" {
 		return nil, errors.New("GitHub OAuth configuration is incomplete")
+	}
+	if endpoints.AuthorizationURL == "" || endpoints.TokenURL == "" || endpoints.UserURL == "" {
+		return nil, errors.New("GitHub OAuth endpoint configuration is incomplete")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	return &GitHubProvider{config: &oauth2.Config{
 		ClientID: clientID, ClientSecret: clientSecret, RedirectURL: redirectURL,
-		Endpoint: github.Endpoint, Scopes: []string{"repo"},
-	}, client: client}, nil
+		Endpoint: oauth2.Endpoint{AuthURL: endpoints.AuthorizationURL, TokenURL: endpoints.TokenURL}, Scopes: []string{"repo"},
+	}, client: client, userURL: endpoints.UserURL}, nil
 }
 
 func (*GitHubProvider) Name() string { return "github" }
@@ -66,7 +89,7 @@ func (provider *GitHubProvider) Exchange(ctx context.Context, code, verifier, _ 
 		return ProviderIdentity{}, errors.New("GitHub authorization code exchange failed")
 	}
 	client := oauth2.NewClient(context.WithValue(ctx, oauth2.HTTPClient, provider.client), oauth2.StaticTokenSource(token))
-	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, provider.userURL, nil)
 	response, err := client.Do(request)
 	if err != nil {
 		return ProviderIdentity{}, errors.New("GitHub identity request failed")
@@ -107,10 +130,23 @@ type GoogleProvider struct {
 }
 
 func NewGoogleProvider(ctx context.Context, clientID, clientSecret, redirectURL string) (*GoogleProvider, error) {
+	return NewGoogleProviderWithIssuer(ctx, clientID, clientSecret, redirectURL, "https://accounts.google.com", nil)
+}
+
+// NewGoogleProviderWithIssuer exists for the localhost-only fake OIDC
+// integration lane. Runtime configuration rejects the override outside a
+// local development deployment.
+func NewGoogleProviderWithIssuer(ctx context.Context, clientID, clientSecret, redirectURL, issuerURL string, client *http.Client) (*GoogleProvider, error) {
 	if clientID == "" || clientSecret == "" || redirectURL == "" {
 		return nil, errors.New("Google OIDC configuration is incomplete")
 	}
-	provider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
+	if issuerURL == "" {
+		return nil, errors.New("Google OIDC issuer configuration is incomplete")
+	}
+	if client != nil {
+		ctx = oidc.ClientContext(ctx, client)
+	}
+	provider, err := oidc.NewProvider(ctx, issuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Google OIDC: %w", err)
 	}

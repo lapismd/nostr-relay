@@ -309,6 +309,10 @@ client_secret_ref = "file:github-oauth-secret"
 	if err := config.validateAuth(); err != nil {
 		t.Fatalf("loopback development URL should be allowed: %v", err)
 	}
+	config.Auth.PublicURL = "http://registry.localhost:8281"
+	if err := config.validateAuth(); err != nil {
+		t.Fatalf("localhost sibling development URL should be allowed: %v", err)
+	}
 	config.Auth.Google.ClientID = "google-client"
 	if err := config.validateAuth(); err == nil {
 		t.Fatal("expected incomplete Google configuration rejection")
@@ -321,5 +325,54 @@ client_secret_ref = "file:github-oauth-secret"
 	config.Auth.AllowedBrowserOrigins = []string{"http://community.example"}
 	if err := config.validateAuth(); err == nil {
 		t.Fatal("expected insecure browser origin rejection")
+	}
+}
+
+func TestAuthTestingEndpointsAreLocalAndComplete(t *testing.T) {
+	configDir := t.TempDir()
+	path := filepath.Join(configDir, "auth-testing.toml")
+	contents := `[auth]
+enabled = true
+public_url = "http://registry.localhost:8281"
+allowed_browser_origins = ["http://community.localhost:5173"]
+master_key_ref = "file:lapis-auth-master-key"
+
+[auth.github]
+client_id = "github-client"
+client_secret_ref = "file:github-secret"
+
+[auth.google]
+client_id = "google-client"
+client_secret_ref = "file:google-secret"
+
+[auth.testing]
+github_authorization_url = "http://oauth.localhost:8091/github/authorize"
+github_token_url = "http://oauth.localhost:8091/github/token"
+github_user_url = "http://oauth.localhost:8091/github/user"
+google_issuer_url = "http://oauth.localhost:8091/google"
+`
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := decodeConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.validateAuth(); err != nil {
+		t.Fatal(err)
+	}
+	config.Auth.Testing.GitHubTokenURL = ""
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected incomplete GitHub test endpoint rejection")
+	}
+	config.Auth.Testing.GitHubTokenURL = "http://oauth.localhost:8091/github/token"
+	config.Auth.Testing.GoogleIssuerURL = "https://accounts.example.com"
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected non-local test endpoint rejection")
+	}
+	config.Auth.Testing.GoogleIssuerURL = "http://oauth.localhost:8091/google"
+	config.Auth.PublicURL = "https://relay.example"
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected non-local public URL rejection for test endpoints")
 	}
 }

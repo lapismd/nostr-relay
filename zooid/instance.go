@@ -187,7 +187,17 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 				instance.Events.Close()
 				return nil, fmt.Errorf("load GitHub OAuth secret: %w", err)
 			}
-			provider, providerErr := authn.NewGitHubProvider(config.Auth.GitHub.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/github", nil)
+			var provider *authn.GitHubProvider
+			var providerErr error
+			if config.Auth.Testing.GitHubAuthorizationURL != "" {
+				provider, providerErr = authn.NewGitHubProviderWithEndpoints(config.Auth.GitHub.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/github", authn.GitHubProviderEndpoints{
+					AuthorizationURL: config.Auth.Testing.GitHubAuthorizationURL,
+					TokenURL:         config.Auth.Testing.GitHubTokenURL,
+					UserURL:          config.Auth.Testing.GitHubUserURL,
+				}, nil)
+			} else {
+				provider, providerErr = authn.NewGitHubProvider(config.Auth.GitHub.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/github", nil)
+			}
 			clear(secret)
 			if providerErr != nil {
 				instance.Events.Close()
@@ -201,7 +211,13 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 				instance.Events.Close()
 				return nil, fmt.Errorf("load Google OAuth secret: %w", err)
 			}
-			provider, providerErr := authn.NewGoogleProvider(ctx, config.Auth.Google.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/google")
+			var provider *authn.GoogleProvider
+			var providerErr error
+			if config.Auth.Testing.GoogleIssuerURL != "" {
+				provider, providerErr = authn.NewGoogleProviderWithIssuer(ctx, config.Auth.Google.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/google", config.Auth.Testing.GoogleIssuerURL, nil)
+			} else {
+				provider, providerErr = authn.NewGoogleProvider(ctx, config.Auth.Google.ClientID, strings.TrimSpace(string(secret)), strings.TrimRight(config.Auth.PublicURL, "/")+"/api/auth/callback/google")
+			}
 			clear(secret)
 			if providerErr != nil {
 				instance.Events.Close()
@@ -385,7 +401,7 @@ func (instance *Instance) AllowRecipientEvent(event nostr.Event) bool {
 	if slices.Contains(recipientAuthKinds, event.Kind) {
 		recipientTag := event.Tags.Find("p")
 
-		if recipientTag != nil {
+		if len(recipientTag) >= 2 {
 			pubkey, err := nostr.PubKeyFromHex(recipientTag[1])
 
 			if err == nil && (instance.Management.IsMember(pubkey) ||
@@ -661,6 +677,16 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 	if !isAuthenticated {
 		return true, "auth-required: authentication is required for access"
 	} else if pubkey != event.PubKey {
+		// NIP-17 gift wraps deliberately use a fresh ephemeral author key. On an
+		// open relay an authenticated sender may submit a well-addressed wrap;
+		// closed relays retain the existing recipient membership gate above.
+		if event.Kind == nostr.KindGiftWrap && instance.Config.Policy.Open {
+			if recipient := event.Tags.Find("p"); len(recipient) >= 2 {
+				if _, err := nostr.PubKeyFromHex(recipient[1]); err == nil {
+					return false, ""
+				}
+			}
+		}
 		return true, "restricted: you cannot publish events on behalf of others"
 	}
 

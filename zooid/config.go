@@ -44,6 +44,13 @@ type OAuthProviderConfig struct {
 	ClientSecretRef string `toml:"client_secret_ref"`
 }
 
+type AuthTestingConfig struct {
+	GitHubAuthorizationURL string `toml:"github_authorization_url"`
+	GitHubTokenURL         string `toml:"github_token_url"`
+	GitHubUserURL          string `toml:"github_user_url"`
+	GoogleIssuerURL        string `toml:"google_issuer_url"`
+}
+
 type AuthConfig struct {
 	Enabled               bool                `toml:"enabled"`
 	PublicURL             string              `toml:"public_url"`
@@ -56,6 +63,7 @@ type AuthConfig struct {
 	ChallengeTTL          string              `toml:"challenge_ttl"`
 	GitHub                OAuthProviderConfig `toml:"github"`
 	Google                OAuthProviderConfig `toml:"google"`
+	Testing               AuthTestingConfig   `toml:"testing"`
 }
 
 type AgentConfig struct {
@@ -204,7 +212,7 @@ func (config *Config) validateAuth() error {
 	}
 	parsed, err := url.Parse(strings.TrimSpace(config.Auth.PublicURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		(parsed.Scheme != "https" && !(parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1"))) {
+		(parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLocalDevelopmentHost(parsed.Hostname()))) {
 		return fmt.Errorf("auth.public_url must be HTTPS, except for loopback development")
 	}
 	if !filepath.IsAbs(config.Auth.CredentialDir) {
@@ -233,7 +241,7 @@ func (config *Config) validateAuth() error {
 		if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
 			return fmt.Errorf("auth.allowed_browser_origins entries must be absolute origins")
 		}
-		localhost := origin.Hostname() == "localhost" || origin.Hostname() == "127.0.0.1" || origin.Hostname() == "::1" || strings.HasSuffix(origin.Hostname(), ".localhost")
+		localhost := isLocalDevelopmentHost(origin.Hostname())
 		if origin.Scheme != "https" && !(origin.Scheme == "http" && localhost) {
 			return fmt.Errorf("auth.allowed_browser_origins entries must use HTTPS, except for localhost development")
 		}
@@ -243,7 +251,52 @@ func (config *Config) validateAuth() error {
 		}
 		seenOrigins[normalized] = struct{}{}
 	}
+	if err := config.validateAuthTesting(parsed); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (config *Config) validateAuthTesting(publicURL *url.URL) error {
+	testing := config.Auth.Testing
+	githubValues := []string{testing.GitHubAuthorizationURL, testing.GitHubTokenURL, testing.GitHubUserURL}
+	githubCount := 0
+	for _, value := range githubValues {
+		if strings.TrimSpace(value) != "" {
+			githubCount++
+		}
+	}
+	if githubCount != 0 && githubCount != len(githubValues) {
+		return fmt.Errorf("auth.testing GitHub endpoints must be configured together")
+	}
+	if githubCount > 0 && config.Auth.GitHub.ClientID == "" {
+		return fmt.Errorf("auth.testing GitHub endpoints require the GitHub provider")
+	}
+	if testing.GoogleIssuerURL != "" && config.Auth.Google.ClientID == "" {
+		return fmt.Errorf("auth.testing Google issuer requires the Google provider")
+	}
+	values := append(githubValues, testing.GoogleIssuerURL)
+	hasOverrides := false
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		hasOverrides = true
+		endpoint, err := url.Parse(value)
+		if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" ||
+			(endpoint.Scheme != "http" && endpoint.Scheme != "https") || !isLocalDevelopmentHost(endpoint.Hostname()) {
+			return fmt.Errorf("auth.testing OAuth endpoints must use localhost HTTP(S) URLs")
+		}
+	}
+	if hasOverrides && !isLocalDevelopmentHost(publicURL.Hostname()) {
+		return fmt.Errorf("auth.testing OAuth endpoints require a localhost auth.public_url")
+	}
+	return nil
+}
+
+func isLocalDevelopmentHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost")
 }
 
 func (config *Config) AuthSessionLifetime() time.Duration {

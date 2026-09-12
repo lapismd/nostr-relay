@@ -54,6 +54,10 @@ AUTH_GITHUB_CLIENT_ID="${AUTH_GITHUB_CLIENT_ID:-}"
 AUTH_GITHUB_CLIENT_SECRET_REF="${AUTH_GITHUB_CLIENT_SECRET_REF:-}"
 AUTH_GOOGLE_CLIENT_ID="${AUTH_GOOGLE_CLIENT_ID:-}"
 AUTH_GOOGLE_CLIENT_SECRET_REF="${AUTH_GOOGLE_CLIENT_SECRET_REF:-}"
+AUTH_TEST_GITHUB_AUTHORIZATION_URL="${AUTH_TEST_GITHUB_AUTHORIZATION_URL:-}"
+AUTH_TEST_GITHUB_TOKEN_URL="${AUTH_TEST_GITHUB_TOKEN_URL:-}"
+AUTH_TEST_GITHUB_USER_URL="${AUTH_TEST_GITHUB_USER_URL:-}"
+AUTH_TEST_GOOGLE_ISSUER_URL="${AUTH_TEST_GOOGLE_ISSUER_URL:-}"
 FORGE_WORKER_MODE="${FORGE_WORKER_MODE:-embedded}"
 LAPIS_PROCESS_BIN="${LAPIS_PROCESS_BIN:-/bin/lapis-relay}"
 
@@ -154,6 +158,12 @@ client_secret_ref = "$AUTH_GITHUB_CLIENT_SECRET_REF"
 [auth.google]
 client_id = "$AUTH_GOOGLE_CLIENT_ID"
 client_secret_ref = "$AUTH_GOOGLE_CLIENT_SECRET_REF"
+
+[auth.testing]
+github_authorization_url = "$AUTH_TEST_GITHUB_AUTHORIZATION_URL"
+github_token_url = "$AUTH_TEST_GITHUB_TOKEN_URL"
+github_user_url = "$AUTH_TEST_GITHUB_USER_URL"
+google_issuer_url = "$AUTH_TEST_GOOGLE_ISSUER_URL"
 EOF
 
     # Add admin role if pubkeys provided
@@ -241,6 +251,12 @@ client_secret_ref = "$AUTH_GITHUB_CLIENT_SECRET_REF"
 [auth.google]
 client_id = "$AUTH_GOOGLE_CLIENT_ID"
 client_secret_ref = "$AUTH_GOOGLE_CLIENT_SECRET_REF"
+
+[auth.testing]
+github_authorization_url = "$AUTH_TEST_GITHUB_AUTHORIZATION_URL"
+github_token_url = "$AUTH_TEST_GITHUB_TOKEN_URL"
+github_user_url = "$AUTH_TEST_GITHUB_USER_URL"
+google_issuer_url = "$AUTH_TEST_GOOGLE_ISSUER_URL"
 EOF
 		echo "Added authentication configuration to existing auto-generated config"
 	fi
