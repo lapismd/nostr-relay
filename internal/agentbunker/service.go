@@ -359,6 +359,11 @@ func (s *Service) replace(w http.ResponseWriter, r *http.Request, pubkey string)
 			writeError(w, 409, "idempotency_conflict")
 			return
 		}
+		saved, err = s.restoreReplacementInvitation(r.Context(), pubkey, input.ClientPubkey, saved)
+		if err != nil {
+			writeError(w, 500, "managed_agent_key_failed")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		_, _ = w.Write(saved)
@@ -375,7 +380,9 @@ func (s *Service) replace(w http.ResponseWriter, r *http.Request, pubkey string)
 		return
 	}
 	response := replacementResponse{BunkerURL: s.bunkerURL(pubkey, invitation), ExpiresAt: client.CreatedAt.Add(s.Config.InvitationLifetime)}
-	encoded, _ := json.Marshal(response)
+	cached := response
+	cached.BunkerURL = s.bunkerURL(pubkey, "")
+	encoded, _ := json.Marshal(cached)
 	_ = s.Store.SaveHTTPResult(r.Context(), agent.OwnerPubkey, resultKey, requestHash, encoded, client.CreatedAt)
 	s.audit(r.Context(), Audit{OwnerPubkey: agent.OwnerPubkey, AgentPubkey: pubkey, ClientPubkey: input.ClientPubkey, Operation: "replace_connection", Result: "success", CreatedAt: client.CreatedAt})
 	writeJSON(w, 201, response)
@@ -484,6 +491,23 @@ func (s *Service) restorePendingInvitation(ctx context.Context, clientPubkey str
 	}
 	defer clear(invitation)
 	response.BunkerURL = s.bunkerURL(response.Agent.Pubkey, string(invitation))
+	return json.Marshal(response)
+}
+func (s *Service) restoreReplacementInvitation(ctx context.Context, agentPubkey, clientPubkey string, encoded []byte) ([]byte, error) {
+	var response replacementResponse
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		return nil, err
+	}
+	client, err := s.Store.Client(ctx, agentPubkey, clientPubkey)
+	if err != nil || client.Status != ClientPending {
+		return encoded, nil
+	}
+	invitation, err := client.Invitation.Decrypt(s.invitationAAD(client.AgentPubkey, client.ClientPubkey), s.Wrapper)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(invitation)
+	response.BunkerURL = s.bunkerURL(agentPubkey, string(invitation))
 	return json.Marshal(response)
 }
 func (s *Service) profileTemplate(a Agent) eventTemplate {

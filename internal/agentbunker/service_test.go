@@ -331,6 +331,48 @@ func TestManagedAgentCreateBootstrapActivationAndReplay(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StatusActive, stored.Status)
 	require.True(t, service.VerifyActiveOwnership(context.Background(), agent, owner.Public(), service.Config.RelayPubkey))
+
+	replacementClient := nostr.Generate()
+	replacementBody, _ := json.Marshal(replacementRequest{ClientPubkey: replacementClient.Public().Hex(), IdempotencyKey: "replace-1"})
+	replacementPath := "/api/agents/managed/" + agent.Hex() + "/connections"
+	replacementRequest := authRequest(t, http.MethodPost, replacementPath, replacementBody, owner, service.Now().Add(3*time.Second))
+	replacementRecorder := httptest.NewRecorder()
+	service.ServeHTTP(replacementRecorder, replacementRequest)
+	require.Equal(t, http.StatusCreated, replacementRecorder.Code, replacementRecorder.Body.String())
+	var replacement replacementResponse
+	require.NoError(t, json.Unmarshal(replacementRecorder.Body.Bytes(), &replacement))
+	replacementURL, err := urlParse(replacement.BunkerURL)
+	require.NoError(t, err)
+	replacementInvitation := replacementURL.Query().Get("secret")
+	require.NotEmpty(t, replacementInvitation)
+	cachedReplacement := store.http[owner.Public().Hex()+":connection:"+agent.Hex()+":replace-1"].body
+	require.NotContains(t, string(cachedReplacement), replacementInvitation)
+
+	replacementRetry := authRequest(t, http.MethodPost, replacementPath, replacementBody, owner, service.Now().Add(4*time.Second))
+	replacementRetryRecorder := httptest.NewRecorder()
+	service.ServeHTTP(replacementRetryRecorder, replacementRetry)
+	require.Equal(t, http.StatusOK, replacementRetryRecorder.Code, replacementRetryRecorder.Body.String())
+	var retriedReplacement replacementResponse
+	require.NoError(t, json.Unmarshal(replacementRetryRecorder.Body.Bytes(), &retriedReplacement))
+	retriedReplacementURL, err := urlParse(retriedReplacement.BunkerURL)
+	require.NoError(t, err)
+	require.Equal(t, replacementInvitation, retriedReplacementURL.Query().Get("secret"))
+
+	replacementConnect := rpcEvent(t, agent, nostr.SecretKey{}, replacementClient, nip46.Request{ID: "replacement-connect", Method: "connect", Params: []string{"{}", replacementInvitation}}, service.Now())
+	replacementConnectResponse, err := service.HandleNIP46(context.Background(), replacementConnect)
+	require.NoError(t, err)
+	require.Equal(t, "ack", decodeBunkerResponse(t, replacementConnectResponse, agent, replacementClient).Result)
+	require.Equal(t, ClientRevoked, store.clients[agent.Hex()+":"+client.Public().Hex()].Status)
+
+	pairedReplacementRetry := authRequest(t, http.MethodPost, replacementPath, replacementBody, owner, service.Now().Add(5*time.Second))
+	pairedReplacementRecorder := httptest.NewRecorder()
+	service.ServeHTTP(pairedReplacementRecorder, pairedReplacementRetry)
+	require.Equal(t, http.StatusOK, pairedReplacementRecorder.Code, pairedReplacementRecorder.Body.String())
+	var pairedReplacement replacementResponse
+	require.NoError(t, json.Unmarshal(pairedReplacementRecorder.Body.Bytes(), &pairedReplacement))
+	pairedReplacementURL, err := urlParse(pairedReplacement.BunkerURL)
+	require.NoError(t, err)
+	require.Empty(t, pairedReplacementURL.Query().Get("secret"))
 }
 
 func TestManagedAgentDiscoveryAndExactOriginCORS(t *testing.T) {
