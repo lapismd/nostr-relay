@@ -37,18 +37,21 @@ type ServiceConfig struct {
 	ChallengeTTL          time.Duration
 	GitHubClientID        string
 	AllowedBrowserOrigins []string
+	WebAuthnRPID          string
+	WebAuthnOrigins       []string
 }
 
 type Service struct {
-	Config         ServiceConfig
-	Store          Store
-	Wrapper        KeyWrapper
-	Providers      map[string]OAuthProvider
-	Now            func() time.Time
-	refreshMu      sync.Mutex
-	NIP46          NIP46Connector
-	WebAuthn       *webauthn.WebAuthn
-	allowedOrigins map[string]struct{}
+	Config          ServiceConfig
+	Store           Store
+	Wrapper         KeyWrapper
+	Providers       map[string]OAuthProvider
+	Now             func() time.Time
+	refreshMu       sync.Mutex
+	NIP46           NIP46Connector
+	WebAuthn        *webauthn.WebAuthn
+	allowedOrigins  map[string]struct{}
+	webAuthnOrigins map[string]struct{}
 }
 
 func (service *Service) GitHubCredentialMode(ctx context.Context, pubkey nostr.PubKey) (string, error) {
@@ -135,12 +138,6 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 	if config.ChallengeTTL <= 0 {
 		config.ChallengeTTL = 10 * time.Minute
 	}
-	webAuthn, err := webauthn.New(&webauthn.Config{
-		RPDisplayName: "Lapis", RPID: publicURL.Hostname(), RPOrigins: []string{publicURL.Scheme + "://" + publicURL.Host},
-	})
-	if err != nil {
-		return nil, err
-	}
 	allowedOrigins := make(map[string]struct{}, len(config.AllowedBrowserOrigins)+1)
 	publicOrigin := strings.ToLower(publicURL.Scheme + "://" + publicURL.Host)
 	allowedOrigins[publicOrigin] = struct{}{}
@@ -151,7 +148,42 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 		}
 		allowedOrigins[origin] = struct{}{}
 	}
-	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}, WebAuthn: webAuthn, allowedOrigins: allowedOrigins}
+	webAuthnRPID := strings.ToLower(strings.TrimSpace(config.WebAuthnRPID))
+	if webAuthnRPID == "" {
+		webAuthnRPID = strings.ToLower(publicURL.Hostname())
+	}
+	configuredWebAuthnOrigins := config.WebAuthnOrigins
+	if len(configuredWebAuthnOrigins) == 0 {
+		configuredWebAuthnOrigins = []string{publicOrigin}
+	}
+	webAuthnOrigins := make(map[string]struct{}, len(configuredWebAuthnOrigins))
+	rpOrigins := make([]string, 0, len(configuredWebAuthnOrigins))
+	for _, value := range configuredWebAuthnOrigins {
+		origin, err := normalizeBrowserOrigin(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, allowed := allowedOrigins[origin]; !allowed {
+			return nil, errors.New("WebAuthn origins must also be allowed browser origins")
+		}
+		parsed, _ := url.Parse(origin)
+		hostname := strings.ToLower(parsed.Hostname())
+		if hostname != webAuthnRPID && !strings.HasSuffix(hostname, "."+webAuthnRPID) {
+			return nil, errors.New("WebAuthn origin is not compatible with RP ID")
+		}
+		if _, duplicate := webAuthnOrigins[origin]; duplicate {
+			return nil, errors.New("WebAuthn origins must be unique")
+		}
+		webAuthnOrigins[origin] = struct{}{}
+		rpOrigins = append(rpOrigins, origin)
+	}
+	webAuthn, err := webauthn.New(&webauthn.Config{
+		RPDisplayName: "Lapis", RPID: webAuthnRPID, RPOrigins: rpOrigins,
+	})
+	if err != nil {
+		return nil, err
+	}
+	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}, WebAuthn: webAuthn, allowedOrigins: allowedOrigins, webAuthnOrigins: webAuthnOrigins}
 	for _, provider := range providers {
 		if provider != nil {
 			service.Providers[provider.Name()] = provider
@@ -238,7 +270,7 @@ func (service *Service) handleCORS(w http.ResponseWriter, r *http.Request) bool 
 	return true
 }
 
-func (service *Service) getConfig(w http.ResponseWriter, _ *http.Request) {
+func (service *Service) getConfig(w http.ResponseWriter, r *http.Request) {
 	providers := make([]string, 0, len(service.Providers))
 	for name := range service.Providers {
 		providers = append(providers, name)
@@ -247,11 +279,15 @@ func (service *Service) getConfig(w http.ResponseWriter, _ *http.Request) {
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"providers": providers,
 		"capabilities": map[string]bool{
-			"github_linking":  service.Providers["github"] != nil,
-			"managed_signing": true,
-			"nip44":           true,
-			"nip46":           true,
-			"nostr_login":     true,
+			"github_linking":       service.Providers["github"] != nil,
+			"managed_signing":      true,
+			"nip44":                true,
+			"nip46":                true,
+			"nostr_login":          true,
+			"passkey_registration": service.validWebAuthnOrigin(r),
+			"github_disconnect":    service.Providers["github"] != nil,
+			"nip46_management":     true,
+			"custody_transfer":     service.validWebAuthnOrigin(r),
 		},
 	})
 }
@@ -899,6 +935,23 @@ func (service *Service) validOrigin(r *http.Request) bool {
 		return false
 	}
 	_, allowed := service.allowedOrigins[origin]
+	return allowed
+}
+
+func (service *Service) validWebAuthnOrigin(r *http.Request) bool {
+	rawOrigin := strings.TrimSpace(r.Header.Get("Origin"))
+	if rawOrigin == "" {
+		publicURL, err := url.Parse(service.Config.PublicURL)
+		if err != nil {
+			return false
+		}
+		rawOrigin = publicURL.Scheme + "://" + publicURL.Host
+	}
+	origin, err := normalizeBrowserOrigin(rawOrigin)
+	if err != nil {
+		return false
+	}
+	_, allowed := service.webAuthnOrigins[origin]
 	return allowed
 }
 

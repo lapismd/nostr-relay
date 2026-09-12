@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +47,7 @@ func TestPublicConfigAndSiblingOriginSession(t *testing.T) {
 	configResponse := httptest.NewRecorder()
 	service.ServeHTTP(configResponse, configRequest)
 	require.Equal(t, http.StatusOK, configResponse.Code)
-	require.JSONEq(t, `{"providers":["github"],"capabilities":{"github_linking":true,"managed_signing":true,"nip44":true,"nip46":true,"nostr_login":true}}`, configResponse.Body.String())
+	require.JSONEq(t, `{"providers":["github"],"capabilities":{"github_linking":true,"managed_signing":true,"nip44":true,"nip46":true,"nostr_login":true,"passkey_registration":false,"github_disconnect":true,"nip46_management":true,"custody_transfer":false}}`, configResponse.Body.String())
 
 	secret := nostr.Generate()
 	account, err := store.CreateExternalAccount(context.Background(), secret.Public())
@@ -60,6 +61,35 @@ func TestPublicConfigAndSiblingOriginSession(t *testing.T) {
 	require.Equal(t, http.StatusOK, sessionResponse.Code, sessionResponse.Body.String())
 	require.Equal(t, "https://community.example", sessionResponse.Header().Get("Access-Control-Allow-Origin"))
 	require.Equal(t, "true", sessionResponse.Header().Get("Access-Control-Allow-Credentials"))
+}
+
+func TestWebAuthnCapabilitiesRequireConfiguredBrowserOrigin(t *testing.T) {
+	store := newMemoryStore()
+	master := make([]byte, 32)
+	_, _ = rand.Read(master)
+	wrapper, err := NewAESKeyWrapper("v1", master)
+	require.NoError(t, err)
+	service, err := NewService(ServiceConfig{
+		PublicURL:             "https://registry.example.com",
+		AllowedBrowserOrigins: []string{"https://community.example.com"},
+		WebAuthnRPID:          "example.com",
+		WebAuthnOrigins:       []string{"https://community.example.com"},
+	}, store, wrapper)
+	require.NoError(t, err)
+
+	allowed := httptest.NewRequest(http.MethodGet, "https://registry.example.com/api/auth/config", nil)
+	allowed.Header.Set("Origin", "https://community.example.com")
+	allowedResponse := httptest.NewRecorder()
+	service.ServeHTTP(allowedResponse, allowed)
+	require.Equal(t, http.StatusOK, allowedResponse.Code)
+	require.Contains(t, allowedResponse.Body.String(), `"passkey_registration":true`)
+	require.Contains(t, allowedResponse.Body.String(), `"custody_transfer":true`)
+
+	public := httptest.NewRequest(http.MethodGet, "https://registry.example.com/api/auth/config", nil)
+	publicResponse := httptest.NewRecorder()
+	service.ServeHTTP(publicResponse, public)
+	require.Equal(t, http.StatusOK, publicResponse.Code)
+	require.Contains(t, publicResponse.Body.String(), `"passkey_registration":false`)
 }
 
 func TestOAuthReturnURLAllowsConfiguredOriginAndSanitizesProviderFailure(t *testing.T) {

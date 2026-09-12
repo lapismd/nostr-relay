@@ -31,7 +31,7 @@ type custodyTransferEnvelope struct {
 }
 
 func (service *Service) beginCustodyTransfer(w http.ResponseWriter, r *http.Request) {
-	if !service.validOrigin(r) {
+	if !service.validOrigin(r) || !service.validWebAuthnOrigin(r) {
 		writeAuthError(w, http.StatusForbidden, "invalid_origin")
 		return
 	}
@@ -83,7 +83,7 @@ func (service *Service) beginCustodyTransfer(w http.ResponseWriter, r *http.Requ
 }
 
 func (service *Service) authorizeCustodyTransfer(w http.ResponseWriter, r *http.Request) {
-	if !service.validOrigin(r) {
+	if !service.validOrigin(r) || !service.validWebAuthnOrigin(r) {
 		writeAuthError(w, http.StatusForbidden, "invalid_origin")
 		return
 	}

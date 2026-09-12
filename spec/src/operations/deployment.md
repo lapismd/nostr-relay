@@ -84,7 +84,11 @@ docker compose -f docker-compose.yml \
 
 Set `LAPIS_AUTH_PUBLIC_URL` to the relay's browser-facing HTTPS origin. Set
 `LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS` to a TOML array of exact Community HTTPS
-origins, for example `'["https://community.example"]'`. Register these provider
+origins, for example `'["https://community.example"]'`. Set
+`LAPIS_AUTH_WEBAUTHN_RP_ID` to the Community host or a shared parent domain and
+`LAPIS_AUTH_WEBAUTHN_ORIGINS` to the exact Community origins that may create or
+assert passkeys. Local sibling development uses `community.localhost` and
+`'["http://community.localhost:5173"]'`. Register these provider
 callbacks:
 
 ```text
@@ -103,8 +107,9 @@ give it the same auth master key and GitHub OAuth secret so it can decrypt and
 refresh the user credential selected by the durable outbox operation.
 
 The endpoint and transfer contract are documented in [Application
-authentication and signing](../auth.md). Desktop NIP-46 and custody UI remain
-consumer work; this relay release supplies the backend contract.
+authentication and signing](../auth.md). Community supplies the browser
+account UI; native Desktop OAuth, passkey, keychain, and remote-signer wiring
+remain consumer work.
 
 ## Use Cloudflare R2 in production
 

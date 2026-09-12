@@ -13,6 +13,8 @@ without changing that pubkey.
 enabled = true
 public_url = "https://relay.example"
 allowed_browser_origins = ["https://community.example"]
+webauthn_rp_id = "community.example"
+webauthn_origins = ["https://community.example"]
 credential_dir = "/run/secrets"
 master_key_ref = "file:lapis_auth_master_key"
 master_key_version = "v1"
@@ -32,7 +34,12 @@ client_secret_ref = "file:lapis_auth_google_client_secret"
 `auth.public_url` is the relay and OAuth callback origin. It must be HTTPS
 except on a loopback or `*.localhost` development host.
 `auth.allowed_browser_origins` contains exact Community origins; entries must
-be HTTPS except for `localhost` development names. The
+be HTTPS except for `localhost` development names. `auth.webauthn_rp_id`
+selects the relying-party domain used by browser passkeys, and
+`auth.webauthn_origins` contains the exact Community origins allowed to create
+or assert those credentials. Each WebAuthn origin must also be an allowed
+browser origin and its host must equal or be a subdomain of the RP ID. When
+omitted, WebAuthn retains the relay-origin behavior for compatibility. The
 master key file contains exactly 32 bytes encoded as hexadecimal or base64.
 Provider secrets and the master key are loaded from the configured credential
 directory and are never stored in PostgreSQL.
@@ -76,7 +83,7 @@ All paths are below `/api/auth/`:
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET config` | Discover enabled providers and safe browser capabilities. |
+| `GET config` | Discover enabled providers and origin-aware safe browser capabilities. |
 | `GET login/github` | Start GitHub login; `intent=link` connects GitHub to the current account. |
 | `GET login/google` | Start Google OIDC login. |
 | `GET callback/<provider>` | Provider callback used by the OAuth client. |
@@ -104,6 +111,12 @@ match receives its own origin, `Access-Control-Allow-Credentials: true`, and
 `Vary: Origin`; credentialed preflight supports only the auth methods and
 headers. Other browser origins are denied. State-changing session routes also
 require an allowed `Origin`.
+
+The public capability response reports passkey registration and custody
+transfer only when the requesting browser origin is also configured as a
+WebAuthn origin. GitHub disconnect and NIP-46 management are reported
+separately from login providers so clients can hide unavailable account
+controls without probing state-changing routes.
 
 OAuth `return_to` accepts a root-relative path or an absolute URL whose origin
 is allowlisted. The callback returns to that URL after success. Known provider
@@ -178,7 +191,11 @@ relay verifies the signature, the unchanged account pubkey, and the remote
 signer's `get_public_key` result. One database transaction then changes the
 binding from `managed/migration_pending` to `nip46/active`, deletes the managed
 key, and completes the transfer. Failure before that transaction keeps the
-managed key and the explicit pending state.
+managed key and the explicit pending state. After the key envelope has been
+released there is no cancellation back to claimed relay-only custody: the user
+must complete the transfer or restart it with a fresh passkey assertion. A
+restart invalidates the preceding pending envelope while retaining the same
+canonical key.
 
 ## GitHub attribution
 

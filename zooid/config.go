@@ -55,6 +55,8 @@ type AuthConfig struct {
 	Enabled               bool                `toml:"enabled"`
 	PublicURL             string              `toml:"public_url"`
 	AllowedBrowserOrigins []string            `toml:"allowed_browser_origins"`
+	WebAuthnRPID          string              `toml:"webauthn_rp_id"`
+	WebAuthnOrigins       []string            `toml:"webauthn_origins"`
 	CredentialDir         string              `toml:"credential_dir"`
 	MasterKeyRef          string              `toml:"master_key_ref"`
 	MasterKeyVersion      string              `toml:"master_key_version"`
@@ -250,6 +252,43 @@ func (config *Config) validateAuth() error {
 			return fmt.Errorf("auth.allowed_browser_origins entries must be unique")
 		}
 		seenOrigins[normalized] = struct{}{}
+	}
+	webAuthnRPID := strings.ToLower(strings.TrimSpace(config.Auth.WebAuthnRPID))
+	if webAuthnRPID == "" {
+		webAuthnRPID = strings.ToLower(parsed.Hostname())
+	}
+	if strings.ContainsAny(webAuthnRPID, "/:@") || strings.HasPrefix(webAuthnRPID, ".") || strings.HasSuffix(webAuthnRPID, ".") {
+		return fmt.Errorf("auth.webauthn_rp_id must be a hostname")
+	}
+	webAuthnOrigins := config.Auth.WebAuthnOrigins
+	if len(webAuthnOrigins) == 0 {
+		webAuthnOrigins = []string{parsed.Scheme + "://" + parsed.Host}
+	}
+	seenWebAuthnOrigins := make(map[string]struct{}, len(webAuthnOrigins))
+	for _, value := range webAuthnOrigins {
+		origin, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+			return fmt.Errorf("auth.webauthn_origins entries must be absolute origins")
+		}
+		localhost := isLocalDevelopmentHost(origin.Hostname())
+		if origin.Scheme != "https" && !(origin.Scheme == "http" && localhost) {
+			return fmt.Errorf("auth.webauthn_origins entries must use HTTPS, except for localhost development")
+		}
+		normalized := strings.ToLower(origin.Scheme + "://" + origin.Host)
+		publicOrigin := strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+		if normalized != publicOrigin {
+			if _, allowed := seenOrigins[normalized]; !allowed {
+				return fmt.Errorf("auth.webauthn_origins entries must also be allowed browser origins")
+			}
+		}
+		hostname := strings.ToLower(origin.Hostname())
+		if hostname != webAuthnRPID && !strings.HasSuffix(hostname, "."+webAuthnRPID) {
+			return fmt.Errorf("auth.webauthn origin %q is not compatible with RP ID %q", normalized, webAuthnRPID)
+		}
+		if _, duplicate := seenWebAuthnOrigins[normalized]; duplicate {
+			return fmt.Errorf("auth.webauthn_origins entries must be unique")
+		}
+		seenWebAuthnOrigins[normalized] = struct{}{}
 	}
 	if err := config.validateAuthTesting(parsed); err != nil {
 		return err

@@ -326,6 +326,22 @@ client_secret_ref = "file:github-oauth-secret"
 	if err := config.validateAuth(); err == nil {
 		t.Fatal("expected insecure browser origin rejection")
 	}
+	config.Auth.PublicURL = "https://registry.example.com"
+	config.Auth.AllowedBrowserOrigins = []string{"https://community.example.com"}
+	config.Auth.WebAuthnRPID = "example.com"
+	config.Auth.WebAuthnOrigins = []string{"https://community.example.com"}
+	if err := config.validateAuth(); err != nil {
+		t.Fatalf("sibling WebAuthn origin should be allowed: %v", err)
+	}
+	config.Auth.WebAuthnRPID = "registry.example.com"
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected incompatible WebAuthn RP ID rejection")
+	}
+	config.Auth.WebAuthnRPID = "example.com"
+	config.Auth.WebAuthnOrigins = []string{"https://attacker.example.com"}
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected WebAuthn origin outside browser allowlist rejection")
+	}
 }
 
 func TestAuthTestingEndpointsAreLocalAndComplete(t *testing.T) {

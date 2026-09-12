@@ -229,6 +229,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 			PublicURL: config.Auth.PublicURL, SessionLifetime: config.AuthSessionLifetime(),
 			SessionIdle: config.AuthSessionIdle(), ChallengeTTL: config.AuthChallengeTTL(),
 			GitHubClientID: config.Auth.GitHub.ClientID, AllowedBrowserOrigins: config.Auth.AllowedBrowserOrigins,
+			WebAuthnRPID: config.Auth.WebAuthnRPID, WebAuthnOrigins: config.Auth.WebAuthnOrigins,
 		}, store, wrapper, providers...)
 		if err != nil {
 			instance.Events.Close()

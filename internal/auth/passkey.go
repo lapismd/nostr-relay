@@ -53,7 +53,7 @@ func (service *Service) passkeyUser(ctx context.Context, account Account) (webAu
 }
 
 func (service *Service) beginPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
-	if !service.validOrigin(r) {
+	if !service.validOrigin(r) || !service.validWebAuthnOrigin(r) {
 		writeAuthError(w, http.StatusForbidden, "invalid_origin")
 		return
 	}
@@ -95,7 +95,7 @@ func (service *Service) beginPasskeyRegistration(w http.ResponseWriter, r *http.
 }
 
 func (service *Service) finishPasskeyRegistration(w http.ResponseWriter, r *http.Request) {
-	if !service.validOrigin(r) {
+	if !service.validOrigin(r) || !service.validWebAuthnOrigin(r) {
 		writeAuthError(w, http.StatusForbidden, "invalid_origin")
 		return
 	}
