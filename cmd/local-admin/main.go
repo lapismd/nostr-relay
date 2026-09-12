@@ -162,10 +162,20 @@ func relayURL() string {
 	}
 	return "wss://local-relay.lapis.md"
 }
+
+func relayPublicURL() string {
+	if s := os.Getenv("LAPIS_LOCAL_RELAY_PUBLIC_URL"); s != "" {
+		return s
+	}
+	return relayURL()
+}
+
 func dial(ctx context.Context) (*websocket.Conn, error) {
-	// Disposable topology tests connect via a published port while preserving
-	// the relay virtual host. Normal operations use the public URL directly.
-	c, _, err := websocket.Dial(ctx, relayURL(), &websocket.DialOptions{Host: os.Getenv("LAPIS_LOCAL_RELAY_HOST")})
+	options := (*websocket.DialOptions)(nil)
+	if host := os.Getenv("LAPIS_LOCAL_RELAY_HOST"); host != "" {
+		options = &websocket.DialOptions{Host: host}
+	}
+	c, _, err := websocket.Dial(ctx, relayURL(), options)
 	if err != nil {
 		return nil, errors.New("cannot connect to relay")
 	}
@@ -313,8 +323,9 @@ func api(dir, method, path string, body any) ([]byte, int, error) {
 	if body == nil {
 		b = nil
 	}
-	base := strings.Replace(strings.Replace(relayURL(), "wss:", "https:", 1), "ws:", "http:", 1)
-	target := strings.TrimRight(base, "/") + path
+	publicBase := strings.Replace(strings.Replace(relayPublicURL(), "wss:", "https:", 1), "ws:", "http:", 1)
+	connectBase := strings.Replace(strings.Replace(relayURL(), "wss:", "https:", 1), "ws:", "http:", 1)
+	target := strings.TrimRight(publicBase, "/") + path
 	event := nostr.Event{Kind: 27235, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"u", target}, {"method", method}}}
 	if len(b) > 0 {
 		digest := sha256.Sum256(b)
@@ -324,12 +335,16 @@ func api(dir, method, path string, body any) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	auth, _ := json.Marshal(event)
-	req, err := http.NewRequest(method, target, bytes.NewReader(b))
+	req, err := http.NewRequest(method, strings.TrimRight(connectBase, "/")+path, bytes.NewReader(b))
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(auth))
+	if host := os.Getenv("LAPIS_LOCAL_RELAY_HOST"); host != "" {
+		req.Host = host
+		req.Header.Set("X-Forwarded-Proto", strings.SplitN(publicBase, ":", 2)[0])
+	}
 	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
 		return nil, 0, errors.New("relay admin request failed")
@@ -415,7 +430,7 @@ func github(dir string) error {
 		if label != "AUTH" {
 			continue
 		}
-		event := nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"relay", relayURL()}, {"challenge", challenge}}}
+		event := nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"relay", relayPublicURL()}, {"challenge", challenge}}}
 		event.Sign(key)
 		if err := send(ctx, c, []any{"AUTH", event}); err != nil {
 			return err

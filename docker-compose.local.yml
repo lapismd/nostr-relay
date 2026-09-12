@@ -2,6 +2,9 @@ name: lapis-local-dev
 services:
   relay:
     image: ${LAPIS_RELAY_IMAGE:?run local:init}
+    networks:
+      default:
+        aliases: ['${LAPIS_RELAY_HOST}']
     environment:
       PORT: '3334'
       RELAY_HOST: ${LAPIS_RELAY_HOST}
@@ -113,7 +116,7 @@ services:
       REGISTRY_FIXTURE_SECRETS_FILE: /run/secrets/fixture_identities
       REGISTRY_FIXTURE_CREATED_AT: ${REGISTRY_FIXTURE_CREATED_AT}
       REGISTRY_FIXTURE_HEAD_HISTORY: ${REGISTRY_FIXTURE_HEAD_HISTORY:-[]}
-      REGISTRY_RELAY: wss://${LAPIS_RELAY_HOST}
+      REGISTRY_RELAY: ws://${LAPIS_RELAY_HOST}:3334
       REGISTRY_RELAY_WRITE_RESTRICTED_RELEASES: 'true'
       REGISTRY_EXPECT_ADMIN_ONLY_GROUP_CREATION: 'true'
     secrets: [fixture_identities]
@@ -127,8 +130,8 @@ services:
       REGISTRY_CURATOR_PUBKEYS: ${REGISTRY_CURATOR_PUBKEYS}
       REGISTRY_PUBLISHER_PUBKEYS: ${REGISTRY_PUBLISHER_PUBKEYS}
       REGISTRY_AUTHORITY_EPOCH: ${REGISTRY_AUTHORITY_EPOCH}
-      REGISTRY_RELAYS: wss://${LAPIS_RELAY_HOST}
-      REGISTRY_PUBLIC_RELAYS: wss://${LAPIS_RELAY_HOST}
+      REGISTRY_RELAYS: ws://${LAPIS_RELAY_HOST}:3334
+      REGISTRY_PUBLIC_RELAYS: ws://${LAPIS_RELAY_HOST}:3334
       REGISTRY_READER_SECRET_FILE: /run/secrets/materializer_reader
     secrets: [materializer_reader]
     volumes: [registry-projection:/projection]

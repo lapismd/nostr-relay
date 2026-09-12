@@ -31,8 +31,13 @@ exposes matching `pnpm local:*` aliases. The persistent Compose project is
 | GitHub App webhook | https://local-relay.lapis.md/webhooks/github |
 | OAuth return destination | https://local-community.lapis.md |
 
-The relay route uses `http://relay:3334` inside Docker. The Community route
-uses `http://host.docker.internal:7036`. Relay, Git, Blossom and auth public
+The tunnel's relay route uses `http://relay:3334` inside Docker. Fixture and
+materializer tools resolve the public relay hostname to that service through a
+Compose network alias, avoiding a dependency on external DNS during hydration.
+Host-side administration connects through the loopback port while signing the
+public URL and preserving its virtual host, so local DNS propagation cannot
+interrupt GitHub restoration or Keytr recovery.
+The Community route uses `http://host.docker.internal:7036`. Relay, Git, Blossom and auth public
 URLs use the relay domain. Credentialed auth CORS permits exactly the Community
 HTTPS origin. Cookies remain host-only, Secure, HttpOnly and SameSite=Lax.
 WebAuthn RP ID and origin belong to the Community domain.

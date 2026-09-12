@@ -1,15 +1,46 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"fiatjaf.com/nostr"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAdminAPIUsesLoopbackTransportWithPublicSignedURL(t *testing.T) {
+	dir := t.TempDir()
+	key := nostr.Generate()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "operator-secret"), []byte(key.Hex()+"\n"), 0600))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "local-relay.lapis.md", r.Host)
+		require.Equal(t, "https", r.Header.Get("X-Forwarded-Proto"))
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(r.Header.Get("Authorization"), "Nostr "))
+		require.NoError(t, err)
+		var event nostr.Event
+		require.NoError(t, json.Unmarshal(raw, &event))
+		require.Equal(t, nostr.Tags{{"u", "https://local-relay.lapis.md/api/test"}, {"method", "POST"}}, event.Tags[:2])
+		require.True(t, event.VerifySignature())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	t.Setenv("LAPIS_LOCAL_RELAY_URL", strings.Replace(server.URL, "http:", "ws:", 1))
+	t.Setenv("LAPIS_LOCAL_RELAY_PUBLIC_URL", "wss://local-relay.lapis.md")
+	t.Setenv("LAPIS_LOCAL_RELAY_HOST", "local-relay.lapis.md")
+
+	_, status, err := api(dir, http.MethodPost, "/api/test", map[string]string{"ok": "yes"})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+}
 
 func TestInitializationPreservesExistingIdentitiesAndRejectsMismatch(t *testing.T) {
 	dir := t.TempDir()

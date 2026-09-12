@@ -319,6 +319,11 @@ def environment(directory):
     values = read_env(directory / "relay.env")
     values["LAPIS_COMMUNITY_DIR"] = str(directory)
     values["LAPIS_RELAY_PATH"] = str(ROOT)
+    values["LAPIS_LOCAL_RELAY_URL"] = "ws://127.0.0.1:" + values.get(
+        "LAPIS_RELAY_PORT", "8481"
+    )
+    values["LAPIS_LOCAL_RELAY_PUBLIC_URL"] = "wss://" + values["LAPIS_RELAY_HOST"]
+    values["LAPIS_LOCAL_RELAY_HOST"] = values["LAPIS_RELAY_HOST"]
     values["LAPIS_POSTGRES_PASSWORD"] = (
         (directory / "postgres-password").read_text().strip()
     )

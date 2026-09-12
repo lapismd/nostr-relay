@@ -3,6 +3,7 @@ package zooid
 import (
 	"context"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -22,6 +23,14 @@ func Dispatch(hostname string) (*Instance, bool) {
 	defer instancesMux.RUnlock()
 
 	instance, exists := instancesByHost[hostname]
+	if !exists {
+		// HTTP Host includes a port when an internal client connects to the
+		// relay's non-default container port. Virtual-host selection is based on
+		// the DNS hostname, while the request still retains its port for NIP-42.
+		if host, _, err := net.SplitHostPort(hostname); err == nil {
+			instance, exists = instancesByHost[host]
+		}
+	}
 
 	return instance, exists
 }

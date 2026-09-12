@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix="lapis-unified-acceptance-") as temporar
     values["REGISTRY_FIXTURE_CREATED_AT"] = str(int(time.time()) - 28 * 86400)
     values.update(
         LAPIS_RELAY_PORT=str(port),
-        LAPIS_RELAY_HOST="registry.localhost:3334",
+        LAPIS_RELAY_HOST="registry.localhost",
         LAPIS_GIT_PUBLIC_URL=origin,
         LAPIS_AUTH_PUBLIC_URL=origin,
     )
@@ -56,7 +56,6 @@ with tempfile.TemporaryDirectory(prefix="lapis-unified-acceptance-") as temporar
             {
                 "services": {
                     "relay": {
-                        "networks": {"default": {"aliases": ["registry.localhost"]}},
                         "environment": {
                             "AUTH_ENABLED": "false",
                             "GITHUB_ENABLED": "false",
@@ -209,6 +208,7 @@ relay.close();
             {
                 **dev.environment(directory),
                 "LAPIS_LOCAL_RELAY_URL": f"ws://127.0.0.1:{port}",
+                "LAPIS_LOCAL_RELAY_PUBLIC_URL": "ws://registry.localhost:3334",
                 "LAPIS_LOCAL_RELAY_HOST": "registry.localhost:3334",
             },
         )
