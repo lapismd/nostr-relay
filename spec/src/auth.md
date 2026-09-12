@@ -8,6 +8,16 @@ without changing that pubkey.
 
 ## Configuration and secrets
 
+The optional `policy.keytr_storage` flag (`KEYTR_STORAGE_ENABLED` in Docker)
+allows pre-login publication of signed, bounded PRF-v1 Keytr kind `31777`
+records on an open relay. Public reads additionally require
+`policy.anonymous_read`. It is disabled by default. Required tags are unique
+`d`, `rp`, `algo=aes-256-gcm`, `kdf=hkdf-sha256`, and `v=1`; group-scoped and
+protected records are rejected. Signature verification, event bans, and normal
+addressable replacement and transport limits still apply. All other event
+kinds keep their existing authentication and group policies. These records
+contain encrypted recovery material, never a plaintext Nostr secret.
+
 ```toml
 [auth]
 enabled = true

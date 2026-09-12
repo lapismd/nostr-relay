@@ -648,6 +648,9 @@ func (instance *Instance) CanAnonymousRead(event nostr.Event) bool {
 	if !instance.Config.Policy.Open || !instance.Config.Policy.AnonymousRead {
 		return false
 	}
+	if event.Kind == keytrKind {
+		return instance.Config.Policy.KeytrStorage && validKeytrRecord(event)
+	}
 	if event.Kind == nostr.KindProfileMetadata || event.Kind == nostr.KindEmojiList || event.Kind == nostr.KindEmojiSets {
 		return true
 	}
@@ -669,6 +672,15 @@ func (instance *Instance) CanAnonymousRead(event nostr.Event) bool {
 // Event publishing
 
 func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (reject bool, msg string) {
+	if event.Kind == keytrKind && instance.Config.Policy.KeytrStorage && instance.Config.Policy.Open {
+		if !validKeytrRecord(event) {
+			return true, "invalid: invalid Keytr record"
+		}
+		if instance.Management != nil && (instance.Management.EventIsBanned(event.ID) || instance.Management.PubkeyIsBanned(event.PubKey)) {
+			return true, "restricted: this event or author has been banned from this relay"
+		}
+		return false, ""
+	}
 	if instance.AllowRecipientEvent(event) {
 		return false, ""
 	}

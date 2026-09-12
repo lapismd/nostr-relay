@@ -86,6 +86,7 @@ type Config struct {
 	} `toml:"info"`
 
 	Policy struct {
+		KeytrStorage    bool `toml:"keytr_storage"`  // Public encrypted Keytr records on open relays; opt-in
 		Open            bool `toml:"open"`           // Allow all authenticated users (no membership required)
 		AnonymousRead   bool `toml:"anonymous_read"` // Allow read-only access to public community data without NIP-42
 		PublicJoin      bool `toml:"public_join"`
