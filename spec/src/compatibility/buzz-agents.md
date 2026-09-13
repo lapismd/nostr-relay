@@ -181,6 +181,14 @@ second; control frames are not charged to that telemetry limit. Unknown frame
 values are silently discarded as successful ephemeral submissions, matching
 Buzz relay behavior.
 
+Lapis controller and Community clients use those same routes for owner-only
+activity catch-up. A fresh control envelope may request `sync_activity`; a fresh
+telemetry envelope may carry an `activity_sync_page` whose ciphertext contains
+older signed telemetry events. Nested history is opaque to the relay. The outer
+event remains subject to the existing freshness, ownership, mutual membership,
+size, visibility, and rate policies, and neither request nor response enters
+relay storage or query results.
+
 ## Durable private agent data
 
 Engrams require exactly one 64-character lowercase hexadecimal `d`, exactly one

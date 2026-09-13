@@ -20,6 +20,13 @@ Kind `24200` with exact `p`, `agent`, and `frame` tags; optional `h`; bounded op
 
 The relay verifies route, ownership, time, size, rate and optional mutual channel membership. It never stores or decrypts frames. Community decrypts authorized frames and stores only its separate owner-scoped local activity archive.
 
+Lapis uses additive encrypted payload commands for reliable client catch-up. A
+fresh owner control requests one exact conversation after a controller cursor;
+a fresh agent telemetry page carries bounded original signed encrypted events
+and a current-state snapshot. The relay does not interpret nested events, accept
+historical outer timestamps, or persist either direction. Final conversation
+messages remain ordinary durable Nostr events.
+
 ## Component support
 
 | Component | Status | Scope |
@@ -33,6 +40,7 @@ The relay verifies route, ownership, time, size, rate and optional mutual channe
 | Source requirement | Lapis behavior | Classification | Reason and compatibility impact | Evidence/status |
 | --- | --- | --- | --- | --- |
 | Observer frames are ephemeral and end-to-end encrypted. | Community may retain decrypted owner-visible activity locally in an explicitly scoped archive; the relay remains persistence-free. | Client-local extension | No durable relay transcript is created; clearing the local archive does not alter Nostr events. | `modules/buzzagents/protocol/observer.go`, `zooid/agent_policy.go`, `src/community/agent-controller.ts` |
+| Missed activity is available after a client reconnect. | A Lapis controller journals original encrypted telemetry and returns it only inside fresh owner-only ephemeral frames. | Lapis extension | The relay stays persistence-free and cannot inspect the replayed history. Older controllers retain live-only behavior. | `modules/buzzagents/protocol/observer.go`, `zooid/agent_policy.go`, controller and Community protocol tests |
 
 ## Evidence and refresh
 
