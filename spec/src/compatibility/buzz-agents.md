@@ -133,6 +133,8 @@ allows a future shared backend while preserving durable preferences. Account
 transactions serialize updates across nodes, reject stale or duplicate lease
 updates, and increment aggregate revisions. Server time controls expiration;
 reads reconcile expired leases even before the bounded five-second sweep.
+Fresh snapshots use a batched read without updating account rows; looking up
+an unknown subject returns Offline without persisting an empty account.
 
 Bare kind-20001 updates change only that connection. An explicit `presence-mode`
 tag selects account-wide `auto`, `away`, or `offline`; `presence-sequence` orders

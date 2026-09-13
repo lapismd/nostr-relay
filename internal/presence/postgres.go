@@ -137,11 +137,47 @@ func (p *Postgres) Snapshot(ctx context.Context, keys []string) ([]Snapshot, err
 	if len(keys) > MaxSubjects {
 		return nil, errors.New("invalid: too many presence subjects")
 	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var now int64
+	if err := p.db.QueryRowContext(ctx, "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").Scan(&now); err != nil {
+		return nil, err
+	}
+	rows, err := p.db.QueryContext(ctx, "SELECT state,floor(extract(epoch FROM statement_timestamp()))::bigint FROM "+p.accounts+" WHERE pubkey = ANY($1::text[])", keys)
+	if err != nil {
+		return nil, err
+	}
+	accounts := make(map[string]Account, len(keys))
+	for rows.Next() {
+		var raw []byte
+		var account Account
+		if err = rows.Scan(&raw, &now); err == nil {
+			err = json.Unmarshal(raw, &account)
+		}
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		accounts[account.PubKey] = account
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
 	result := make([]Snapshot, 0, len(keys))
 	for _, key := range keys {
-		value, err := p.mutate(ctx, key, nil, "")
-		if err != nil {
-			return nil, err
+		account, exists := accounts[key]
+		if !exists {
+			account = NewAccount(key)
+		}
+		// Fresh snapshots are read-only; only expired aggregates need a lock.
+		value := account.Snapshot(now)
+		if account.ExpiresAt > 0 && account.ExpiresAt <= now {
+			value, err = p.mutate(ctx, key, nil, "")
+			if err != nil {
+				return nil, err
+			}
 		}
 		result = append(result, value)
 	}

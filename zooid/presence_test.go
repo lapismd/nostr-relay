@@ -22,6 +22,15 @@ func TestPostgresPresenceSharedNodesAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	unknown := uuid.NewString()
+	unknownSnapshot, err := first.Snapshot(t.Context(), []string{unknown})
+	if err != nil || len(unknownSnapshot) != 1 || unknownSnapshot[0].Status != "offline" {
+		t.Fatal(unknownSnapshot, err)
+	}
+	var stored int
+	if err := GetDb().QueryRow("SELECT count(*) FROM "+events.Schema.Prefix("presence_accounts")+" WHERE pubkey=$1", unknown).Scan(&stored); err != nil || stored != 0 {
+		t.Fatal("looking up an unknown subject must not persist an account", stored, err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	notifications := make(chan string, 20)
@@ -78,6 +87,10 @@ func TestPostgresPresenceSharedNodesAndExpiry(t *testing.T) {
 	}
 	// Simulate a crashed node's stale lease without running cleanup.
 	_, err = GetDb().ExecContext(ctx, "UPDATE "+events.Schema.Prefix("presence_leases")+" SET lease=jsonb_set(lease,'{ExpiresAt}',to_jsonb($1::bigint)) WHERE pubkey=$2", now-1, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = GetDb().ExecContext(ctx, "UPDATE "+events.Schema.Prefix("presence_accounts")+" SET state=jsonb_set(state,'{ExpiresAt}',to_jsonb($1::bigint)),expires_at=$1 WHERE pubkey=$2", now-1, key)
 	if err != nil {
 		t.Fatal(err)
 	}
