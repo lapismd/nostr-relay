@@ -189,6 +189,11 @@ event remains subject to the existing freshness, ownership, mutual membership,
 size, visibility, and rate policies, and neither request nor response enters
 relay storage or query results.
 
+The current Lapis payload contract is version `2`. It carries typed transcript
+records derived from the accepted Nostr request and normalized controller
+runtime events; provider ACP envelopes and provider session files are outside
+the protocol. This payload change is opaque to relay admission and routing.
+
 ## Durable private agent data
 
 Engrams require exactly one 64-character lowercase hexadecimal `d`, exactly one

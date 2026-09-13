@@ -27,6 +27,11 @@ and a current-state snapshot. The relay does not interpret nested events, accept
 historical outer timestamps, or persist either direction. Final conversation
 messages remain ordinary durable Nostr events.
 
+Lapis controller and Community implementations currently exchange payload
+version `2`, whose signed encrypted events contain typed user, assistant,
+thinking, tool, permission, and terminal transcript records. The relay neither
+validates those inner record types nor reads ACP or provider session files.
+
 ## Component support
 
 | Component | Status | Scope |
