@@ -19,7 +19,7 @@ func (rl *Relay) handleEphemeral(ctx context.Context, evt nostr.Event) error {
 	}
 
 	if nil != rl.OnEphemeralEvent {
-		rl.OnEphemeralEvent(ctx, evt)
+		return rl.OnEphemeralEvent(ctx, evt)
 	}
 
 	return nil

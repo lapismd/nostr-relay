@@ -83,7 +83,7 @@ admin privilege, invite power, or access to the owner's private groups. Existing
 | ---: | --- | --- | --- |
 | `0` | Agent profile with optional full NIP-OA credential | WebSocket or HTTP | Normal replaceable event; a valid credential materializes owner relation. |
 | `10100` | Agent availability/profile extension | WebSocket or HTTP | Normal replaceable global event. |
-| `20001` | Presence | WebSocket only | Ephemeral fan-out plus an in-memory 180-second projection. Optional `h` requires author membership. |
+| `20001` | Presence | WebSocket only | Ephemeral fan-out plus PostgreSQL connection leases expiring after 180 seconds. Optional `h` requires author membership. |
 | `20002` | Typing/working indicator | WebSocket only | Ephemeral; exactly one `h` is required and the author must be a channel member. |
 | `24200` | NIP-AO observer frame | WebSocket only | Ephemeral, private agent/owner fan-out, never stored. |
 | `30174` | NIP-AE encrypted engram | WebSocket or HTTP | Addressable and private to author and exact `p` owner; excluded from full-text search. |
@@ -117,11 +117,37 @@ closed rather than leaking cardinality.
 
 Presence content follows Buzz's executable parser. JSON content uses its
 `status` string; non-JSON content is treated as status text and truncated at a
-valid UTF-8 boundary. The process-local projection expires after 180 seconds.
+valid UTF-8 boundary. The shared projection expires after 180 seconds.
 For `POST /query`, the relay synthesizes signed kind-`20001` events with a `p`
 tag naming the requested subject when every filter is an exact `20001` or
 `40902` author query. WebSocket subscriptions receive live presence events;
-they do not synthesize snapshots.
+they also receive relay-signed aggregate updates when subscribing to the relay
+author and a subject `p` tag. Both ordinary members and agents use the same
+presence service. The NIP-11 `lapis_presence` capability advertises version 1,
+60-second heartbeats, 180-second expiry, multiple sessions and account preferences.
+
+Each live WebSocket gets a random connection UUID. PostgreSQL stores account
+preferences and bounded replay metadata separately from connection leases;
+neither table stores signed event envelopes. The `presence.Backend` contract
+allows a future shared backend while preserving durable preferences. Account
+transactions serialize updates across nodes, reject stale or duplicate lease
+updates, and increment aggregate revisions. Server time controls expiration;
+reads reconcile expired leases even before the bounded five-second sweep.
+
+Bare kind-20001 updates change only that connection. An explicit `presence-mode`
+tag selects account-wide `auto`, `away`, or `offline`; `presence-sequence` orders
+same-second updates. Auto aggregates Online before Away, preserves opaque agent
+statuses, and becomes Offline without a live lease. Manual Away applies while
+any lease is alive. Manual Offline persists until explicitly changed. Closing
+one connection cannot clear another connection's presence.
+
+Snapshots return every requested subject, including Offline, and add
+`presence-mode`, `presence-revision`, and `expiration` tags. Authenticated readers
+must still satisfy relay admission. Live aggregate delivery uses the same read
+policy. Backend failures fail publication or snapshots rather than acknowledging
+success or claiming everyone is offline. PostgreSQL notifications are hints
+delivered after commit; reconnect and periodic watched-subject reconciliation
+recover missed updates. Signed ephemeral events remain outside history/search.
 
 NIP-29 add, join, remove, leave, and group-creation membership changes emit
 relay-signed `44100` or `44101` events. Each has an exact recipient `p`, channel
@@ -217,11 +243,11 @@ runtime progress production remain external. The relay can store and authorize
 the supported persona, team, engram, and metrics events; it does not interpret
 them as execution commands or fork an agent harness.
 
-Presence, owner bindings, and rate windows are process-local. Durable agent
-events and owner credentials in kind-0 profiles survive restart, while live
-presence and connection-local admission do not. A multi-process deployment
-must add a shared ephemeral state layer before promising cross-instance
-presence or rate accounting.
+Owner bindings and general rate windows remain process-local. Presence leases
+and account preferences are shared through PostgreSQL; crashed-node leases
+expire without requiring a disconnect callback. Connection-local admission is
+still reconstructed through authentication. General distributed rate accounting
+remains outside the presence implementation.
 
 ## Verification
 

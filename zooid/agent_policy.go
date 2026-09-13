@@ -11,7 +11,6 @@ import (
 	"fiatjaf.com/nostr"
 	agentauth "zooid/buzzagents/auth"
 	"zooid/buzzagents/policy"
-	"zooid/buzzagents/presence"
 	"zooid/buzzagents/protocol"
 	"zooid/internal/khatru"
 )
@@ -41,7 +40,6 @@ type AgentPolicy struct {
 	Management      *ManagementStore
 	Groups          *GroupStore
 	Events          *EventStore
-	Presence        *presence.Store
 	now             func() time.Time
 	linkResolver    func(agent, owner nostr.PubKey, personaID string) bool
 	managedResolver func(context.Context, nostr.PubKey, nostr.PubKey, nostr.PubKey) bool
@@ -55,7 +53,7 @@ type AgentPolicy struct {
 func NewAgentPolicy(config *Config, management *ManagementStore, groups *GroupStore) *AgentPolicy {
 	return &AgentPolicy{
 		Config: config, Management: management, Groups: groups,
-		Presence: presence.NewStore(), now: time.Now,
+		now:      time.Now,
 		sessions: make(map[string]map[nostr.PubKey]authenticatedPrincipal),
 		owners:   make(map[nostr.PubKey]nostr.PubKey), rates: make(map[string]rateWindow),
 	}
@@ -272,46 +270,6 @@ func managedAuthTag(tags nostr.Tags) (nostr.Tag, bool) {
 		found = tag
 	}
 	return found, found != nil
-}
-
-func (agentPolicy *AgentPolicy) OnEphemeral(event nostr.Event) {
-	if event.Kind == protocol.KindPresence {
-		agentPolicy.Presence.Update(event, presence.ParseStatus(event.Content), agentPolicy.now())
-	}
-}
-
-func (agentPolicy *AgentPolicy) PresenceEvents(filters []nostr.Filter) ([]nostr.Event, error) {
-	authors := make([]nostr.PubKey, 0)
-	seen := make(map[nostr.PubKey]struct{})
-	for _, filter := range filters {
-		for _, author := range filter.Authors {
-			if _, duplicate := seen[author]; duplicate {
-				continue
-			}
-			seen[author] = struct{}{}
-			authors = append(authors, author)
-		}
-	}
-	if len(authors) == 0 {
-		return nil, nil
-	}
-
-	now := agentPolicy.now()
-	entries := agentPolicy.Presence.Snapshot(authors, now)
-	events := make([]nostr.Event, 0, len(entries))
-	for _, entry := range entries {
-		event := nostr.Event{
-			Kind:      protocol.KindPresence,
-			CreatedAt: nostr.Timestamp(now.Unix()),
-			Content:   entry.Status,
-			Tags:      nostr.Tags{{"p", entry.PubKey.Hex()}},
-		}
-		if err := agentPolicy.Config.Sign(&event); err != nil {
-			return nil, fmt.Errorf("sign presence snapshot: %w", err)
-		}
-		events = append(events, event)
-	}
-	return events, nil
 }
 
 func (agentPolicy *AgentPolicy) CanRead(reader nostr.PubKey, event nostr.Event) bool {

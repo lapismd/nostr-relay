@@ -27,6 +27,7 @@ import (
 	"zooid/internal/githubforge"
 	"zooid/internal/keywrap"
 	"zooid/internal/khatru"
+	"zooid/internal/presence"
 )
 
 type Instance struct {
@@ -47,6 +48,7 @@ type Instance struct {
 	Agents       *AgentPolicy
 	Auth         *authn.Service
 	AgentBunker  *agentbunker.Service
+	Presence     *PresencePolicy
 }
 
 func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
@@ -126,7 +128,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	// Handlers
 
 	instance.Relay.OnConnect = instance.OnConnect
-	instance.Relay.OnDisconnect = instance.Agents.OnDisconnect
+	instance.Relay.OnDisconnect = instance.OnDisconnect
 	instance.Relay.OnAuth = instance.Agents.OnAuth
 	instance.Relay.PreventBroadcast = instance.PreventBroadcast
 	instance.Relay.StoreEvent = instance.StoreEvent
@@ -159,6 +161,11 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	if err := instance.Events.Init(); err != nil {
 		log.Fatal("Failed to initialize event store: ", err)
 	}
+	presenceBackend, err := presence.NewPostgres(GetDb(), Env("DATABASE_URL"), events.Schema.Name)
+	if err != nil {
+		return nil, err
+	}
+	instance.Presence = NewPresencePolicy(instance, presenceBackend)
 
 	if config.Agents.Bunker.Enabled {
 		credentials := githubforge.RuntimeCredentials{SecretDir: config.Agents.Bunker.CredentialDir}
@@ -433,6 +440,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	// Lapis compatibility boundary for Buzz desktop and mobile clients. Keep
 	// this after Blossom so /media/{sha256_ext} can reuse its existing handler.
 	enableBuzzCompatibility(instance)
+	instance.Presence.Start(ctx)
 
 	// Update managed membership/admin lists
 
@@ -564,10 +572,28 @@ func (instance *Instance) GenerateInviteEvent(pubkey nostr.PubKey) nostr.Event {
 // Handlers
 
 func (instance *Instance) OnConnect(ctx context.Context) {
+	if instance.Presence != nil {
+		instance.Presence.Connect(ctx)
+	}
 	khatru.RequestAuth(ctx)
 }
 
+func (instance *Instance) OnDisconnect(ctx context.Context) {
+	if instance.Presence != nil {
+		instance.Presence.Disconnect(ctx)
+	}
+	if instance.Agents != nil {
+		instance.Agents.OnDisconnect(ctx)
+	}
+}
+
 func (instance *Instance) PreventBroadcast(ws *khatru.WebSocket, filter nostr.Filter, event nostr.Event) bool {
+	if event.Kind == protocol.KindPresence {
+		reader, ok := khatru.GetAuthed(ws.Context)
+		if !ok || (!instance.Config.Policy.Open && !instance.Agents.IsRelayMember(ws.Context, reader)) || instance.Management.PubkeyIsBanned(reader) {
+			return true
+		}
+	}
 	if instance.IsWriteOnlyEvent(event) || isLargeListEvent(event) {
 		return true
 	}
@@ -979,9 +1005,9 @@ func (instance *Instance) OnEventDeleted(_ context.Context, event nostr.Event) {
 	}
 }
 
-func (instance *Instance) OnEphemeralEvent(ctx context.Context, event nostr.Event) {
-	if instance.Agents != nil {
-		instance.Agents.OnEphemeral(event)
+func (instance *Instance) OnEphemeralEvent(ctx context.Context, event nostr.Event) error {
+	if event.Kind == protocol.KindPresence && instance.Presence != nil {
+		return instance.Presence.Update(ctx, event)
 	}
 	if event.Kind == RELAY_JOIN {
 		instance.Management.AddMember(event.PubKey)
@@ -990,6 +1016,7 @@ func (instance *Instance) OnEphemeralEvent(ctx context.Context, event nostr.Even
 	if event.Kind == RELAY_LEAVE {
 		instance.Management.RemoveMember(event.PubKey)
 	}
+	return nil
 }
 
 func isMembershipNotification(kind nostr.Kind) bool {

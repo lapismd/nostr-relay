@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"zooid/buzzagents/protocol"
+	"zooid/internal/presence"
 )
 
 func TestAgentPolicyHTTPAdmissionAndOwnerScopedEvents(t *testing.T) {
@@ -102,21 +103,20 @@ func TestAgentPolicyEnforcesCredentialKind(t *testing.T) {
 	}
 }
 
-func TestAgentPolicySynthesizesRelaySignedPresence(t *testing.T) {
+func TestPresencePolicySynthesizesRelaySignedPresence(t *testing.T) {
 	now := time.Unix(1_750_000_000, 0)
 	relaySecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000003")
 	subjectSecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000004")
 	config := &Config{secret: relaySecret}
 	management := &ManagementStore{Config: config, cachesWarmed: true}
-	agentPolicy := NewAgentPolicy(config, management, &GroupStore{Config: config, Management: management})
-	agentPolicy.now = func() time.Time { return now }
-
-	presenceEvent := nostr.Event{
-		Kind: protocol.KindPresence, PubKey: subjectSecret.Public(),
-		CreatedAt: nostr.Timestamp(now.Unix()), Content: "online",
+	backend := presence.NewMemory()
+	backend.Now = func() time.Time { return now }
+	_, err := backend.Apply(t.Context(), presence.Update{PubKey: subjectSecret.Public().Hex(), Connection: "test", Status: "online", EventID: "test", CreatedAt: now.Unix()})
+	if err != nil {
+		t.Fatal(err)
 	}
-	agentPolicy.OnEphemeral(presenceEvent)
-	events, err := agentPolicy.PresenceEvents([]nostr.Filter{{
+	policy := NewPresencePolicy(&Instance{Config: config, Management: management}, backend)
+	events, err := policy.Query(withAuthenticatedPubkey(t.Context(), subjectSecret.Public()), []nostr.Filter{{
 		Kinds: []nostr.Kind{protocol.KindPresenceSnapshot}, Authors: []nostr.PubKey{subjectSecret.Public()},
 	}})
 	if err != nil {

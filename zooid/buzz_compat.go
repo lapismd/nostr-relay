@@ -2,6 +2,7 @@ package zooid
 
 import (
 	"context"
+	"fmt"
 
 	"fiatjaf.com/nostr"
 	"zooid/internal/buzzcompat"
@@ -34,8 +35,11 @@ func enableBuzzCompatibility(instance *Instance) {
 		AuthorizeQuery:          instance.OnRequest,
 		Query:                   instance.QueryStored,
 		QueryBefore:             instance.QueryStoredBefore,
-		EphemeralQuery: func(_ context.Context, filters []nostr.Filter) ([]nostr.Event, error) {
-			return instance.Agents.PresenceEvents(filters)
+		EphemeralQuery: func(ctx context.Context, filters []nostr.Filter) ([]nostr.Event, error) {
+			if instance.Presence == nil {
+				return nil, fmt.Errorf("error: presence unavailable")
+			}
+			return instance.Presence.Query(ctx, filters)
 		},
 		CountMany: func(ctx context.Context, filters []nostr.Filter) (buzzcompat.CountResult, error) {
 			result, err := instance.CountStored(ctx, filters)

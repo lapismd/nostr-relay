@@ -76,7 +76,7 @@ type Relay struct {
 	OnEventSaved     func(ctx context.Context, event nostr.Event)
 	OnEventDeleted   func(ctx context.Context, deleted nostr.Event)
 	AllowDeleting    func(ctx context.Context, target, deletion nostr.Event) bool
-	OnEphemeralEvent func(ctx context.Context, event nostr.Event)
+	OnEphemeralEvent func(ctx context.Context, event nostr.Event) error
 	OnRequest        func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
 	OnCount          func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
 	OnCountMany      func(ctx context.Context, filters []nostr.Filter) (reject bool, msg string)
