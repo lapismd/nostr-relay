@@ -136,3 +136,9 @@ tombstones to authorized group readers after deletion and relay restart.
 Relay history queries release each bounded storage page before evaluating
 read authorization. Reciprocal ownership and room checks may query PostgreSQL
 and must not exhaust the pool while outer history cursors remain open.
+
+Managed signing permits kind `40100` only as an exact single-h canvas snapshot
+within the 64 KiB UTF-8 limit. The signer MUST check current channel membership,
+management permission and archive state before signing; publication independently
+checks the same channel write policy. Owner approval and a fresh-head check are
+controller responsibilities.

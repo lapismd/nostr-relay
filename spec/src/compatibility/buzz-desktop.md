@@ -134,3 +134,18 @@ storage-independent sidecar contract, `internal/forge` for capabilities,
 `internal/githubforge` for provider translation, Zooid for persistence and
 NIP-29 scope enforcement, and `internal/buzzcompat` for HTTP route
 registration.
+
+## Channel canvases
+
+The relay MUST admit Buzz-compatible kind `40100` full Markdown snapshots only
+with exactly one two-element nonempty `h` tag and at most 65,536 content bytes.
+The author MUST be a current member with channel management permission, and the
+channel MUST NOT be archived. Private channel read authorization also applies
+to historical canvas events. The ordinary event store retains ordered snapshots,
+including an empty clearing snapshot; no atomic head comparison is promised.
+
+Canvas events MUST NOT become chat messages or agent invocation triggers.
+
+| Surface | Verification |
+| --- | --- |
+| Channel canvas | `TestChannelCanvasWritePolicy`, `TestManagedCanvasSigning`, and the disposable `TestIntegration_ChannelCanvas` cover exact tags, size, management, membership, private reads, clearing and retained history. |

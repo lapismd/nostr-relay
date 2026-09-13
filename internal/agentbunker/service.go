@@ -738,6 +738,7 @@ func (s *Service) execute(ctx context.Context, a Agent, c Client, r nip46.Reques
 	}
 }
 func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
+	event.PubKey = nostr.MustPubKeyFromHex(a.Pubkey)
 	now := s.Now()
 	created := time.Unix(int64(event.CreatedAt), 0)
 	maxAge := 2 * time.Minute
@@ -759,7 +760,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if a.Status != StatusActive {
 		return errors.New("agent is inactive")
 	}
-	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 20001, 20002, 24200, 30023, 30617, 30621, nostr.KindDMRelayList}, event.Kind) {
+	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 20001, 20002, 24200, 30023, 30617, 30621, 40100, nostr.KindDMRelayList}, event.Kind) {
 		return errors.New("event kind is not allowed")
 	}
 	if event.Kind == nostr.KindSeal && (len(event.Tags) != 0 || event.Content == "") {
@@ -830,10 +831,13 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 }
 
 func isRelayToolKind(kind nostr.Kind) bool {
-	return slices.Contains([]nostr.Kind{1621, 1630, 1631, 1632, 1633, 30023, 30617, 30621}, kind)
+	return slices.Contains([]nostr.Kind{1621, 1630, 1631, 1632, 1633, 30023, 30617, 30621, 40100}, kind)
 }
 
 func (s *Service) authorizeRelayToolSigning(event nostr.Event, group string) error {
+	if event.Kind == 40100 {
+		return s.authorizeCanvasSigning(event, group)
+	}
 	if group == "" {
 		return errors.New("relay tool group is required")
 	}

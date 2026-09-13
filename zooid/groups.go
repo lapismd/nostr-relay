@@ -1148,6 +1148,9 @@ func (g *GroupStore) HasAccess(h string, pubkey nostr.PubKey) bool {
 }
 
 func (g *GroupStore) IsGroupEvent(event nostr.Event) bool {
+	if event.Kind == channelCanvasKind {
+		return true
+	}
 	if slices.Contains(nip29.MetadataEventKinds, event.Kind) {
 		return true
 	}
@@ -1247,6 +1250,10 @@ func (g *GroupStore) CheckWrite(event nostr.Event) string {
 		return ""
 	} else if !found {
 		return "invalid: group not found"
+	}
+
+	if event.Kind == channelCanvasKind {
+		return g.checkCanvasWrite(event, meta)
 	}
 
 	if slices.Contains(nip29.ModerationEventKinds, event.Kind) {
