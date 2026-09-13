@@ -24,6 +24,22 @@ spec.loader.exec_module(dev)
 
 with tempfile.TemporaryDirectory(prefix="lapis-unified-acceptance-") as temporary:
     directory = Path(temporary)
+    controller_root_value = os.environ.get("LAPIS_AGENT_CONTROLLER_PATH", "").strip()
+    controller_root = (
+        Path(controller_root_value).expanduser().resolve()
+        if controller_root_value
+        else None
+    )
+    if controller_root is not None:
+        for required in (
+            controller_root / "dist/index.js",
+            controller_root / "scripts/local-agent-e2e.mjs",
+            controller_root / "node_modules",
+        ):
+            if not required.exists():
+                raise RuntimeError(
+                    f"Controller acceptance dependency is missing: {required}"
+                )
     with contextlib.redirect_stdout(io.StringIO()):
         dev.initialize(directory, directory / "absent-legacy-source")
     for name in (
@@ -52,6 +68,22 @@ with tempfile.TemporaryDirectory(prefix="lapis-unified-acceptance-") as temporar
     dev.save_env(directory / "relay.env", values)
     dev.prepare_fixture_heads(directory)
     override = directory / "test.compose.json"
+    fixture_service = {
+        "environment": {
+            "REGISTRY_RELAY": origin.replace("http:", "ws:"),
+            "MANAGED_AGENT_API": origin + "/api/agents/managed",
+            "MANAGED_AGENT_BUNKER_RELAY": origin.replace("http:", "ws:")
+            + "/nip46",
+            "MANAGED_AGENT_CREATED_AT": str(int(time.time())),
+            "MANAGED_AGENT_ORIGIN": "http://community.localhost:7036",
+        }
+    }
+    if controller_root is not None:
+        fixture_service["volumes"] = [
+            f"{controller_root / 'dist'}:/controller/dist:ro",
+            f"{controller_root / 'scripts'}:/controller/scripts:ro",
+            f"{controller_root / 'node_modules'}:/controller/node_modules:ro",
+        ]
     dev.private_write(
         override,
         json.dumps(
@@ -63,19 +95,7 @@ with tempfile.TemporaryDirectory(prefix="lapis-unified-acceptance-") as temporar
                             "GITHUB_ENABLED": "false",
                         },
                     },
-                    "fixture": {
-                        "environment": {
-                            "REGISTRY_RELAY": origin.replace("http:", "ws:"),
-                            "MANAGED_AGENT_API": origin
-                            + "/api/agents/managed",
-                            "MANAGED_AGENT_BUNKER_RELAY": origin.replace(
-                                "http:", "ws:"
-                            )
-                            + "/nip46",
-                            "MANAGED_AGENT_CREATED_AT": str(int(time.time())),
-                            "MANAGED_AGENT_ORIGIN": "http://community.localhost:7036",
-                        },
-                    },
+                    "fixture": fixture_service,
                 }
             }
         ),
@@ -287,6 +307,27 @@ console.log(agentPubkey);
             .splitlines()[-1]
         )
         assert verified == first, "Restart lost baseline data"
+        agent_acceptance = None
+        if controller_root is not None:
+            agent_acceptance = json.loads(
+                compose(
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "fixture",
+                    "node",
+                    "/controller/scripts/local-agent-e2e.mjs",
+                    managed_pubkey,
+                    capture=True,
+                )
+                .strip()
+                .splitlines()[-1]
+            )
+            assert agent_acceptance["onboardedAgent"] == managed_pubkey
+            assert agent_acceptance["online"] is True
+            assert agent_acceptance["inboxAdvertised"] is True
+            assert agent_acceptance["turns"] == 3
+            assert agent_acceptance["activityFrames"] >= 6
         compose(
             "run",
             "--rm",
@@ -326,8 +367,14 @@ console.log(agentPubkey);
             .splitlines()[-1]
         )
         assert restored == first, "Reset changed baseline fixture identity"
+        agent_result = (
+            " agent DM, presence/activity, channel mention and reply mention passed;"
+            if agent_acceptance is not None
+            else ""
+        )
         print(
-            "Unified Docker topology: 13 plugins, repeated hydration, additive roles, managed-agent restart reconnect, persistence, Keytr reset and verification passed."
+            "Unified Docker topology: 13 plugins, repeated hydration, additive roles, managed-agent restart reconnect,"
+            f"{agent_result} persistence, Keytr reset and verification passed."
         )
     except Exception:
         compose("logs", "--tail", "25", "relay")

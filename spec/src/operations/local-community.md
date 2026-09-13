@@ -132,6 +132,16 @@ relay, the Community origin receives provisioning CORS while an unapproved
 origin does not, `/nip46` upgrades to WebSocket, and the relay sees the enabled
 feature and mounted master-key file without reading or printing its contents.
 
+Run `pnpm test:local:e2e` from the sibling `nostr-agent-controller` checkout for
+the disposable agent acceptance lane. It builds the controller, provisions and
+activates a new managed agent in an application-auth-disabled local stack,
+restarts the relay and reconnects the same signer, adds the agent to a fixture
+channel with its required writer role, and then verifies online presence, its
+NIP-17 inbox, a DM response, encrypted started/completed activity, a
+channel-mention response, and a reply-mention response. The runtime is
+deterministic and in-process, so this lane does not require an AI host, model,
+operator controller configuration, or live credentials.
+
 After downloading `lapis.agent-controller-bootstrap/1`, copy each generated
 environment entry into the controller's private environment and add its agent
 and signer objects to the controller configuration. Choose `hostId` and
@@ -155,6 +165,7 @@ repository owner's signature were validated without printing credentials.
 | --- | --- |
 | Credential/idempotence, fixture clock and signed backup tests | Passed; backup verification includes 1001 records and rejects tampering before replacing recovery data. |
 | Canonical topology/reset | Passed: 13 plugins, identical repeat hydration, preservation of an extra role, restart persistence, freshness-head history replay, verified Keytr export and restoration after volume reset. |
+| Local managed-agent end-to-end | Passed 2026-09-13: managed onboarding, real NIP-46 restart reconnect, NIP-17 inbox and DM reply, online presence, six encrypted turn activity frames, channel mention reply, and reply mention reply. |
 | Relay Go suite | `go test ./...` passed. |
 | GitHub and WalGit tagged Docker lanes | Passed. |
 | Local relay, WalGit and fixture image builds | Passed; no images published. |
