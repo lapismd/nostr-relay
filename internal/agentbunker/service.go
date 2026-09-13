@@ -22,6 +22,7 @@ import (
 	"fiatjaf.com/nostr/nip46"
 	"zooid/internal/gitforge"
 	"zooid/internal/keywrap"
+	"zooid/internal/projecttask"
 )
 
 const maxBody = 128 << 10
@@ -758,7 +759,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if a.Status != StatusActive {
 		return errors.New("agent is inactive")
 	}
-	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 20001, 20002, 24200, nostr.KindDMRelayList}, event.Kind) {
+	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 20001, 20002, 24200, 30023, 30617, 30621, nostr.KindDMRelayList}, event.Kind) {
 		return errors.New("event kind is not allowed")
 	}
 	if event.Kind == nostr.KindSeal && (len(event.Tags) != 0 || event.Content == "") {
@@ -768,7 +769,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 		return errors.New("invalid NIP-17 inbox relay list")
 	}
 	h := exactTag(event.Tags, "h")
-	if event.Kind == 9 || event.Kind == 20002 || event.Kind == 5 || event.Kind == 1111 {
+	if event.Kind == 9 || event.Kind == 20002 || event.Kind == 5 || event.Kind == 1111 || isRelayToolKind(event.Kind) {
 		if h == "" {
 			return errors.New("group tag is required")
 		}
@@ -790,7 +791,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 			}
 		}
 	}
-	if event.Kind == 1111 {
+	if event.Kind == 1111 && referenceTag(event.Tags, "K") == "11" {
 		root, parent := s.referencedEvent(event.Tags, "E"), s.referencedEvent(event.Tags, "e")
 		if root == nil || parent == nil || root.Kind != 11 || (parent.Kind != 11 && parent.Kind != 1111) ||
 			exactTag(root.Tags, "h") != h || exactTag(parent.Tags, "h") != h ||
@@ -814,10 +815,105 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 			}
 		}
 	}
+	if event.Kind == 1111 && !slices.Contains([]string{"11", "1618"}, referenceTag(event.Tags, "K")) {
+		return errors.New("comment root kind is not allowed")
+	}
+	if isRelayToolKind(event.Kind) || (event.Kind == 1111 && referenceTag(event.Tags, "K") == "1618") {
+		if err := s.authorizeRelayToolSigning(event, h); err != nil {
+			return err
+		}
+	}
 	if event.Kind == 24200 && exactTag(event.Tags, "p") != a.OwnerPubkey {
 		return errors.New("owner tag is required")
 	}
 	return nil
+}
+
+func isRelayToolKind(kind nostr.Kind) bool {
+	return slices.Contains([]nostr.Kind{1621, 1630, 1631, 1632, 1633, 30023, 30617, 30621}, kind)
+}
+
+func (s *Service) authorizeRelayToolSigning(event nostr.Event, group string) error {
+	if group == "" {
+		return errors.New("relay tool group is required")
+	}
+	if event.Kind == 30023 {
+		if len(event.Tags) != 3 || exactTag(event.Tags, "d") == "" || exactTag(event.Tags, "title") == "" || event.Content == "" {
+			return errors.New("invalid long-form note template")
+		}
+		return nil
+	}
+
+	recognized, err := projecttask.ValidateEvent(event)
+	if !recognized || err != nil {
+		return errors.New("invalid relay tool event")
+	}
+	switch event.Kind {
+	case 30617:
+		if len(event.Tags) != 4 || exactTag(event.Tags, "d") == "" || exactTag(event.Tags, "name") == "" || exactTag(event.Tags, "buzz-channel") != group {
+			return errors.New("invalid repository template")
+		}
+	case 30621:
+		if exactTag(event.Tags, "d") == "" || exactTag(event.Tags, "name") == "" || exactTag(event.Tags, "buzz-channel") != group || countTags(event.Tags, "a") == 0 || len(event.Tags) != 4+countTags(event.Tags, "a") {
+			return errors.New("invalid project template")
+		}
+		for _, tag := range event.Tags {
+			if len(tag) > 0 && tag[0] == "a" && !s.repositoryMatchesGroup(tag[1], group) {
+				return errors.New("project repository is outside the group")
+			}
+		}
+	case 1621:
+		if len(event.Tags) != 3 || exactTag(event.Tags, "subject") == "" || event.Content == "" || !s.repositoryMatchesGroup(exactTag(event.Tags, "a"), group) {
+			return errors.New("invalid issue template")
+		}
+	case 1630, 1631, 1632, 1633:
+		if len(event.Tags) != 3 || !s.repositoryMatchesGroup(exactTag(event.Tags, "a"), group) {
+			return errors.New("invalid issue status template")
+		}
+		root := s.referencedEvent(event.Tags, "e")
+		if root == nil || root.Kind != nostr.KindIssue || exactTag(root.Tags, "a") != exactTag(event.Tags, "a") {
+			return errors.New("issue status target is invalid")
+		}
+	case 1111:
+		if len(event.Tags) != 8 || exactTag(event.Tags, "a") == "" || referenceTag(event.Tags, "K") != "1618" || referenceTag(event.Tags, "k") != "1618" || referenceTag(event.Tags, "E") != referenceTag(event.Tags, "e") || !s.repositoryMatchesGroup(exactTag(event.Tags, "a"), group) {
+			return errors.New("invalid pull-request comment template")
+		}
+		root := s.referencedEvent(event.Tags, "E")
+		if root == nil || root.Kind != projecttask.KindPullRequest || exactTag(root.Tags, "a") != exactTag(event.Tags, "a") || referenceTag(event.Tags, "P") != root.PubKey.Hex() || referenceTag(event.Tags, "p") != root.PubKey.Hex() {
+			return errors.New("pull-request comment target is invalid")
+		}
+	default:
+		return errors.New("event kind is not a relay tool write")
+	}
+	return nil
+}
+
+func (s *Service) repositoryMatchesGroup(value, group string) bool {
+	coordinate, err := projecttask.ParseRepositoryCoordinate(value)
+	if err != nil || s.CurrentEvent == nil {
+		return false
+	}
+	repository := s.CurrentEvent(nostr.KindRepositoryAnnouncement, coordinate.Owner, coordinate.ID)
+	if repository == nil || repository.Kind != nostr.KindRepositoryAnnouncement || repository.PubKey != coordinate.Owner || repository.Tags.GetD() != coordinate.ID {
+		return false
+	}
+	repositoryGroup := exactTag(repository.Tags, "buzz-channel")
+	if h := exactTag(repository.Tags, "h"); h != "" && repositoryGroup != "" && h != repositoryGroup {
+		return false
+	} else if repositoryGroup == "" {
+		repositoryGroup = h
+	}
+	return repositoryGroup == group
+}
+
+func countTags(tags nostr.Tags, name string) int {
+	count := 0
+	for _, tag := range tags {
+		if len(tag) > 0 && tag[0] == name {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Service) inboxRelayURL() string {

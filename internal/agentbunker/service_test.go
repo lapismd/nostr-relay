@@ -571,3 +571,76 @@ func TestManagedConversationSigning(t *testing.T) {
 	require.Error(t, service.authorizeSigning(agent, comment))
 	require.Error(t, service.authorizeSigning(agent, deletion))
 }
+
+func TestManagedRelayToolSigning(t *testing.T) {
+	service, _, _ := testService(t)
+	agentSecret, owner, repositoryOwner := nostr.Generate(), nostr.Generate(), nostr.Generate()
+	agent := Agent{Pubkey: agentSecret.Public().Hex(), OwnerPubkey: owner.Public().Hex(), Status: StatusActive}
+	now := nostr.Timestamp(service.Now().Unix())
+	repository := nostr.Event{
+		Kind: nostr.KindRepositoryAnnouncement, PubKey: repositoryOwner.Public(), CreatedAt: now,
+		Tags: nostr.Tags{{"d", "repo"}, {"name", "Repo"}, {"buzz-channel", "room"}, {"h", "room"}},
+	}
+	coordinate := "30617:" + repositoryOwner.Public().Hex() + ":repo"
+	service.CurrentEvent = func(kind nostr.Kind, author nostr.PubKey, d string) *nostr.Event {
+		if kind == nostr.KindRepositoryAnnouncement && author == repositoryOwner.Public() && d == "repo" {
+			return &repository
+		}
+		return nil
+	}
+	service.IsMember = func(group string, key nostr.PubKey) bool { return group == "room" && key == agentSecret.Public() }
+
+	note := nostr.Event{Kind: 30023, CreatedAt: now, Tags: nostr.Tags{{"d", "note"}, {"title", "Note"}, {"h", "room"}}, Content: "Body"}
+	require.NoError(t, service.authorizeSigning(agent, note))
+	newRepository := nostr.Event{Kind: 30617, CreatedAt: now, Tags: nostr.Tags{{"d", "new-repo"}, {"name", "New repo"}, {"buzz-channel", "room"}, {"h", "room"}}}
+	require.NoError(t, service.authorizeSigning(agent, newRepository))
+	project := nostr.Event{Kind: 30621, CreatedAt: now, Tags: nostr.Tags{{"d", "project"}, {"name", "Project"}, {"buzz-channel", "room"}, {"h", "room"}, {"a", coordinate}}}
+	require.NoError(t, service.authorizeSigning(agent, project))
+	issue := nostr.Event{Kind: nostr.KindIssue, PubKey: repositoryOwner.Public(), CreatedAt: now, Tags: nostr.Tags{{"h", "room"}, {"a", coordinate}, {"subject", "Issue"}}, Content: "Body"}
+	require.NoError(t, issue.Sign(repositoryOwner))
+	service.EventByID = func(id nostr.ID) *nostr.Event {
+		if id == issue.ID {
+			return &issue
+		}
+		return nil
+	}
+	issueTemplate := nostr.Event{Kind: nostr.KindIssue, CreatedAt: now, Tags: issue.Tags.CloneDeep(), Content: issue.Content}
+	require.NoError(t, service.authorizeSigning(agent, issueTemplate))
+	status := nostr.Event{Kind: nostr.KindStatusClosed, CreatedAt: now, Tags: nostr.Tags{{"h", "room"}, {"a", coordinate}, {"e", issue.ID.Hex(), "", "root"}}}
+	require.NoError(t, service.authorizeSigning(agent, status))
+
+	pullRequest := nostr.Event{Kind: 1618, PubKey: repositoryOwner.Public(), CreatedAt: now, Tags: nostr.Tags{{"a", coordinate}, {"h", "room"}}}
+	require.NoError(t, pullRequest.Sign(repositoryOwner))
+	service.EventByID = func(id nostr.ID) *nostr.Event {
+		switch id {
+		case issue.ID:
+			return &issue
+		case pullRequest.ID:
+			return &pullRequest
+		default:
+			return nil
+		}
+	}
+	comment := nostr.Event{Kind: 1111, CreatedAt: now, Tags: nostr.Tags{
+		{"h", "room"}, {"a", coordinate},
+		{"E", pullRequest.ID.Hex()}, {"K", "1618"}, {"P", repositoryOwner.Public().Hex()},
+		{"e", pullRequest.ID.Hex()}, {"k", "1618"}, {"p", repositoryOwner.Public().Hex()},
+	}, Content: "Review note"}
+	require.NoError(t, service.authorizeSigning(agent, comment))
+
+	invalid := project
+	invalid.Tags[2][1] = "elsewhere"
+	require.ErrorContains(t, service.authorizeSigning(agent, invalid), "invalid project template")
+	invalid = status
+	invalid.Tags[1][1] = "30617:" + repositoryOwner.Public().Hex() + ":missing"
+	require.ErrorContains(t, service.authorizeSigning(agent, invalid), "invalid issue status template")
+	invalid = comment
+	invalid.Tags = append(invalid.Tags, nostr.Tag{"client", "untrusted"})
+	require.ErrorContains(t, service.authorizeSigning(agent, invalid), "invalid pull-request comment template")
+	invalid = comment
+	invalid.Tags[3][1] = "1621"
+	require.ErrorContains(t, service.authorizeSigning(agent, invalid), "comment root kind is not allowed")
+	invalid = note
+	invalid.Tags = append(invalid.Tags, nostr.Tag{"published_at", "1"})
+	require.ErrorContains(t, service.authorizeSigning(agent, invalid), "invalid long-form note template")
+}

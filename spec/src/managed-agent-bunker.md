@@ -65,7 +65,8 @@ content under the same ID is rejected.
 
 Bootstrap permits `connect`, `get_public_key`, and one exact pending kind `0`.
 Active clients may sign only kinds `13`, `22242`, `9`, `7`, `10050`, `20001`,
-`20002`, and `24200`; group-scoped events require current NIP-29 membership.
+`20002`, `24200`, and the bounded relay-tool kinds described below;
+group-scoped events require current NIP-29 membership.
 Kind `10050` must advertise only the bunker relay. Kind `13` is limited to an
 empty-tag NIP-17 seal and may use the protocol-defined randomized timestamp up
 to two days in the past. Standard NIP-44 encrypt and decrypt are restricted to
@@ -80,6 +81,29 @@ keys. NIP-04, arbitrary profile changes, Git and NIP-98 signing, unknown
 methods or kinds, malformed tags, and timestamps outside the method-specific
 bounds are rejected.
 
+## Relay tool signing
+
+The controller may expose relay reads without asking the bunker to sign. A
+write still requires an owner permission decision in the controller, after
+which the managed signer accepts only these event templates:
+
+- channel-scoped long-form notes (`30023`) with one `d`, one `title`, and the
+  authorized `h`;
+- projects (`30621`) and repositories (`30617`) whose `buzz-channel` and `h`
+  identify the same authorized channel;
+- issues (`1621`) anchored to a current repository in that channel;
+- issue statuses (`1630` through `1633`) anchored to both the current issue and
+  its repository in that channel; and
+- NIP-22 pull-request comments (`1111`) whose root and parent are the same
+  current `1618` event and whose repository anchor resolves to that channel.
+
+Project repository coordinates must resolve to current repository
+announcements in the same channel. Repository, issue, status, and work-item
+comment tags are validated against the relay's NIP-34 model before signing.
+Unknown tags, missing anchors, cross-channel references, stale targets, and
+non-member channels fail closed. This permission does not expose Git object,
+GitHub provider, NIP-98, or arbitrary event signing.
+
 ## Managed ownership admission
 
 A managed profile carries
@@ -92,9 +116,8 @@ banned. Existing NIP-OA credentials remain the authority for external agents.
 ## Deferred scope
 
 The targeted controller bunker does not expose an arbitrary-client signing
-service. Git workspace bootstrap, forge credentials and tools, controller
-process management, runtime and model selection, and additional signer
-backends remain deferred.
+service. Git workspace bootstrap, forge credentials and provider mutations,
+controller process management, and additional signer backends remain deferred.
 
 ## Conversation reactions and forum replies
 
