@@ -699,8 +699,8 @@ func (s *Service) execute(ctx context.Context, a Agent, c Client, r nip46.Reques
 		encoded, _ := json.Marshal(event)
 		return string(encoded), nil
 	case "nip44_encrypt", "nip44_decrypt":
-		if a.Status != StatusActive || len(r.Params) != 2 || r.Params[0] != a.OwnerPubkey {
-			return "", errors.New("owner-only NIP-44 required")
+		if a.Status != StatusActive || len(r.Params) != 2 || (r.Params[0] != a.OwnerPubkey && r.Params[0] != a.Pubkey) {
+			return "", errors.New("owner-only NIP-44 required except agent recovery copy")
 		}
 		peer, _ := nostr.PubKeyFromHex(r.Params[0])
 		conversation, err := nip44.GenerateConversationKey(peer, secret)
@@ -711,6 +711,23 @@ func (s *Service) execute(ctx context.Context, a Agent, c Client, r nip46.Reques
 			return nip44.Encrypt(r.Params[1], conversation)
 		}
 		return nip44.Decrypt(r.Params[1], conversation)
+	case "lapis_nip17_unwrap":
+		if a.Status != StatusActive || len(r.Params) != 1 || len(r.Params[0]) > maxBody {
+			return "", errors.New("invalid NIP-17 gift wrap")
+		}
+		var giftWrap nostr.Event
+		if json.Unmarshal([]byte(r.Params[0]), &giftWrap) != nil || !validSigned(giftWrap) || giftWrap.Kind != nostr.KindGiftWrap || exactTag(giftWrap.Tags, "p") != a.Pubkey || giftWrap.Content == "" {
+			return "", errors.New("invalid NIP-17 gift wrap")
+		}
+		conversation, err := nip44.GenerateConversationKey(giftWrap.PubKey, secret)
+		if err != nil {
+			return "", errors.New("NIP-17 unwrap failed")
+		}
+		plaintext, err := nip44.Decrypt(giftWrap.Content, conversation)
+		if err != nil {
+			return "", errors.New("NIP-17 unwrap failed")
+		}
+		return plaintext, nil
 	case "ping":
 		return "pong", nil
 	default:
@@ -720,7 +737,11 @@ func (s *Service) execute(ctx context.Context, a Agent, c Client, r nip46.Reques
 func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	now := s.Now()
 	created := time.Unix(int64(event.CreatedAt), 0)
-	if created.Before(now.Add(-2*time.Minute)) || created.After(now.Add(2*time.Minute)) {
+	maxAge := 2 * time.Minute
+	if event.Kind == nostr.KindSeal {
+		maxAge = 48 * time.Hour
+	}
+	if created.Before(now.Add(-maxAge)) || created.After(now.Add(2*time.Minute)) {
 		return errors.New("event timestamp is stale")
 	}
 	if a.Status == StatusPending {
@@ -735,8 +756,14 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if a.Status != StatusActive {
 		return errors.New("agent is inactive")
 	}
-	if !slices.Contains([]nostr.Kind{22242, 9, 7, 20001, 20002, 24200}, event.Kind) {
+	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 20001, 20002, 24200, nostr.KindDMRelayList}, event.Kind) {
 		return errors.New("event kind is not allowed")
+	}
+	if event.Kind == nostr.KindSeal && (len(event.Tags) != 0 || event.Content == "") {
+		return errors.New("invalid NIP-17 seal")
+	}
+	if event.Kind == nostr.KindDMRelayList && (event.Content != "" || len(event.Tags) != 1 || len(event.Tags[0]) != 2 || event.Tags[0][0] != "relay" || event.Tags[0][1] != s.inboxRelayURL()) {
+		return errors.New("invalid NIP-17 inbox relay list")
 	}
 	h := exactTag(event.Tags, "h")
 	if event.Kind == 9 || event.Kind == 20002 {
@@ -751,6 +778,22 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 		return errors.New("owner tag is required")
 	}
 	return nil
+}
+
+func (s *Service) inboxRelayURL() string {
+	u, err := url.Parse(s.Config.PublicURL)
+	if err != nil {
+		return ""
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else if u.Scheme == "http" {
+		u.Scheme = "ws"
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
 func (s *Service) allowRequest(key string) bool {
 	s.mu.Lock()

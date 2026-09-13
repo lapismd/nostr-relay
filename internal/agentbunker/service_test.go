@@ -420,6 +420,79 @@ func TestManagedAgentPolicyRejectsForbiddenSigningAndNonOwnerEncryption(t *testi
 	require.Contains(t, decodeBunkerResponse(t, event, agentSecret.Public(), clientSecret).Error, "owner-only")
 }
 
+func TestManagedAgentSupportsOwnerOnlyNIP17(t *testing.T) {
+	service, store, _ := testService(t)
+	owner := nostr.Generate()
+	agentSecret := nostr.Generate()
+	clientSecret := nostr.Generate()
+	now := service.Now()
+	key, err := keywrap.Encrypt(agentSecret[:], service.agentAAD(agentSecret.Public().Hex(), owner.Public().Hex()), service.Wrapper)
+	require.NoError(t, err)
+	store.agents[agentSecret.Public().Hex()] = Agent{Pubkey: agentSecret.Public().Hex(), OwnerPubkey: owner.Public().Hex(), RelayPubkey: service.Config.RelayPubkey.Hex(), Status: StatusActive, Key: key, CreatedAt: now}
+	store.clients[agentSecret.Public().Hex()+":"+clientSecret.Public().Hex()] = Client{AgentPubkey: agentSecret.Public().Hex(), ClientPubkey: clientSecret.Public().Hex(), Status: ClientActive, CreatedAt: now}
+
+	sign := func(id string, template eventTemplate) nip46.Response {
+		raw, marshalErr := json.Marshal(template)
+		require.NoError(t, marshalErr)
+		request := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: id, Method: "sign_event", Params: []string{string(raw)}}, now)
+		responseEvent, handleErr := service.HandleNIP46(context.Background(), request)
+		require.NoError(t, handleErr)
+		return decodeBunkerResponse(t, responseEvent, agentSecret.Public(), clientSecret)
+	}
+
+	inbox := sign("inbox", eventTemplate{Kind: int(nostr.KindDMRelayList), CreatedAt: now.Unix(), Tags: [][]string{{"relay", "wss://relay.example"}}, Content: ""})
+	require.Empty(t, inbox.Error)
+	require.NotEmpty(t, inbox.Result)
+	badInbox := sign("bad-inbox", eventTemplate{Kind: int(nostr.KindDMRelayList), CreatedAt: now.Unix(), Tags: [][]string{{"relay", "wss://other.example"}}, Content: ""})
+	require.Contains(t, badInbox.Error, "inbox relay list")
+
+	seal := sign("seal", eventTemplate{Kind: int(nostr.KindSeal), CreatedAt: now.Add(-36 * time.Hour).Unix(), Tags: [][]string{}, Content: "ciphertext"})
+	require.Empty(t, seal.Error)
+	badSeal := sign("bad-seal", eventTemplate{Kind: int(nostr.KindSeal), CreatedAt: now.Unix(), Tags: [][]string{{"p", owner.Public().Hex()}}, Content: "ciphertext"})
+	require.Contains(t, badSeal.Error, "invalid NIP-17 seal")
+
+	rumor := `{"id":"rumor","pubkey":"` + owner.Public().Hex() + `","created_at":1,"kind":14,"tags":[["p","` + agentSecret.Public().Hex() + `"]],"content":"hello"}`
+	ownerConversation, err := nip44.GenerateConversationKey(agentSecret.Public(), owner)
+	require.NoError(t, err)
+	sealedContent, err := nip44.Encrypt(rumor, ownerConversation)
+	require.NoError(t, err)
+	sealedEvent := nostr.Event{Kind: nostr.KindSeal, CreatedAt: nostr.Timestamp(now.Add(-time.Hour).Unix()), Tags: nostr.Tags{}, Content: sealedContent}
+	require.NoError(t, sealedEvent.Sign(owner))
+	sealedJSON, err := json.Marshal(sealedEvent)
+	require.NoError(t, err)
+
+	ephemeral := nostr.Generate()
+	outerConversation, err := nip44.GenerateConversationKey(agentSecret.Public(), ephemeral)
+	require.NoError(t, err)
+	wrappedContent, err := nip44.Encrypt(string(sealedJSON), outerConversation)
+	require.NoError(t, err)
+	giftWrap := nostr.Event{Kind: nostr.KindGiftWrap, CreatedAt: nostr.Timestamp(now.Add(-time.Hour).Unix()), Tags: nostr.Tags{{"p", agentSecret.Public().Hex()}}, Content: wrappedContent}
+	require.NoError(t, giftWrap.Sign(ephemeral))
+	giftWrapJSON, err := json.Marshal(giftWrap)
+	require.NoError(t, err)
+	unwrapRequest := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: "unwrap", Method: "lapis_nip17_unwrap", Params: []string{string(giftWrapJSON)}}, now)
+	unwrapEvent, err := service.HandleNIP46(context.Background(), unwrapRequest)
+	require.NoError(t, err)
+	unwrap := decodeBunkerResponse(t, unwrapEvent, agentSecret.Public(), clientSecret)
+	require.Empty(t, unwrap.Error)
+	require.JSONEq(t, string(sealedJSON), unwrap.Result)
+
+	selfEncrypt := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: "self-encrypt", Method: "nip44_encrypt", Params: []string{agentSecret.Public().Hex(), rumor}}, now)
+	selfEncryptEvent, err := service.HandleNIP46(context.Background(), selfEncrypt)
+	require.NoError(t, err)
+	require.Empty(t, decodeBunkerResponse(t, selfEncryptEvent, agentSecret.Public(), clientSecret).Error)
+
+	wrongRecipient := giftWrap
+	wrongRecipient.Tags = nostr.Tags{{"p", owner.Public().Hex()}}
+	require.NoError(t, wrongRecipient.Sign(ephemeral))
+	wrongJSON, err := json.Marshal(wrongRecipient)
+	require.NoError(t, err)
+	wrongRequest := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: "wrong-recipient", Method: "lapis_nip17_unwrap", Params: []string{string(wrongJSON)}}, now)
+	wrongEvent, err := service.HandleNIP46(context.Background(), wrongRequest)
+	require.NoError(t, err)
+	require.Contains(t, decodeBunkerResponse(t, wrongEvent, agentSecret.Public(), clientSecret).Error, "invalid NIP-17")
+}
+
 func TestManagedAgentRequiresPairingAndExpiresPendingProfile(t *testing.T) {
 	service, store, _ := testService(t)
 	owner := nostr.Generate()

@@ -64,11 +64,21 @@ IDs are durable: an exact retry returns the cached response, while different
 content under the same ID is rejected.
 
 Bootstrap permits `connect`, `get_public_key`, and one exact pending kind `0`.
-Active clients may sign only kinds `22242`, `9`, `7`, `20001`, `20002`, and
-`24200`; group-scoped events require current NIP-29 membership. NIP-44 encrypt
-and decrypt are restricted to the recorded owner. NIP-04, arbitrary profile
-changes, Git and NIP-98 signing, unknown methods or kinds, malformed tags, and
-stale timestamps are rejected.
+Active clients may sign only kinds `13`, `22242`, `9`, `7`, `10050`, `20001`,
+`20002`, and `24200`; group-scoped events require current NIP-29 membership.
+Kind `10050` must advertise only the bunker relay. Kind `13` is limited to an
+empty-tag NIP-17 seal and may use the protocol-defined randomized timestamp up
+to two days in the past. Standard NIP-44 encrypt and decrypt are restricted to
+the recorded owner or the agent itself.
+
+The `lapis_nip17_unwrap` NIP-46 extension accepts one complete signed kind
+`1059` event. It decrypts only when the wrap has exactly one `p` tag naming the
+managed agent, leaving seal, rumor, author, recipient, and policy validation to
+the controller. This gives the controller the outer ephemeral-key operation
+needed by NIP-17 without exposing general NIP-44 decryption for arbitrary peer
+keys. NIP-04, arbitrary profile changes, Git and NIP-98 signing, unknown
+methods or kinds, malformed tags, and timestamps outside the method-specific
+bounds are rejected.
 
 ## Managed ownership admission
 
