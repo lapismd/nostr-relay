@@ -526,3 +526,48 @@ func TestManagedAgentRequiresPairingAndExpiresPendingProfile(t *testing.T) {
 }
 
 func urlParse(value string) (*url.URL, error) { return url.Parse(value) }
+
+func TestManagedConversationSigning(t *testing.T) {
+	service, _, _ := testService(t)
+	secret, owner := nostr.Generate(), nostr.Generate()
+	agent := Agent{Pubkey: secret.Public().Hex(), OwnerPubkey: owner.Public().Hex(), Status: StatusActive}
+	now := nostr.Timestamp(service.Now().Unix())
+	root := nostr.Event{Kind: 11, CreatedAt: now, Tags: nostr.Tags{{"h", "room"}}, Content: "Topic"}
+	require.NoError(t, root.Sign(owner))
+	reaction := nostr.Event{Kind: 7, CreatedAt: now, Tags: nostr.Tags{{"h", "room"}, {"e", root.ID.Hex()}}, Content: "👀"}
+	require.NoError(t, reaction.Sign(secret))
+	service.EventByID = func(id nostr.ID) *nostr.Event {
+		if id == root.ID {
+			return &root
+		}
+		if id == reaction.ID {
+			return &reaction
+		}
+		return nil
+	}
+	service.IsMember = func(group string, key nostr.PubKey) bool { return group == "room" && key == secret.Public() }
+	deletion := nostr.Event{Kind: 5, CreatedAt: now, Tags: nostr.Tags{{"h", "room"}, {"e", reaction.ID.Hex()}, {"k", "7"}}}
+	require.NoError(t, service.authorizeSigning(agent, deletion))
+	comment := nostr.Event{Kind: 1111, CreatedAt: now, Tags: nostr.Tags{{"h", "room"}, {"E", root.ID.Hex(), "", root.PubKey.Hex()}, {"K", "11"}, {"P", root.PubKey.Hex()}, {"e", root.ID.Hex(), "", root.PubKey.Hex()}, {"k", "11"}, {"p", root.PubKey.Hex()}}, Content: "Reply"}
+	require.NoError(t, service.authorizeSigning(agent, comment))
+	for _, kind := range []nostr.Kind{11, 1, 27235} {
+		invalid := comment
+		invalid.Kind = kind
+		require.Error(t, service.authorizeSigning(agent, invalid))
+	}
+	invalid := deletion
+	invalid.Tags = nostr.Tags{{"h", "room"}, {"e", root.ID.Hex()}, {"k", "7"}}
+	require.Error(t, service.authorizeSigning(agent, invalid))
+	reaction.PubKey = owner.Public()
+	require.Error(t, service.authorizeSigning(agent, deletion))
+	reaction.PubKey = secret.Public()
+	root.Tags = nostr.Tags{{"h", "elsewhere"}}
+	require.Error(t, service.authorizeSigning(agent, comment))
+	root.Tags = nostr.Tags{{"h", "room"}}
+	invalid = comment
+	invalid.Tags = append(append(nostr.Tags{}, comment.Tags...), nostr.Tag{"E", root.ID.Hex()})
+	require.Error(t, service.authorizeSigning(agent, invalid))
+	service.IsMember = func(string, nostr.PubKey) bool { return false }
+	require.Error(t, service.authorizeSigning(agent, comment))
+	require.Error(t, service.authorizeSigning(agent, deletion))
+}

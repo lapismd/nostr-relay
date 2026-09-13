@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type Service struct {
 	IsMember     func(string, nostr.PubKey) bool
 	PersistEvent func(nostr.Event) error
 	CurrentEvent func(kind nostr.Kind, author nostr.PubKey, d string) *nostr.Event
+	EventByID    func(nostr.ID) *nostr.Event
 	mu           sync.Mutex
 	rates        map[string]rateWindow
 }
@@ -756,7 +758,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if a.Status != StatusActive {
 		return errors.New("agent is inactive")
 	}
-	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 20001, 20002, 24200, nostr.KindDMRelayList}, event.Kind) {
+	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 20001, 20002, 24200, nostr.KindDMRelayList}, event.Kind) {
 		return errors.New("event kind is not allowed")
 	}
 	if event.Kind == nostr.KindSeal && (len(event.Tags) != 0 || event.Content == "") {
@@ -766,13 +768,51 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 		return errors.New("invalid NIP-17 inbox relay list")
 	}
 	h := exactTag(event.Tags, "h")
-	if event.Kind == 9 || event.Kind == 20002 {
+	if event.Kind == 9 || event.Kind == 20002 || event.Kind == 5 || event.Kind == 1111 {
 		if h == "" {
 			return errors.New("group tag is required")
 		}
 	}
 	if h != "" && s.IsMember != nil && !s.IsMember(h, nostr.MustPubKeyFromHex(a.Pubkey)) {
 		return errors.New("group membership is required")
+	}
+	if event.Kind == 5 {
+		if event.Content != "" || exactTag(event.Tags, "k") != "7" {
+			return errors.New("only reaction deletion is allowed")
+		}
+		target := s.referencedEvent(event.Tags, "e")
+		if target == nil || target.Kind != 7 || target.PubKey.Hex() != a.Pubkey || exactTag(target.Tags, "h") != h {
+			return errors.New("reaction deletion target is invalid")
+		}
+		for _, tag := range event.Tags {
+			if len(tag) != 2 || !slices.Contains([]string{"h", "e", "k"}, tag[0]) {
+				return errors.New("invalid deletion tags")
+			}
+		}
+	}
+	if event.Kind == 1111 {
+		root, parent := s.referencedEvent(event.Tags, "E"), s.referencedEvent(event.Tags, "e")
+		if root == nil || parent == nil || root.Kind != 11 || (parent.Kind != 11 && parent.Kind != 1111) ||
+			exactTag(root.Tags, "h") != h || exactTag(parent.Tags, "h") != h ||
+			referenceTag(event.Tags, "K") != "11" || referenceTag(event.Tags, "P") != root.PubKey.Hex() ||
+			referenceTag(event.Tags, "k") != strconv.Itoa(int(parent.Kind)) || referenceTag(event.Tags, "p") != parent.PubKey.Hex() ||
+			(parent.Kind == 11 && parent.ID != root.ID) || (parent.Kind == 1111 && referenceTag(parent.Tags, "E") != root.ID.Hex()) {
+			return errors.New("forum root or parent is invalid")
+		}
+		for _, tag := range event.Tags {
+			if len(tag) < 2 || !slices.Contains([]string{"h", "E", "K", "P", "e", "k", "p"}, tag[0]) {
+				return errors.New("invalid forum tags")
+			}
+			if (tag[0] == "E" || tag[0] == "e") && len(tag) > 3 {
+				author := root.PubKey.Hex()
+				if tag[0] == "e" {
+					author = parent.PubKey.Hex()
+				}
+				if len(tag) != 4 || tag[3] != author {
+					return errors.New("forum reference author is invalid")
+				}
+			}
+		}
 	}
 	if event.Kind == 24200 && exactTag(event.Tags, "p") != a.OwnerPubkey {
 		return errors.New("owner tag is required")
@@ -809,4 +849,29 @@ func (s *Service) allowRequest(key string) bool {
 	window.count++
 	s.rates[key] = window
 	return true
+}
+
+func referenceTag(tags nostr.Tags, name string) string {
+	value := ""
+	count := 0
+	for _, tag := range tags {
+		if len(tag) > 0 && tag[0] == name {
+			if len(tag) < 2 || len(tag) > 4 {
+				return ""
+			}
+			value = tag[1]
+			count++
+		}
+	}
+	if count != 1 {
+		return ""
+	}
+	return value
+}
+func (s *Service) referencedEvent(tags nostr.Tags, name string) *nostr.Event {
+	id, err := nostr.IDFromHex(referenceTag(tags, name))
+	if err != nil || s.EventByID == nil {
+		return nil
+	}
+	return s.EventByID(id)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 	"zooid/buzzagents/protocol"
@@ -733,5 +734,26 @@ func TestOnEventSaved_LeaveRequest(t *testing.T) {
 	memberCount := findTagValue(meta.Tags, "member_count")
 	if memberCount != "1" {
 		t.Errorf("member_count = %q after leave, want %q", memberCount, "1")
+	}
+}
+
+func TestQueryStoredReleasesConnectionBeforeReadPolicy(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "agent-history", true)
+	reader := nostr.Generate()
+	addProjectTaskTestMember(groups, "agent-history", reader.Public())
+	event := signedEvent(reader, 10, nostr.KindSimpleGroupChatMessage, nostr.Tags{{"h", "agent-history"}})
+	if err := policy.Events.SaveEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	instance := &Instance{Config: policy.Events.Config, Events: policy.Events, Groups: groups, ProjectTasks: policy}
+	pool := GetDb()
+	previous := pool.Stats().MaxOpenConnections
+	pool.SetMaxOpenConns(1)
+	defer pool.SetMaxOpenConns(previous)
+	ctx, cancel := context.WithTimeout(withAuthenticatedPubkey(t.Context(), reader.Public()), time.Second)
+	defer cancel()
+	found := collectEvents(instance.QueryStored(ctx, nostr.Filter{Kinds: []nostr.Kind{nostr.KindSimpleGroupChatMessage}, Limit: 10}))
+	if len(found) != 1 {
+		t.Fatalf("history returned %d events with one database connection; expected 1", len(found))
 	}
 }

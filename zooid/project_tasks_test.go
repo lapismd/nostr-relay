@@ -297,3 +297,19 @@ func collectEvents(sequence func(func(nostr.Event) bool)) []nostr.Event {
 	})
 	return events
 }
+
+func TestGroupReactionDeletionRemainsReadableAfterTargetRemoval(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "agent-room", true)
+	agent, member, outsider := nostr.Generate(), nostr.Generate(), nostr.Generate()
+	addProjectTaskTestMember(groups, "agent-room", agent.Public())
+	addProjectTaskTestMember(groups, "agent-room", member.Public())
+	reaction := signedEvent(agent, 10, nostr.KindReaction, nostr.Tags{{"h", "agent-room"}, {"e", nostr.Generate().Public().Hex()}})
+	require.NoError(t, policy.Events.SaveEvent(reaction))
+	deletion := signedEvent(agent, 20, nostr.KindDeletion, nostr.Tags{{"h", "agent-room"}, {"e", reaction.ID.Hex()}, {"k", "7"}})
+	require.NoError(t, policy.Events.SaveEvent(deletion))
+	require.NoError(t, policy.Remember(context.Background(), deletion))
+	require.NoError(t, policy.Events.DeleteEvent(reaction.ID))
+	restarted := NewProjectTaskPolicy(policy.Events, groups)
+	require.True(t, restarted.CanRead(context.Background(), member.Public(), deletion))
+	require.False(t, restarted.CanRead(context.Background(), outsider.Public(), deletion))
+}

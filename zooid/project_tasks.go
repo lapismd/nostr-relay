@@ -129,6 +129,39 @@ func (policy *ProjectTaskPolicy) Remember(ctx context.Context, event nostr.Event
 		}
 		return nil
 	}
+	if !scope.Relevant && event.Kind == nostr.KindDeletion {
+		// Ordinary group reactions are outside the project graph. Preserve their
+		// verified group before NIP-09 removes the target, otherwise later reads
+		// would try to resolve a missing target and suppress the tombstone.
+		group := event.Tags.Find("h")
+		if group != nil && len(group) == 2 && group[1] != "" {
+			targets := 0
+			for _, tag := range event.Tags {
+				if len(tag) == 0 || tag[0] != "e" {
+					continue
+				}
+				if len(tag) < 2 {
+					return nil
+				}
+				id, parseErr := nostr.IDFromHex(tag[1])
+				if parseErr != nil {
+					return nil
+				}
+				target, found, readErr := policy.EventByID(ctx, id)
+				if readErr != nil {
+					return readErr
+				}
+				targetGroup := target.Tags.Find("h")
+				if !found || target.Kind != nostr.KindReaction || target.PubKey != event.PubKey || targetGroup == nil || len(targetGroup) != 2 || targetGroup[1] != group[1] {
+					return nil
+				}
+				targets++
+			}
+			if targets > 0 {
+				return policy.storeScopes(ctx, event.ID, []string{group[1]})
+			}
+		}
+	}
 	if !scope.Relevant || len(scope.Channels) == 0 {
 		return nil
 	}

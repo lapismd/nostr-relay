@@ -326,7 +326,7 @@ console.log(agentPubkey);
             assert agent_acceptance["onboardedAgent"] == managed_pubkey
             assert agent_acceptance["online"] is True
             assert agent_acceptance["inboxAdvertised"] is True
-            assert agent_acceptance["turns"] == 3
+            assert agent_acceptance["turns"] == 6
             assert agent_acceptance["activityFrames"] >= 6
         compose(
             "run",

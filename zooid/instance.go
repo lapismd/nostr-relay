@@ -208,6 +208,13 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		instance.AgentBunker.AdmitOwner = func(_ context.Context, pubkey nostr.PubKey) bool {
 			return !instance.Management.PubkeyIsBanned(pubkey) && (config.Policy.Open || instance.Management.IsMember(pubkey))
 		}
+		instance.AgentBunker.EventByID = func(id nostr.ID) *nostr.Event {
+			for event := range instance.Events.QueryEvents(nostr.Filter{IDs: []nostr.ID{id}}, 1) {
+				result := event
+				return &result
+			}
+			return nil
+		}
 		instance.AgentBunker.IsMember = instance.Groups.IsMember
 		instance.AgentBunker.PersistEvent = func(event nostr.Event) error {
 			deleted, err := instance.Events.ReplaceEvent(event)
@@ -700,7 +707,8 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 
 			personaMayMatch := len(filter.Kinds) == 0 || slices.Contains(filter.Kinds, protocol.KindPersona)
 			if !personaMayMatch {
-				for event := range instance.Events.QueryEventsBefore(ctx, filter, beforeID, 1000) {
+				// Authorization may query the same pool; close this bounded page first.
+				for _, event := range slices.Collect(instance.Events.QueryEventsBefore(ctx, filter, beforeID, 1000)) {
 					if visible(event) && !yield(instance.StripSignature(ctx, event)) {
 						return
 					}
@@ -726,7 +734,7 @@ func (instance *Instance) queryStored(ctx context.Context, filter nostr.Filter, 
 			for delivered < requested {
 				scanned := 0
 				var last nostr.Event
-				for event := range instance.Events.QueryEventsBefore(ctx, scanFilter, cursor, 1000) {
+				for _, event := range slices.Collect(instance.Events.QueryEventsBefore(ctx, scanFilter, cursor, 1000)) {
 					scanned++
 					last = event
 					if !visible(event) {

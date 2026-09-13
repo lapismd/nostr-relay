@@ -95,3 +95,21 @@ The targeted controller bunker does not expose an arbitrary-client signing
 service. Git workspace bootstrap, forge credentials and tools, controller
 process management, runtime and model selection, and additional signer
 backends remain deferred.
+
+## Conversation reactions and forum replies
+
+Active managed clients may additionally sign kind 1111 comments only for a
+validated same-group kind 11 forum root and kind 11/1111 parent, with matching
+E/K/P and e/k/p references and current membership. Kind 5 is allowed only to
+delete the same agent's stored kind 7 reactions in the same group. Unknown,
+foreign or unrelated targets fail closed; arbitrary event deletion and creation
+of forum roots remain forbidden. Existing owner-only encrypted DM seals carry
+private reaction and deletion rumors without public message references.
+
+Accepted group reaction deletions retain the validated target group before the
+reaction is removed. Read and broadcast policy must still deliver those
+tombstones to authorized group readers after deletion and relay restart.
+
+Relay history queries release each bounded storage page before evaluating
+read authorization. Reciprocal ownership and room checks may query PostgreSQL
+and must not exhaust the pool while outer history cursors remain open.
