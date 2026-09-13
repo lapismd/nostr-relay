@@ -64,3 +64,23 @@ func TestValidateObserverRejectsUnsafeEnvelope(t *testing.T) {
 		t.Fatalf("got %v, want unknown-frame sentinel", err)
 	}
 }
+
+func TestValidateObserverTreatsActivitySyncPayloadAsOpaque(t *testing.T) {
+	now := time.Unix(2000, 0)
+	agent := nostr.MustPubKeyFromHex("c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5")
+	owner := nostr.MustPubKeyFromHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+	ciphertext := `activity_sync_page:{"events":[{"created_at":1,"content":"historical"}]}`
+	ciphertext += strings.Repeat("x", NIP44MinContentLength-len(ciphertext))
+	event := nostr.Event{
+		Kind: KindAgentObserverFrame, PubKey: agent, CreatedAt: 2000,
+		Content: ciphertext,
+		Tags:    nostr.Tags{{"p", owner.Hex()}, {"agent", agent.Hex()}, {"frame", "telemetry"}, {"h", "general"}},
+	}
+	route, err := ValidateObserver(event, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.Agent != agent || route.Owner != owner || route.GroupID != "general" {
+		t.Fatalf("unexpected opaque sync route: %+v", route)
+	}
+}

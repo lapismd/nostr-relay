@@ -328,6 +328,8 @@ console.log(agentPubkey);
             assert agent_acceptance["inboxAdvertised"] is True
             assert agent_acceptance["turns"] == 6
             assert agent_acceptance["activityFrames"] >= 6
+            assert agent_acceptance["activityCatchUp"] is True
+            assert agent_acceptance["restartCatchUp"] is True
         compose(
             "run",
             "--rm",
@@ -368,7 +370,7 @@ console.log(agentPubkey);
         )
         assert restored == first, "Reset changed baseline fixture identity"
         agent_result = (
-            " agent DM, presence/activity, channel mention and reply mention passed;"
+            " agent DM, live/offline/restart activity catch-up, channel mention and reply mention passed;"
             if agent_acceptance is not None
             else ""
         )

@@ -59,6 +59,38 @@ func TestAgentPolicyHTTPAdmissionAndOwnerScopedEvents(t *testing.T) {
 	}
 }
 
+func TestAgentPolicyKeepsObserverCatchUpPrivateToOwnerAndAgent(t *testing.T) {
+	now := time.Unix(1_750_000_000, 0)
+	owner := nostr.Generate().Public()
+	agent := nostr.Generate().Public()
+	outsider := nostr.Generate().Public()
+	config := &Config{}
+	management := &ManagementStore{Config: config, cachesWarmed: true}
+	management.relayMembers.Store(owner, struct{}{})
+	policy := NewAgentPolicy(config, management, &GroupStore{Config: config, Management: management})
+	policy.now = func() time.Time { return now }
+	policy.rememberOwner(agent, owner)
+
+	telemetry := nostr.Event{
+		Kind: protocol.KindAgentObserverFrame, PubKey: agent, CreatedAt: nostr.Timestamp(now.Unix()),
+		Content: strings.Repeat("x", protocol.NIP44MinContentLength),
+		Tags:    nostr.Tags{{"p", owner.Hex()}, {"agent", agent.Hex()}, {"frame", "telemetry"}},
+	}
+	control := nostr.Event{
+		Kind: protocol.KindAgentObserverFrame, PubKey: owner, CreatedAt: nostr.Timestamp(now.Unix()),
+		Content: strings.Repeat("x", protocol.NIP44MinContentLength),
+		Tags:    nostr.Tags{{"p", agent.Hex()}, {"agent", agent.Hex()}, {"frame", "control"}},
+	}
+	for _, event := range []nostr.Event{telemetry, control} {
+		if !policy.CanRead(owner, event) || !policy.CanRead(agent, event) {
+			t.Fatal("owner or agent could not read its observer envelope")
+		}
+		if policy.CanRead(outsider, event) {
+			t.Fatal("observer envelope leaked to an unrelated reader")
+		}
+	}
+}
+
 func TestManagedAuthTagRequiresOneExactRelayScopedTag(t *testing.T) {
 	owner := nostr.Generate().Public().Hex()
 	relay := nostr.Generate().Public().Hex()

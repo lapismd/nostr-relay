@@ -712,6 +712,9 @@ func TestEventStoreBuzzHighKindsAreAppendOnlyAndPrivate(t *testing.T) {
 	if err := store.StoreEvent(ephemeral); err == nil {
 		t.Fatal("ephemeral event was accepted by the storage boundary")
 	}
+	for range store.QueryEvents(nostr.Filter{Kinds: []nostr.Kind{24200}}, 0) {
+		t.Fatal("ephemeral observer event was returned by persisted history")
+	}
 }
 
 // TestEventStore_ReplaceEvent_SerializationRetry provokes a real PostgreSQL
