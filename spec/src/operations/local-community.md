@@ -142,15 +142,24 @@ channel-mention response, and a reply-mention response. The runtime is
 deterministic and in-process, so this lane does not require an AI host, model,
 operator controller configuration, or live credentials.
 
-After downloading `lapis.agent-controller-bootstrap/1`, copy each generated
-environment entry into the controller's private environment and add its agent
-and signer objects to the controller configuration. Choose `hostId` and
-`runtimeAgent` locally; the bundle deliberately leaves them unset. For example:
+After downloading `lapis.agent-controller-bootstrap/1`, keep the file at mode
+0600 and import it with the standalone controller CLI. Choose the host,
+workspace, ACP runtime, and any remaining groups locally; the bundle
+deliberately leaves those choices unset. The CLI keeps a reference to the
+owner-only file and does not copy its NIP-46 values into controller
+configuration:
 
 ```sh
-export LAPIS_AGENT_0123456789AB_BUNKER_URL='bunker://...'
-export LAPIS_AGENT_0123456789AB_NIP46_CLIENT_SECRET='<private-client-secret>'
-pnpm start
+chmod 600 ~/.lapis/community/lapis-agent.json
+nostr-acp init \
+  --bootstrap ~/.lapis/community/lapis-agent.json \
+  --host-id local-agent \
+  --workspace ~/.lapis/community/agents/local-agent/workspace \
+  --runtime-agent codex \
+  --group <group-id>
+nostr-acp doctor
+nostr-acp service install
+nostr-acp status
 ```
 
 
