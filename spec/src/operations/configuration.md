@@ -19,7 +19,7 @@
 | `LAPIS_AGENTS_ALLOW_OWNER_AUTH` | Let a relay member's signed NIP-OA credential grant connection-local NIP-AA admission to an agent. | `true` |
 | `LAPIS_AGENTS_ENFORCE_CREDENTIAL_KINDS` | Enforce NIP-OA `kind=` conditions on owner-derived agent writes. | `true` |
 | `LAPIS_AGENT_BUNKER_PUBLIC_URL` | Public HTTP(S) relay base used to advertise the managed-agent API and NIP-46 endpoint. | relay public URL |
-| `LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS` | Exact JSON array of Community browser origins allowed to call managed provisioning. | `[]` |
+| `LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS` | JSON array of Community browser origins allowed to call managed provisioning. Entries are exact origins except the bounded desktop loopback wildcard `http://127.0.0.1:*`. | `[]` |
 | `LAPIS_AGENT_BUNKER_MASTER_KEY_FILE` | Private file containing the independent 32-byte wrapping key. | none |
 | `LAPIS_AGENT_BUNKER_MASTER_KEY_VERSION` | Version bound into managed-agent ciphertext associated data. | `v1` |
 | `LAPIS_AGENT_BUNKER_INVITATION_LIFETIME` | Lifetime of a new controller invitation. | `24h` |

@@ -61,6 +61,15 @@ master_key_ref = "file:agent_bunker_master_key"
 	if config.Agents.Bunker.MasterKeyVersion != "v1" || config.AgentBunkerInvitationLifetime() != 24*time.Hour || config.Agents.Bunker.MaxActivePerOwner != 10 || config.Agents.Bunker.MaxPendingPerOwner != 3 || config.Agents.Bunker.CreationsPerHour != 5 || config.Agents.Bunker.RequestsPerMinute != 120 {
 		t.Fatalf("unexpected agent bunker defaults: %+v", config.Agents.Bunker)
 	}
+	config.Agents.Bunker.AllowedBrowserOrigins = append(config.Agents.Bunker.AllowedBrowserOrigins, "http://127.0.0.1:*")
+	if err := config.validateAgentBunker(); err != nil {
+		t.Fatalf("desktop loopback origin wildcard should be allowed: %v", err)
+	}
+	config.Agents.Bunker.AllowedBrowserOrigins = []string{"https://community.example:*"}
+	if err := config.validateAgentBunker(); err == nil {
+		t.Fatal("expected non-loopback origin wildcard rejection")
+	}
+	config.Agents.Bunker.AllowedBrowserOrigins = []string{"https://community.example"}
 	config.Agents.Bunker.PublicURL = "http://relay.example"
 	if err := config.validateAgentBunker(); err == nil {
 		t.Fatal("expected insecure public URL rejection")
@@ -329,6 +338,15 @@ client_secret_ref = "file:github-oauth-secret"
 	if len(config.Auth.AllowedBrowserOrigins) != 2 {
 		t.Fatalf("unexpected browser origins: %+v", config.Auth.AllowedBrowserOrigins)
 	}
+	config.Auth.AllowedBrowserOrigins = append(config.Auth.AllowedBrowserOrigins, "http://127.0.0.1:*")
+	if err := config.validateAuth(); err != nil {
+		t.Fatalf("desktop loopback origin wildcard should be allowed: %v", err)
+	}
+	config.Auth.AllowedBrowserOrigins = []string{"https://community.example:*"}
+	if err := config.validateAuth(); err == nil {
+		t.Fatal("expected non-loopback origin wildcard rejection")
+	}
+	config.Auth.AllowedBrowserOrigins = []string{"https://community.example", "http://community.localhost:5173"}
 	config.Auth.PublicURL = "http://relay.example"
 	if err := config.validateAuth(); err == nil {
 		t.Fatal("expected public HTTP auth URL rejection")

@@ -97,6 +97,61 @@ def save_env(path, values):
     )
 
 
+DEFAULT_COMMUNITY_BROWSER_ORIGIN = "https://local-community.lapis.md"
+DEFAULT_DESKTOP_RENDERER_ALLOWED_ORIGIN = "http://127.0.0.1:*"
+
+
+def json_string_array(values):
+    return json.dumps(values, separators=(",", ":"))
+
+
+def ensure_json_string_array_entry(value, entry):
+    if not entry:
+        return value
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Browser origin list must be a JSON array") from error
+    if not isinstance(parsed, list) or not all(
+        isinstance(item, str) for item in parsed
+    ):
+        raise RuntimeError("Browser origin list must be a JSON string array")
+    if entry not in parsed:
+        parsed.append(entry)
+    return json_string_array(parsed)
+
+
+def ensure_desktop_browser_origins(values):
+    values.setdefault(
+        "LAPIS_DESKTOP_RENDERER_ALLOWED_ORIGIN",
+        DEFAULT_DESKTOP_RENDERER_ALLOWED_ORIGIN,
+    )
+    desktop_origin = values.get("LAPIS_DESKTOP_RENDERER_ALLOWED_ORIGIN", "")
+    for key in (
+        "LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS",
+        "LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS",
+    ):
+        values.setdefault(
+            key,
+            json_string_array([DEFAULT_COMMUNITY_BROWSER_ORIGIN, desktop_origin]),
+        )
+        values[key] = ensure_json_string_array_entry(values[key], desktop_origin)
+    return values
+
+
+def browser_origin_probes(values):
+    origins = [values["LAPIS_COMMUNITY_PUBLIC_URL"]]
+    desktop = values.get("LAPIS_DESKTOP_RENDERER_ALLOWED_ORIGIN", "").strip()
+    if desktop:
+        if desktop.endswith(":*"):
+            desktop = desktop[: -len(":*")] + ":1422"
+        origins.append(desktop)
+    result = []
+    for origin in origins:
+        if origin and origin not in result:
+            result.append(origin)
+    return result
+
 def invoke(args, *, env=None, capture=False, cwd=ROOT):
     result = subprocess.run(
         [str(a) for a in args],
@@ -163,15 +218,22 @@ def initialize(directory, source):
         "LAPIS_RELAY_PORT": "8481",
         "LAPIS_GIT_PUBLIC_URL": "https://local-relay.lapis.md",
         "LAPIS_AUTH_PUBLIC_URL": "https://local-relay.lapis.md",
-        "LAPIS_COMMUNITY_PUBLIC_URL": "https://local-community.lapis.md",
-        "LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS": '["https://local-community.lapis.md"]',
+        "LAPIS_COMMUNITY_PUBLIC_URL": DEFAULT_COMMUNITY_BROWSER_ORIGIN,
+        "LAPIS_DESKTOP_RENDERER_ALLOWED_ORIGIN": DEFAULT_DESKTOP_RENDERER_ALLOWED_ORIGIN,
+        "LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS": json_string_array([
+            DEFAULT_COMMUNITY_BROWSER_ORIGIN,
+            DEFAULT_DESKTOP_RENDERER_ALLOWED_ORIGIN,
+        ]),
         "LAPIS_AUTH_WEBAUTHN_RP_ID": "local-community.lapis.md",
         "LAPIS_AUTH_WEBAUTHN_ORIGINS": '["https://local-community.lapis.md"]',
         "LAPIS_AUTH_GITHUB_CLIENT_ID": "",
         "LAPIS_AUTH_GOOGLE_CLIENT_ID": "",
         "LAPIS_AUTH_MASTER_KEY_VERSION": "v1",
         "LAPIS_AGENT_BUNKER_PUBLIC_URL": "https://local-relay.lapis.md",
-        "LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS": '["https://local-community.lapis.md"]',
+        "LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS": json_string_array([
+            DEFAULT_COMMUNITY_BROWSER_ORIGIN,
+            DEFAULT_DESKTOP_RENDERER_ALLOWED_ORIGIN,
+        ]),
         "LAPIS_AGENT_BUNKER_MASTER_KEY_VERSION": "v1",
         "LAPIS_TUNNEL_NAME": "lapis-local-dev",
         "LAPIS_RELAY_IMAGE": "lapis-relay:community-local",
@@ -189,6 +251,7 @@ def initialize(directory, source):
             "LAPIS_AUTH_PUBLIC_URL",
             "LAPIS_COMMUNITY_PUBLIC_URL",
             "LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS",
+            "LAPIS_DESKTOP_RENDERER_ALLOWED_ORIGIN",
             "LAPIS_AUTH_WEBAUTHN_RP_ID",
             "LAPIS_AUTH_WEBAUTHN_ORIGINS",
         ):
@@ -200,6 +263,7 @@ def initialize(directory, source):
             values[key] = str(directory / filename)
     for key, value in defaults.items():
         values.setdefault(key, value)
+    ensure_desktop_browser_origins(values)
     for key, filename in SECRET_PATHS.items():
         values.setdefault(key, str(directory / filename))
     bindings = {
@@ -330,7 +394,13 @@ def environment(directory):
             raise RuntimeError(f"Missing {filename}; run local:init")
     if not (directory / "relay.env").is_file():
         raise RuntimeError("Run local:init first")
-    values = read_env(directory / "relay.env")
+    relay_env = directory / "relay.env"
+    values = read_env(relay_env)
+    migrated = dict(values)
+    ensure_desktop_browser_origins(migrated)
+    if migrated != values:
+        save_env(relay_env, migrated)
+    values = migrated
     values["LAPIS_COMMUNITY_DIR"] = str(directory)
     values["LAPIS_RELAY_PATH"] = str(ROOT)
     values["LAPIS_LOCAL_RELAY_URL"] = "ws://127.0.0.1:" + values.get(
@@ -743,21 +813,42 @@ def main():
     if args.command == "doctor":
         compose(directory, ["ps"])
         wait_url(env["LAPIS_AUTH_PUBLIC_URL"] + "/health", 10)
-        request = urllib.request.Request(
-            env["LAPIS_AUTH_PUBLIC_URL"] + "/api/auth/config",
-            headers={
-                "Origin": env["LAPIS_COMMUNITY_PUBLIC_URL"],
-                "User-Agent": DOCTOR_USER_AGENT,
-            },
-        )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            config = json.load(response)
-            if (
-                response.headers.get("Access-Control-Allow-Origin")
-                != env["LAPIS_COMMUNITY_PUBLIC_URL"]
-                or response.headers.get("Access-Control-Allow-Credentials") != "true"
-            ):
-                raise RuntimeError("Credentialed CORS configuration is incorrect")
+        config = None
+        for origin in browser_origin_probes(env):
+            request = urllib.request.Request(
+                env["LAPIS_AUTH_PUBLIC_URL"] + "/api/auth/config",
+                headers={
+                    "Origin": origin,
+                    "User-Agent": DOCTOR_USER_AGENT,
+                },
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                probed = json.load(response)
+                if (
+                    response.headers.get("Access-Control-Allow-Origin") != origin
+                    or response.headers.get("Access-Control-Allow-Credentials") != "true"
+                ):
+                    raise RuntimeError("Credentialed CORS configuration is incorrect")
+                if origin == env["LAPIS_COMMUNITY_PUBLIC_URL"]:
+                    config = probed
+            preflight = urllib.request.Request(
+                env["LAPIS_AUTH_PUBLIC_URL"] + "/api/auth/nostr/login",
+                method="OPTIONS",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                    "User-Agent": DOCTOR_USER_AGENT,
+                },
+            )
+            with urllib.request.urlopen(preflight, timeout=10) as response:
+                if (
+                    response.headers.get("Access-Control-Allow-Origin") != origin
+                    or response.headers.get("Access-Control-Allow-Credentials") != "true"
+                ):
+                    raise RuntimeError("Credentialed auth preflight is incorrect")
+        if config is None:
+            raise RuntimeError("Community auth configuration probe did not run")
         if set(config.get("providers", [])) != {"google", "github"}:
             raise RuntimeError("Both real OAuth providers must be configured")
         for capability in (
@@ -786,30 +877,30 @@ def main():
             raise RuntimeError("Managed-agent NIP-11 capability is missing")
         if managed.get("provisioning_url") != env["LAPIS_AGENT_BUNKER_PUBLIC_URL"].rstrip("/") + "/api/agents/managed" or managed.get("bunker_url") != env["LAPIS_AGENT_BUNKER_PUBLIC_URL"].replace("https://", "wss://").rstrip("/") + "/nip46":
             raise RuntimeError("Managed-agent NIP-11 URLs are incorrect")
-        preflight = urllib.request.Request(
-            env["LAPIS_AGENT_BUNKER_PUBLIC_URL"] + "/api/agents/managed",
-            method="OPTIONS",
-            headers={
-                "Origin": env["LAPIS_COMMUNITY_PUBLIC_URL"],
-                "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "Authorization, Content-Type",
-                "User-Agent": DOCTOR_USER_AGENT,
-            },
-        )
-        with urllib.request.urlopen(preflight, timeout=10) as response:
-            allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
-            allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
-            if (
-                response.headers.get("Access-Control-Allow-Origin")
-                != env["LAPIS_COMMUNITY_PUBLIC_URL"]
-                or not {"authorization", "content-type"}.issubset(
-                    {value.strip().lower() for value in allowed_headers.split(",")}
-                )
-                or not {"post", "delete"}.issubset(
-                    {value.strip().lower() for value in allowed_methods.split(",")}
-                )
-            ):
-                raise RuntimeError("Managed-agent CORS configuration is incorrect")
+        for origin in browser_origin_probes(env):
+            preflight = urllib.request.Request(
+                env["LAPIS_AGENT_BUNKER_PUBLIC_URL"] + "/api/agents/managed",
+                method="OPTIONS",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                    "User-Agent": DOCTOR_USER_AGENT,
+                },
+            )
+            with urllib.request.urlopen(preflight, timeout=10) as response:
+                allowed_headers = response.headers.get("Access-Control-Allow-Headers", "")
+                allowed_methods = response.headers.get("Access-Control-Allow-Methods", "")
+                if (
+                    response.headers.get("Access-Control-Allow-Origin") != origin
+                    or not {"authorization", "content-type"}.issubset(
+                        {value.strip().lower() for value in allowed_headers.split(",")}
+                    )
+                    or not {"post", "delete"}.issubset(
+                        {value.strip().lower() for value in allowed_methods.split(",")}
+                    )
+                ):
+                    raise RuntimeError("Managed-agent CORS configuration is incorrect")
         denied = urllib.request.Request(
             env["LAPIS_AUTH_PUBLIC_URL"] + "/api/auth/config",
             headers={

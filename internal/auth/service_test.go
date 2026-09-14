@@ -370,6 +370,54 @@ func TestNostrLoginUsesBodyBoundOneTimeChallengeAndNoManagedKey(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, replayResponse.Code)
 }
 
+func TestNostrLoginFromLoopbackDesktopUsesCrossSiteSessionCookie(t *testing.T) {
+	store := newMemoryStore()
+	master := make([]byte, 32)
+	_, _ = rand.Read(master)
+	wrapper, err := NewAESKeyWrapper("v1", master)
+	require.NoError(t, err)
+	service, err := NewService(ServiceConfig{
+		PublicURL:             "https://relay.example",
+		AllowedBrowserOrigins: []string{"https://community.example", "http://127.0.0.1:*"},
+	}, store, wrapper)
+	require.NoError(t, err)
+	secret := nostr.Generate()
+
+	challengeRequest := httptest.NewRequest(http.MethodPost, "https://relay.example/api/auth/nostr/challenge", bytes.NewReader([]byte(`{"pubkey":"`+secret.Public().Hex()+`"}`)))
+	challengeRequest.Header.Set("Origin", "http://127.0.0.1:53337")
+	challengeResponse := httptest.NewRecorder()
+	service.ServeHTTP(challengeResponse, challengeRequest)
+	require.Equal(t, http.StatusCreated, challengeResponse.Code)
+	require.Equal(t, "http://127.0.0.1:53337", challengeResponse.Header().Get("Access-Control-Allow-Origin"))
+	var challenge struct {
+		Challenge string `json:"challenge"`
+	}
+	require.NoError(t, json.Unmarshal(challengeResponse.Body.Bytes(), &challenge))
+	body := []byte(`{"challenge":"` + challenge.Challenge + `"}`)
+	digest := sha256.Sum256(body)
+	event := nostr.Event{Kind: nostr.KindHTTPAuth, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"u", "https://relay.example/api/auth/nostr/login"}, {"method", "POST"}, {"payload", fmt.Sprintf("%x", digest[:])}}}
+	require.NoError(t, event.Sign(secret))
+	encoded, _ := json.Marshal(event)
+
+	loginRequest := httptest.NewRequest(http.MethodPost, "https://relay.example/api/auth/nostr/login", bytes.NewReader(body))
+	loginRequest.Header.Set("Origin", "http://127.0.0.1:53337")
+	loginRequest.Header.Set("Authorization", "Nostr "+base64.StdEncoding.EncodeToString(encoded))
+	loginResponse := httptest.NewRecorder()
+	service.ServeHTTP(loginResponse, loginRequest)
+	require.Equal(t, http.StatusOK, loginResponse.Code)
+	cookies := loginResponse.Result().Cookies()
+	require.Len(t, cookies, 1)
+	require.Equal(t, http.SameSiteNoneMode, cookies[0].SameSite)
+	require.True(t, cookies[0].Secure)
+
+	sessionRequest := httptest.NewRequest(http.MethodGet, "https://relay.example/api/auth/session", nil)
+	sessionRequest.Header.Set("Origin", "http://127.0.0.1:53337")
+	sessionRequest.AddCookie(cookies[0])
+	sessionResponse := httptest.NewRecorder()
+	service.ServeHTTP(sessionResponse, sessionRequest)
+	require.Equal(t, http.StatusOK, sessionResponse.Code, sessionResponse.Body.String())
+}
+
 func TestCredentialCodecBindsCiphertextToAccountAndPurpose(t *testing.T) {
 	store := newMemoryStore()
 	service := newTestService(t, store)

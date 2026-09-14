@@ -42,16 +42,25 @@ type ServiceConfig struct {
 }
 
 type Service struct {
-	Config          ServiceConfig
-	Store           Store
-	Wrapper         KeyWrapper
-	Providers       map[string]OAuthProvider
-	Now             func() time.Time
-	refreshMu       sync.Mutex
-	NIP46           NIP46Connector
-	WebAuthn        *webauthn.WebAuthn
-	allowedOrigins  map[string]struct{}
-	webAuthnOrigins map[string]struct{}
+	Config             ServiceConfig
+	Store              Store
+	Wrapper            KeyWrapper
+	Providers          map[string]OAuthProvider
+	Now                func() time.Time
+	refreshMu          sync.Mutex
+	NIP46              NIP46Connector
+	WebAuthn           *webauthn.WebAuthn
+	allowedOrigins     map[string]struct{}
+	allowedOriginRules []browserOriginRule
+	webAuthnOrigins    map[string]struct{}
+}
+
+type browserOriginRule struct {
+	exact            string
+	scheme           string
+	hostname         string
+	loopback         bool
+	loopbackWildcard bool
 }
 
 func (service *Service) GitHubCredentialMode(ctx context.Context, pubkey nostr.PubKey) (string, error) {
@@ -139,14 +148,17 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 		config.ChallengeTTL = 10 * time.Minute
 	}
 	allowedOrigins := make(map[string]struct{}, len(config.AllowedBrowserOrigins)+1)
+	allowedOriginRules := make([]browserOriginRule, 0, len(config.AllowedBrowserOrigins)+1)
 	publicOrigin := strings.ToLower(publicURL.Scheme + "://" + publicURL.Host)
 	allowedOrigins[publicOrigin] = struct{}{}
+	allowedOriginRules = append(allowedOriginRules, exactBrowserOriginRule(publicOrigin))
 	for _, value := range config.AllowedBrowserOrigins {
-		origin, err := normalizeBrowserOrigin(value)
+		rule, key, err := parseAllowedBrowserOrigin(value)
 		if err != nil {
 			return nil, err
 		}
-		allowedOrigins[origin] = struct{}{}
+		allowedOrigins[key] = struct{}{}
+		allowedOriginRules = append(allowedOriginRules, rule)
 	}
 	webAuthnRPID := strings.ToLower(strings.TrimSpace(config.WebAuthnRPID))
 	if webAuthnRPID == "" {
@@ -183,7 +195,7 @@ func NewService(config ServiceConfig, store Store, wrapper KeyWrapper, providers
 	if err != nil {
 		return nil, err
 	}
-	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}, WebAuthn: webAuthn, allowedOrigins: allowedOrigins, webAuthnOrigins: webAuthnOrigins}
+	service := &Service{Config: config, Store: store, Wrapper: wrapper, Providers: make(map[string]OAuthProvider), Now: time.Now, NIP46: RemoteNIP46Connector{}, WebAuthn: webAuthn, allowedOrigins: allowedOrigins, allowedOriginRules: allowedOriginRules, webAuthnOrigins: webAuthnOrigins}
 	for _, provider := range providers {
 		if provider != nil {
 			service.Providers[provider.Name()] = provider
@@ -249,12 +261,8 @@ func (service *Service) handleCORS(w http.ResponseWriter, r *http.Request) bool 
 		return false
 	}
 	w.Header().Add("Vary", "Origin")
-	origin, err := normalizeBrowserOrigin(rawOrigin)
-	if err != nil {
-		writeAuthError(w, http.StatusForbidden, "invalid_origin")
-		return true
-	}
-	if _, allowed := service.allowedOrigins[origin]; !allowed {
+	origin, allowed := service.allowedOrigin(rawOrigin)
+	if !allowed {
 		writeAuthError(w, http.StatusForbidden, "invalid_origin")
 		return true
 	}
@@ -400,7 +408,7 @@ func (service *Service) finishOAuth(w http.ResponseWriter, r *http.Request, prov
 			return
 		}
 	}
-	if err := service.establishSession(w, r.Context(), account, providerName); err != nil {
+	if err := service.establishSession(w, r.Context(), account, providerName, service.sessionCookieSameSiteForReturnTo(flow.ReturnTo)); err != nil {
 		redirectOAuthFailure(w, r, flow.ReturnTo, "session_store_failed")
 		return
 	}
@@ -479,7 +487,7 @@ func (service *Service) loginWithNostr(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusServiceUnavailable, "session_store_failed")
 		return
 	}
-	if err := service.establishSession(w, r.Context(), account, "nostr"); err != nil {
+	if err := service.establishSession(w, r.Context(), account, "nostr", service.sessionCookieSameSiteForOrigin(r.Header.Get("Origin"))); err != nil {
 		writeAuthError(w, http.StatusServiceUnavailable, "session_store_failed")
 		return
 	}
@@ -508,7 +516,7 @@ func (service *Service) Authenticate(ctx context.Context, r *http.Request) (Sess
 	return session, account, nil
 }
 
-func (service *Service) establishSession(w http.ResponseWriter, ctx context.Context, account Account, provider string) error {
+func (service *Service) establishSession(w http.ResponseWriter, ctx context.Context, account Account, provider string, sameSite http.SameSite) error {
 	token, err := randomToken(32)
 	if err != nil {
 		return err
@@ -527,7 +535,7 @@ func (service *Service) establishSession(w http.ResponseWriter, ctx context.Cont
 	publicURL, _ := url.Parse(service.Config.PublicURL)
 	http.SetCookie(w, &http.Cookie{
 		Name: SessionCookieName, Value: token, Path: "/", Domain: service.Config.CookieDomain,
-		HttpOnly: true, Secure: publicURL.Scheme == "https", SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: publicURL.Scheme == "https", SameSite: sameSite,
 		Expires: session.ExpiresAt, MaxAge: int(service.Config.SessionLifetime.Seconds()),
 	})
 	return nil
@@ -575,7 +583,8 @@ func (service *Service) logout(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		_ = service.Store.RevokeSession(r.Context(), session.ID, service.Now())
 	}
-	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: "", Path: "/", HttpOnly: true, MaxAge: -1, Expires: time.Unix(1, 0)})
+	publicURL, _ := url.Parse(service.Config.PublicURL)
+	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: "", Path: "/", Domain: service.Config.CookieDomain, HttpOnly: true, Secure: publicURL.Scheme == "https", SameSite: service.sessionCookieSameSiteForOrigin(r.Header.Get("Origin")), MaxAge: -1, Expires: time.Unix(1, 0)})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -930,11 +939,7 @@ func (service *Service) audit(ctx context.Context, event AuditEvent) {
 }
 
 func (service *Service) validOrigin(r *http.Request) bool {
-	origin, err := normalizeBrowserOrigin(r.Header.Get("Origin"))
-	if err != nil {
-		return false
-	}
-	_, allowed := service.allowedOrigins[origin]
+	_, allowed := service.allowedOrigin(r.Header.Get("Origin"))
 	return allowed
 }
 
@@ -970,8 +975,52 @@ func (service *Service) safeReturnTo(value string) (string, bool) {
 		return "", false
 	}
 	origin := strings.ToLower(parsed.Scheme + "://" + parsed.Host)
-	_, allowed := service.allowedOrigins[origin]
-	return value, allowed
+	return value, service.originAllowed(origin)
+}
+
+func (service *Service) allowedOrigin(rawOrigin string) (string, bool) {
+	origin, err := normalizeBrowserOrigin(rawOrigin)
+	if err != nil {
+		return "", false
+	}
+	return origin, service.originAllowed(origin)
+}
+
+func (service *Service) originAllowed(origin string) bool {
+	for _, rule := range service.allowedOriginRules {
+		if rule.matches(origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func (service *Service) sessionCookieSameSiteForOrigin(rawOrigin string) http.SameSite {
+	publicURL, err := url.Parse(service.Config.PublicURL)
+	if err != nil || publicURL.Scheme != "https" {
+		return http.SameSiteLaxMode
+	}
+	origin, err := normalizeBrowserOrigin(rawOrigin)
+	if err != nil {
+		return http.SameSiteLaxMode
+	}
+	for _, rule := range service.allowedOriginRules {
+		if rule.matches(origin) && rule.loopback {
+			return http.SameSiteNoneMode
+		}
+	}
+	return http.SameSiteLaxMode
+}
+
+func (service *Service) sessionCookieSameSiteForReturnTo(returnTo string) http.SameSite {
+	if strings.HasPrefix(returnTo, "/") || strings.ContainsAny(returnTo, "\r\n") {
+		return http.SameSiteLaxMode
+	}
+	parsed, err := url.Parse(returnTo)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return http.SameSiteLaxMode
+	}
+	return service.sessionCookieSameSiteForOrigin(parsed.Scheme + "://" + parsed.Host)
 }
 
 func normalizeBrowserOrigin(value string) (string, error) {
@@ -980,11 +1029,53 @@ func normalizeBrowserOrigin(value string) (string, error) {
 		return "", errors.New("auth browser origin must be an absolute origin")
 	}
 	hostname := strings.ToLower(parsed.Hostname())
-	localhost := hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || strings.HasSuffix(hostname, ".localhost")
+	localhost := isLocalBrowserHost(hostname)
 	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && localhost) {
 		return "", errors.New("auth browser origin must use HTTPS, except for localhost development")
 	}
 	return strings.ToLower(parsed.Scheme + "://" + parsed.Host), nil
+}
+
+func parseAllowedBrowserOrigin(value string) (browserOriginRule, string, error) {
+	raw := strings.TrimSpace(value)
+	if strings.HasSuffix(raw, ":*") {
+		base := strings.TrimSuffix(raw, ":*")
+		parsed, err := url.Parse(base)
+		if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return browserOriginRule{}, "", errors.New("auth browser origin must be an absolute origin")
+		}
+		hostname := strings.ToLower(parsed.Hostname())
+		if parsed.Scheme != "http" || !isLocalBrowserHost(hostname) {
+			return browserOriginRule{}, "", errors.New("auth browser origin wildcard must be an HTTP loopback origin")
+		}
+		return browserOriginRule{scheme: "http", hostname: hostname, loopback: true, loopbackWildcard: true}, strings.ToLower(parsed.Scheme + "://" + parsed.Hostname() + ":*"), nil
+	}
+	origin, err := normalizeBrowserOrigin(raw)
+	if err != nil {
+		return browserOriginRule{}, "", err
+	}
+	return exactBrowserOriginRule(origin), origin, nil
+}
+
+func exactBrowserOriginRule(origin string) browserOriginRule {
+	parsed, _ := url.Parse(origin)
+	return browserOriginRule{exact: origin, loopback: parsed.Scheme == "http" && isLocalBrowserHost(parsed.Hostname())}
+}
+
+func (rule browserOriginRule) matches(origin string) bool {
+	if rule.exact != "" {
+		return origin == rule.exact
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed == nil {
+		return false
+	}
+	return rule.loopbackWildcard && parsed.Scheme == rule.scheme && strings.EqualFold(parsed.Hostname(), rule.hostname) && parsed.Port() != ""
+}
+
+func isLocalBrowserHost(hostname string) bool {
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || strings.HasSuffix(hostname, ".localhost")
 }
 
 func redirectOAuthFailure(w http.ResponseWriter, r *http.Request, returnTo, code string) {

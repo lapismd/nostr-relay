@@ -262,14 +262,15 @@ func (config *Config) validateAgentBunker() error {
 	}
 	seen := map[string]struct{}{}
 	for _, raw := range value.AllowedBrowserOrigins {
-		origin, err := url.Parse(strings.TrimSpace(raw))
-		if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+		normalized, reason := browserOriginConfigKey(raw, true)
+		switch reason {
+		case "absolute":
 			return fmt.Errorf("allowed_browser_origins entries must be absolute origins")
-		}
-		if origin.Scheme != "https" && !(origin.Scheme == "http" && isLocalDevelopmentHost(origin.Hostname())) {
+		case "scheme":
 			return fmt.Errorf("allowed browser origins must use HTTPS, except for localhost development")
+		case "wildcard":
+			return fmt.Errorf("allowed browser origin wildcards must be HTTP loopback origins")
 		}
-		normalized := strings.ToLower(origin.Scheme + "://" + origin.Host)
 		if _, ok := seen[normalized]; ok {
 			return fmt.Errorf("allowed browser origins must be unique")
 		}
@@ -314,15 +315,15 @@ func (config *Config) validateAuth() error {
 	}
 	seenOrigins := make(map[string]struct{}, len(config.Auth.AllowedBrowserOrigins))
 	for _, value := range config.Auth.AllowedBrowserOrigins {
-		origin, err := url.Parse(strings.TrimSpace(value))
-		if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+		normalized, reason := browserOriginConfigKey(value, true)
+		switch reason {
+		case "absolute":
 			return fmt.Errorf("auth.allowed_browser_origins entries must be absolute origins")
-		}
-		localhost := isLocalDevelopmentHost(origin.Hostname())
-		if origin.Scheme != "https" && !(origin.Scheme == "http" && localhost) {
+		case "scheme":
 			return fmt.Errorf("auth.allowed_browser_origins entries must use HTTPS, except for localhost development")
+		case "wildcard":
+			return fmt.Errorf("auth.allowed_browser_origins wildcards must be HTTP loopback origins")
 		}
-		normalized := origin.Scheme + "://" + origin.Host
 		if _, duplicate := seenOrigins[normalized]; duplicate {
 			return fmt.Errorf("auth.allowed_browser_origins entries must be unique")
 		}
@@ -406,6 +407,28 @@ func (config *Config) validateAuthTesting(publicURL *url.URL) error {
 		return fmt.Errorf("auth.testing OAuth endpoints require a localhost auth.public_url")
 	}
 	return nil
+}
+
+func browserOriginConfigKey(value string, allowLoopbackWildcard bool) (string, string) {
+	raw := strings.TrimSpace(value)
+	if allowLoopbackWildcard && strings.HasSuffix(raw, ":*") {
+		parsed, err := url.Parse(strings.TrimSuffix(raw, ":*"))
+		if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return "", "absolute"
+		}
+		if parsed.Scheme != "http" || !isLocalDevelopmentHost(parsed.Hostname()) {
+			return "", "wildcard"
+		}
+		return strings.ToLower(parsed.Scheme + "://" + parsed.Hostname() + ":*"), ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", "absolute"
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLocalDevelopmentHost(parsed.Hostname())) {
+		return "", "scheme"
+	}
+	return strings.ToLower(parsed.Scheme + "://" + parsed.Host), ""
 }
 
 func isLocalDevelopmentHost(host string) bool {

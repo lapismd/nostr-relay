@@ -103,8 +103,16 @@ class CredentialsTest(unittest.TestCase):
                 "https://local-relay.lapis.md",
             )
             self.assertEqual(
+                env["LAPIS_DESKTOP_RENDERER_ALLOWED_ORIGIN"],
+                "http://127.0.0.1:*",
+            )
+            self.assertEqual(
+                env["LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS"],
+                '["https://local-community.lapis.md","http://127.0.0.1:*"]',
+            )
+            self.assertEqual(
                 env["LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS"],
-                '["https://local-community.lapis.md"]',
+                '["https://local-community.lapis.md","http://127.0.0.1:*"]',
             )
             self.assertEqual(
                 env["LAPIS_AGENT_BUNKER_MASTER_KEY_FILE"],
@@ -185,6 +193,36 @@ class CredentialsTest(unittest.TestCase):
                 },
             )
             self.assertEqual(dev.read_env(path)["SAFE"], "$(touch should-not-exist)")
+
+    def test_environment_migrates_existing_desktop_browser_origins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            dev.save_env(
+                directory / "relay.env",
+                {
+                    "LAPIS_RELAY_HOST": "local-relay.lapis.md",
+                    "LAPIS_RELAY_PORT": "8481",
+                    "LAPIS_COMMUNITY_PUBLIC_URL": "https://local-community.lapis.md",
+                    "LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS": '["https://local-community.lapis.md"]',
+                    "LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS": '["https://local-community.lapis.md"]',
+                },
+            )
+            dev.private_write(directory / "postgres-password", "password\n")
+            dev.private_write(
+                directory / "fixture-public.json",
+                '{"curator":"c","publisher":"p","operator":"o"}\n',
+            )
+            env = dev.environment(directory)
+            self.assertEqual(
+                env["LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS"],
+                '["https://local-community.lapis.md","http://127.0.0.1:*"]',
+            )
+            self.assertEqual(
+                dev.read_env(directory / "relay.env")[
+                    "LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS"
+                ],
+                '["https://local-community.lapis.md","http://127.0.0.1:*"]',
+            )
 
     def test_public_configuration_discards_bunker_and_master_key_values(self):
         with tempfile.TemporaryDirectory() as temporary:

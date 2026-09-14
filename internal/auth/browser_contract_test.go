@@ -39,6 +39,41 @@ func TestBrowserCORSUsesExactCredentialedOrigins(t *testing.T) {
 	require.Empty(t, deniedResponse.Header().Get("Access-Control-Allow-Origin"))
 }
 
+func TestBrowserCORSAllowsConfiguredLoopbackDesktopPorts(t *testing.T) {
+	store := newMemoryStore()
+	master := make([]byte, 32)
+	_, _ = rand.Read(master)
+	wrapper, err := NewAESKeyWrapper("v1", master)
+	require.NoError(t, err)
+	service, err := NewService(ServiceConfig{
+		PublicURL:             "https://relay.example",
+		AllowedBrowserOrigins: []string{"https://community.example", "http://127.0.0.1:*"},
+	}, store, wrapper)
+	require.NoError(t, err)
+
+	preflight := httptest.NewRequest(http.MethodOptions, "https://relay.example/api/auth/session", nil)
+	preflight.Header.Set("Origin", "http://127.0.0.1:53337")
+	response := httptest.NewRecorder()
+	service.ServeHTTP(response, preflight)
+	require.Equal(t, http.StatusNoContent, response.Code)
+	require.Equal(t, "http://127.0.0.1:53337", response.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "true", response.Header().Get("Access-Control-Allow-Credentials"))
+
+	noPort := httptest.NewRequest(http.MethodOptions, "https://relay.example/api/auth/session", nil)
+	noPort.Header.Set("Origin", "http://127.0.0.1")
+	noPortResponse := httptest.NewRecorder()
+	service.ServeHTTP(noPortResponse, noPort)
+	require.Equal(t, http.StatusForbidden, noPortResponse.Code)
+	require.Empty(t, noPortResponse.Header().Get("Access-Control-Allow-Origin"))
+
+	otherLoopback := httptest.NewRequest(http.MethodOptions, "https://relay.example/api/auth/session", nil)
+	otherLoopback.Header.Set("Origin", "http://127.0.0.2:53337")
+	otherLoopbackResponse := httptest.NewRecorder()
+	service.ServeHTTP(otherLoopbackResponse, otherLoopback)
+	require.Equal(t, http.StatusForbidden, otherLoopbackResponse.Code)
+	require.Empty(t, otherLoopbackResponse.Header().Get("Access-Control-Allow-Origin"))
+}
+
 func TestPublicConfigAndSiblingOriginSession(t *testing.T) {
 	store := newMemoryStore()
 	service := newTestService(t, store, fakeProvider{identity: ProviderIdentity{Provider: "github", ProviderID: "123"}})

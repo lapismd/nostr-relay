@@ -375,7 +375,7 @@ func TestManagedAgentCreateBootstrapActivationAndReplay(t *testing.T) {
 	require.Empty(t, pairedReplacementURL.Query().Get("secret"))
 }
 
-func TestManagedAgentDiscoveryAndExactOriginCORS(t *testing.T) {
+func TestManagedAgentDiscoveryAndBrowserOriginCORS(t *testing.T) {
 	service, _, _ := testService(t)
 	discovery := service.NIP11()
 	require.Equal(t, 1, discovery["version"])
@@ -388,6 +388,14 @@ func TestManagedAgentDiscoveryAndExactOriginCORS(t *testing.T) {
 	service.ServeHTTP(approvedRecorder, approved)
 	require.Equal(t, http.StatusNoContent, approvedRecorder.Code)
 	require.Equal(t, "https://community.example", approvedRecorder.Header().Get("Access-Control-Allow-Origin"))
+
+	service.Config.AllowedBrowserOrigins = append(service.Config.AllowedBrowserOrigins, "http://127.0.0.1:*")
+	desktop := httptest.NewRequest(http.MethodOptions, "/api/agents/managed", nil)
+	desktop.Header.Set("Origin", "http://127.0.0.1:53337")
+	desktopRecorder := httptest.NewRecorder()
+	service.ServeHTTP(desktopRecorder, desktop)
+	require.Equal(t, http.StatusNoContent, desktopRecorder.Code)
+	require.Equal(t, "http://127.0.0.1:53337", desktopRecorder.Header().Get("Access-Control-Allow-Origin"))
 
 	unapproved := httptest.NewRequest(http.MethodOptions, "/api/agents/managed", nil)
 	unapproved.Header.Set("Origin", "https://other.example")

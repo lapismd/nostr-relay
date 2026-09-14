@@ -43,14 +43,18 @@ client_secret_ref = "file:lapis_auth_google_client_secret"
 
 `auth.public_url` is the relay and OAuth callback origin. It must be HTTPS
 except on a loopback or `*.localhost` development host.
-`auth.allowed_browser_origins` contains exact Community origins; entries must
-be HTTPS except for `localhost` development names. `auth.webauthn_rp_id`
+`auth.allowed_browser_origins` contains exact Community/browser app origins;
+entries must be HTTPS except for `localhost` development names. Native desktop
+renderers that are served from a dynamic loopback port MAY use the special
+`http://127.0.0.1:*` loopback entry, which matches only explicit loopback
+ports and is echoed as the concrete requesting origin. `auth.webauthn_rp_id`
 selects the relying-party domain used by browser passkeys, and
 `auth.webauthn_origins` contains the exact Community origins allowed to create
-or assert those credentials. Each WebAuthn origin must also be an allowed
-browser origin and its host must equal or be a subdomain of the RP ID. When
-omitted, WebAuthn retains the relay-origin behavior for compatibility. The
-master key file contains exactly 32 bytes encoded as hexadecimal or base64.
+or assert those credentials. Each WebAuthn origin must also be an exact allowed
+browser origin and its host must equal or be a subdomain of the RP ID. Loopback
+wildcards are never WebAuthn origins. When omitted, WebAuthn retains the
+relay-origin behavior for compatibility. The master key file contains exactly
+32 bytes encoded as hexadecimal or base64.
 Provider secrets and the master key are loaded from the configured credential
 directory and are never stored in PostgreSQL.
 
@@ -116,11 +120,14 @@ All paths are below `/api/auth/`:
 | `POST custody/transfer/complete` | Verify same-key possession and NIP-46 availability, then complete transfer. |
 
 Browser requests under `/api/auth/` bypass the relay's wildcard public-resource
-CORS wrapper. An exact `auth.public_url` or `auth.allowed_browser_origins`
-match receives its own origin, `Access-Control-Allow-Credentials: true`, and
+CORS wrapper. An exact `auth.public_url` or configured browser-origin match
+receives its own concrete origin, `Access-Control-Allow-Credentials: true`, and
 `Vary: Origin`; credentialed preflight supports only the auth methods and
 headers. Other browser origins are denied. State-changing session routes also
-require an allowed `Origin`.
+require an allowed `Origin`. Sessions created from an allowed loopback desktop
+origin use `SameSite=None; Secure` so the cookie survives the cross-site
+renderer-to-relay fetch path; ordinary browser origins retain the default
+`SameSite=Lax` session cookie.
 
 The public capability response reports passkey registration and custody
 transfer only when the requesting browser origin is also configured as a

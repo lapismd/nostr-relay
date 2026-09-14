@@ -42,9 +42,13 @@ Host-side administration connects through the loopback port while signing the
 public URL and preserving its virtual host, so local DNS propagation cannot
 interrupt GitHub restoration or Keytr recovery.
 The Community route uses `http://host.docker.internal:7036`. Relay, Git, Blossom and auth public
-URLs use the relay domain. Credentialed auth CORS permits exactly the Community
-HTTPS origin. Cookies remain host-only, Secure, HttpOnly and SameSite=Lax.
-WebAuthn RP ID and origin belong to the Community domain.
+URLs use the relay domain. Credentialed auth CORS permits the Community HTTPS
+origin plus the Deno Desktop loopback renderer wildcard `http://127.0.0.1:*`;
+the relay echoes only the concrete requesting origin. Browser Community cookies
+remain host-only, Secure, HttpOnly and SameSite=Lax. Sessions created from the
+allowed loopback desktop origin use SameSite=None; Secure so the desktop
+renderer can restore the relay session. WebAuthn RP ID and origin belong to the
+Community domain, never the loopback wildcard.
 
 ## Lifecycle
 
@@ -128,9 +132,10 @@ secret references remain unchanged inside the relay.
 
 `doctor` verifies that NIP-11 advertises NIP-46 and
 `lapis_managed_agents`, the advertised API and bunker URLs resolve to the local
-relay, the Community origin receives provisioning CORS while an unapproved
-origin does not, `/nip46` upgrades to WebSocket, and the relay sees the enabled
-feature and mounted master-key file without reading or printing its contents.
+relay, the Community and desktop renderer origins receive auth/provisioning
+CORS while an unapproved origin does not, `/nip46` upgrades to WebSocket, and
+the relay sees the enabled feature and mounted master-key file without reading
+or printing its contents.
 
 Run `pnpm test:local:e2e` from the sibling `nostr-agent-controller` checkout for
 the disposable agent acceptance lane. It builds the controller, provisions and

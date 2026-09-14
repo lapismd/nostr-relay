@@ -84,12 +84,18 @@ docker compose -f docker-compose.yml \
 
 Set `LAPIS_AUTH_PUBLIC_URL` to the relay's browser-facing HTTPS origin. Set
 `LAPIS_AUTH_ALLOWED_BROWSER_ORIGINS` to a TOML array of exact Community HTTPS
-origins, for example `'["https://community.example"]'`. Set
-`LAPIS_AUTH_WEBAUTHN_RP_ID` to the Community host or a shared parent domain and
-`LAPIS_AUTH_WEBAUTHN_ORIGINS` to the exact Community origins that may create or
-assert passkeys. Local sibling development uses `community.localhost` and
-`'["http://community.localhost:5173"]'`. Register these provider
-callbacks:
+origins, for example `'["https://community.example"]'`. Production deployments
+that support the native Lapis Notes desktop app MUST also allow the configured
+desktop renderer origin. If the renderer is served from Deno Desktop's dynamic
+loopback port, use the bounded loopback wildcard, for example
+`'["https://community.example","http://127.0.0.1:*"]'`, and set
+`LAPIS_AGENT_BUNKER_ALLOWED_BROWSER_ORIGINS` the same way when managed-agent
+provisioning is enabled. Set `LAPIS_AUTH_WEBAUTHN_RP_ID` to the Community host
+or a shared parent domain and `LAPIS_AUTH_WEBAUTHN_ORIGINS` to the exact
+Community origins that may create or assert passkeys. Do not put loopback
+wildcards in WebAuthn origins. Local sibling development uses
+`community.localhost` and `'["http://community.localhost:5173"]'`. Register
+these provider callbacks:
 
 ```text
 https://<relay>/api/auth/callback/github

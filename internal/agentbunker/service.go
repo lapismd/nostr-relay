@@ -147,10 +147,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleCORS(w http.ResponseWriter, r *http.Request) bool {
-	origin := strings.ToLower(strings.TrimSpace(r.Header.Get("Origin")))
-	allowed := slices.ContainsFunc(s.Config.AllowedBrowserOrigins, func(v string) bool { return strings.ToLower(strings.TrimRight(v, "/")) == origin })
+	origin, allowed := managedBrowserOriginAllowed(r.Header.Get("Origin"), s.Config.AllowedBrowserOrigins)
 	if allowed {
-		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
@@ -164,6 +163,50 @@ func (s *Service) handleCORS(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+func managedBrowserOriginAllowed(rawOrigin string, allowedOrigins []string) (string, bool) {
+	origin, err := normalizeManagedBrowserOrigin(rawOrigin)
+	if err != nil {
+		return "", false
+	}
+	for _, allowed := range allowedOrigins {
+		if managedBrowserOriginMatches(allowed, origin) {
+			return origin, true
+		}
+	}
+	return "", false
+}
+
+func managedBrowserOriginMatches(rawAllowed, origin string) bool {
+	allowed := strings.TrimSpace(rawAllowed)
+	if strings.HasSuffix(allowed, ":*") {
+		base := strings.TrimSuffix(allowed, ":*")
+		parsedAllowed, err := url.Parse(base)
+		if err != nil || parsedAllowed == nil || parsedAllowed.Scheme != "http" || !isManagedLocalBrowserHost(parsedAllowed.Hostname()) {
+			return false
+		}
+		parsedOrigin, err := url.Parse(origin)
+		return err == nil && parsedOrigin != nil && parsedOrigin.Scheme == "http" && parsedOrigin.Port() != "" && strings.EqualFold(parsedOrigin.Hostname(), parsedAllowed.Hostname())
+	}
+	normalized, err := normalizeManagedBrowserOrigin(allowed)
+	return err == nil && normalized == origin
+}
+
+func normalizeManagedBrowserOrigin(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", errors.New("browser origin must be an absolute origin")
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isManagedLocalBrowserHost(parsed.Hostname())) {
+		return "", errors.New("browser origin must use HTTPS, except for localhost development")
+	}
+	return strings.ToLower(parsed.Scheme + "://" + parsed.Host), nil
+}
+
+func isManagedLocalBrowserHost(hostname string) bool {
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || strings.HasSuffix(hostname, ".localhost")
 }
 
 func (s *Service) authenticate(r *http.Request, body []byte) (nostr.Event, error) {
