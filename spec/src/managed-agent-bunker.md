@@ -126,7 +126,7 @@ validated same-group kind 11 forum root and kind 11/1111 parent, with matching
 E/K/P and e/k/p references and current membership. Kind 5 is allowed only to
 delete the same agent's stored kind 7 reactions in the same group. Unknown,
 foreign or unrelated targets fail closed; arbitrary event deletion and creation
-of forum roots remain forbidden. Existing owner-only encrypted DM seals carry
+of forum roots remain forbidden. Approved-participant encrypted DM seals carry
 private reaction and deletion rumors without public message references.
 
 Accepted group reaction deletions retain the validated target group before the
@@ -142,3 +142,16 @@ within the 64 KiB UTF-8 limit. The signer MUST check current channel membership,
 management permission and archive state before signing; publication independently
 checks the same channel write policy. Owner approval and a fresh-head check are
 controller responsibilities.
+
+## Direct message participant policy
+
+The latest verified owner-authored kind `30177` instance record MAY contain
+`dm_allowlist`, up to 128 canonical peer public keys. Missing or malformed lists
+grant owner-only access. The managed signer MUST enforce this policy for every
+NIP-44 peer and every participant in a DM rumor. Control-channel encryption
+remains owner-only. Other peers may receive only validated direct-message
+rumors; arbitrary private payloads and unapproved recipient sets are rejected.
+
+| Surface | Verification |
+| --- | --- |
+| Managed DM policy | Signed-instance, participant-set, owner-control and revocation tests in the agent bunker suite. |

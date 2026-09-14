@@ -417,7 +417,7 @@ func TestManagedAgentPolicyRejectsForbiddenSigningAndNonOwnerEncryption(t *testi
 	encrypt := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: "encrypt", Method: "nip44_encrypt", Params: []string{stranger.Public().Hex(), "secret"}}, now)
 	event, err = service.HandleNIP46(context.Background(), encrypt)
 	require.NoError(t, err)
-	require.Contains(t, decodeBunkerResponse(t, event, agentSecret.Public(), clientSecret).Error, "owner-only")
+	require.Contains(t, decodeBunkerResponse(t, event, agentSecret.Public(), clientSecret).Error, "not approved by the owner")
 }
 
 func TestManagedAgentSupportsOwnerOnlyNIP17(t *testing.T) {
@@ -477,7 +477,11 @@ func TestManagedAgentSupportsOwnerOnlyNIP17(t *testing.T) {
 	require.Empty(t, unwrap.Error)
 	require.JSONEq(t, string(sealedJSON), unwrap.Result)
 
-	selfEncrypt := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: "self-encrypt", Method: "nip44_encrypt", Params: []string{agentSecret.Public().Hex(), rumor}}, now)
+	selfRumor := nostr.Event{Kind: 14, PubKey: agentSecret.Public(), CreatedAt: 1, Tags: nostr.Tags{{"p", owner.Public().Hex()}}, Content: "hello"}
+	selfRumor.ID = selfRumor.GetID()
+	selfRumorJSON, err := json.Marshal(selfRumor)
+	require.NoError(t, err)
+	selfEncrypt := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: "self-encrypt", Method: "nip44_encrypt", Params: []string{agentSecret.Public().Hex(), string(selfRumorJSON)}}, now)
 	selfEncryptEvent, err := service.HandleNIP46(context.Background(), selfEncrypt)
 	require.NoError(t, err)
 	require.Empty(t, decodeBunkerResponse(t, selfEncryptEvent, agentSecret.Public(), clientSecret).Error)
@@ -643,4 +647,54 @@ func TestManagedRelayToolSigning(t *testing.T) {
 	invalid = note
 	invalid.Tags = append(invalid.Tags, nostr.Tag{"published_at", "1"})
 	require.ErrorContains(t, service.authorizeSigning(agent, invalid), "invalid long-form note template")
+}
+
+func TestManagedNIP46UsesCurrentDirectMessageApprovals(t *testing.T) {
+	service, store, _ := testService(t)
+	owner, agentKey, peer, client := nostr.Generate(), nostr.Generate(), nostr.Generate(), nostr.Generate()
+	now := service.Now()
+	key, err := keywrap.Encrypt(agentKey[:], service.agentAAD(agentKey.Public().Hex(), owner.Public().Hex()), service.Wrapper)
+	require.NoError(t, err)
+	store.agents[agentKey.Public().Hex()] = Agent{Pubkey: agentKey.Public().Hex(), OwnerPubkey: owner.Public().Hex(), RelayPubkey: service.Config.RelayPubkey.Hex(), Status: StatusActive, Key: key, CreatedAt: now}
+	store.clients[agentKey.Public().Hex()+":"+client.Public().Hex()] = Client{AgentPubkey: agentKey.Public().Hex(), ClientPubkey: client.Public().Hex(), Status: ClientActive, CreatedAt: now}
+	policy, err := json.Marshal(map[string]any{"dm_allowlist": []string{peer.Public().Hex()}})
+	require.NoError(t, err)
+	instance := nostr.Event{Kind: 30177, CreatedAt: nostr.Timestamp(now.Unix()), Tags: nostr.Tags{{"d", agentKey.Public().Hex()}}, Content: string(policy)}
+	require.NoError(t, instance.Sign(owner))
+	service.CurrentEvent = func(kind nostr.Kind, author nostr.PubKey, d string) *nostr.Event {
+		if kind == 30177 && author == owner.Public() && d == agentKey.Public().Hex() {
+			return &instance
+		}
+		return nil
+	}
+	rpc := func(id, method, peerKey, body string) nip46.Response {
+		event, callErr := service.HandleNIP46(context.Background(), rpcEvent(t, agentKey.Public(), agentKey, client, nip46.Request{ID: id, Method: method, Params: []string{peerKey, body}}, now))
+		require.NoError(t, callErr)
+		return decodeBunkerResponse(t, event, agentKey.Public(), client)
+	}
+	rumor := nostr.Event{Kind: 14, PubKey: agentKey.Public(), CreatedAt: nostr.Timestamp(now.Unix()), Tags: nostr.Tags{{"p", peer.Public().Hex()}}, Content: "Approved private reply"}
+	rumor.ID = rumor.GetID()
+	encoded, err := json.Marshal(rumor)
+	require.NoError(t, err)
+	encrypted := rpc("approved-encrypt", "nip44_encrypt", peer.Public().Hex(), string(encoded))
+	require.Empty(t, encrypted.Error)
+	conversation, err := nip44.GenerateConversationKey(agentKey.Public(), peer)
+	require.NoError(t, err)
+	decoded, err := nip44.Decrypt(encrypted.Result, conversation)
+	require.NoError(t, err)
+	require.JSONEq(t, string(encoded), decoded)
+	rumor.PubKey = peer.Public()
+	rumor.Tags = nostr.Tags{{"p", agentKey.Public().Hex()}}
+	rumor.ID = rumor.GetID()
+	encoded, err = json.Marshal(rumor)
+	require.NoError(t, err)
+	ciphertext, err := nip44.Encrypt(string(encoded), conversation)
+	require.NoError(t, err)
+	received := rpc("approved-decrypt", "nip44_decrypt", peer.Public().Hex(), ciphertext)
+	require.Empty(t, received.Error)
+	require.JSONEq(t, string(encoded), received.Result)
+	instance.Content = "{}"
+	require.NoError(t, instance.Sign(owner))
+	revoked := rpc("revoked-decrypt", "nip44_decrypt", peer.Public().Hex(), ciphertext)
+	require.Contains(t, revoked.Error, "not approved by the owner")
 }

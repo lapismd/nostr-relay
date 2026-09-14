@@ -702,8 +702,8 @@ func (s *Service) execute(ctx context.Context, a Agent, c Client, r nip46.Reques
 		encoded, _ := json.Marshal(event)
 		return string(encoded), nil
 	case "nip44_encrypt", "nip44_decrypt":
-		if a.Status != StatusActive || len(r.Params) != 2 || (r.Params[0] != a.OwnerPubkey && r.Params[0] != a.Pubkey) {
-			return "", errors.New("owner-only NIP-44 required except agent recovery copy")
+		if a.Status != StatusActive || len(r.Params) != 2 || !s.directMessagePeers(a)[r.Params[0]] {
+			return "", errors.New("NIP-44 peer is not approved by the owner")
 		}
 		peer, _ := nostr.PubKeyFromHex(r.Params[0])
 		conversation, err := nip44.GenerateConversationKey(peer, secret)
@@ -711,9 +711,19 @@ func (s *Service) execute(ctx context.Context, a Agent, c Client, r nip46.Reques
 			return "", errors.New("encryption failed")
 		}
 		if r.Method == "nip44_encrypt" {
+			if err := s.authorizeDirectContent(a, r.Params[0], r.Params[1], true); err != nil {
+				return "", err
+			}
 			return nip44.Encrypt(r.Params[1], conversation)
 		}
-		return nip44.Decrypt(r.Params[1], conversation)
+		plaintext, err := nip44.Decrypt(r.Params[1], conversation)
+		if err != nil {
+			return "", err
+		}
+		if err := s.authorizeDirectContent(a, r.Params[0], plaintext, false); err != nil {
+			return "", err
+		}
+		return plaintext, nil
 	case "lapis_nip17_unwrap":
 		if a.Status != StatusActive || len(r.Params) != 1 || len(r.Params[0]) > maxBody {
 			return "", errors.New("invalid NIP-17 gift wrap")
