@@ -153,6 +153,7 @@ func createWalGitBucket(t *testing.T, ctx context.Context, net *testcontainers.D
 
 func startWalGit(t *testing.T, ctx context.Context, net *testcontainers.DockerNetwork) testcontainers.Container {
 	t.Helper()
+	buildWalGitIntegrationImage(t)
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        walgitIntegrationImage,

@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.7
+
+# Pinned Go and mdBook toolchain for local `just ci` and GitHub Actions.
+# The image must not contain repository source, module caches, or credentials.
+# Docker CLI is included so zooid TestMain can talk to a mounted host socket,
+# matching the nostr-auth test-runner pattern.
+ARG DOCKER_CLI_IMAGE=docker:27.5.1-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
+ARG GO_IMAGE=golang:1.25.0-bookworm@sha256:81dc45d05a7444ead8c92a389621fafabc8e40f8fd1a19d7e5df14e61e98bc1a
+FROM ${DOCKER_CLI_IMAGE} AS dockercli
+FROM ${GO_IMAGE}
+
+ARG MDBOOK_VERSION=0.5.4
+ARG MDBOOK_AMD64_SHA256=3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7
+ARG MDBOOK_ARM64_SHA256=753e5c5c363ee8a56972344dcf91466f005a51db84a7aeffe427ae3ef83d6d44
+
+LABEL org.opencontainers.image.title="Lapis relay CI" \
+      org.opencontainers.image.description="Pinned Go, mdBook, git, and patch toolchain for relay verification"
+
+ENV CI=true \
+    DEBIAN_FRONTEND=noninteractive \
+    GOTOOLCHAIN=local \
+    GOWORK=off
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    patch \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN architecture="$(uname -m)" \
+  && case "$architecture" in \
+    x86_64) \
+      mdbook_target="x86_64-unknown-linux-gnu"; \
+      mdbook_sha256="$MDBOOK_AMD64_SHA256" \
+      ;; \
+    aarch64|arm64) \
+      mdbook_target="aarch64-unknown-linux-musl"; \
+      mdbook_sha256="$MDBOOK_ARM64_SHA256" \
+      ;; \
+    *) echo "Unsupported mdBook architecture: $architecture" >&2; exit 1 ;; \
+  esac \
+  && archive="mdbook-v${MDBOOK_VERSION}-${mdbook_target}.tar.gz" \
+  && curl --fail --location --retry 3 \
+    "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/${archive}" \
+    --output "/tmp/${archive}" \
+  && echo "${mdbook_sha256}  /tmp/${archive}" | sha256sum --check --strict \
+  && tar -xzf "/tmp/${archive}" -C /usr/local/bin mdbook \
+  && rm "/tmp/${archive}" \
+  && go version \
+  && mdbook --version \
+  && command -v git \
+  && command -v patch
+
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+
+WORKDIR /workspace

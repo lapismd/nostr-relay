@@ -44,7 +44,15 @@ configuring WalGit, GitHub, external workers, or R2.
 ```sh
 just test
 just spec-check
+just ci-images
+just ci
 ```
+
+`just ci-images` builds the reusable toolchain and fixture images that
+GitHub Actions also uses: `lapis-relay-ci:local`, `lapis-walgit:local`,
+and `lapis-fake-github:forge-integration`. `just ci` then runs verify
+inside the toolchain image plus the tagged Docker and Trivy gates. Run
+those before pushing workflow or integration changes.
 
 Build the documentation with `just spec-build` or serve it locally with
 `just spec-serve`. Generated HTML under `spec/book` is disposable and is not
@@ -59,8 +67,9 @@ docker build --target forge-worker --tag lapis-forge-worker:local .
 
 ## Continuous integration and public image
 
-Pull requests and `main` changes run formatting, unit tests, specification
-checks, upstream patch-queue verification, the tagged Docker integration
+Pull requests and `main` changes build the reusable CI images, run
+formatting, unit tests, specification checks, and patch-queue verification
+inside `lapis-relay-ci:local`, then run the tagged Docker integration
 lanes, a candidate `relay` image build, and a Trivy scan that rejects
 fixable high or critical runtime vulnerabilities.
 

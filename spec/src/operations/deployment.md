@@ -70,7 +70,9 @@ Trusted pushes to `main`, semantic version tags `v*.*.*`, and explicitly
 dispatched builds publish `ghcr.io/<repository-owner>/lapis-relay` for
 `linux/amd64` and `linux/arm64`. Publication is gated on the same formatting,
 unit, specification, patch-queue, tagged Docker integration, candidate image,
-and Trivy high/critical checks as CI. The image is the Dockerfile `relay`
+and Trivy high/critical checks as CI. Those gates build the reusable
+`lapis-relay-ci`, WalGit, and fake-GitHub images first so a cold runner
+matches `just ci` locally. The image is the Dockerfile `relay`
 target, carries an OCI source link to this repository, and is published by
 digest with BuildKit SBOM/provenance plus GitHub build provenance.
 

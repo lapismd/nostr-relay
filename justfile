@@ -23,3 +23,12 @@ spec-check:
 
 spec-serve:
   mdbook serve spec
+
+# Build the reusable CI toolchain and Docker fixture images.
+ci-images:
+	./scripts/ci-images.sh
+
+# Same gates as GitHub Actions CI. Run this before pushing workflow or
+# integration changes.
+ci:
+	./scripts/ci.sh

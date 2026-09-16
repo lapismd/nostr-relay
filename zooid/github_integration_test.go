@@ -251,6 +251,9 @@ func TestGitHubForgeDockerLane(t *testing.T) {
 
 func buildFakeGitHubImage(t *testing.T) {
 	t.Helper()
+	if err := exec.Command("docker", "image", "inspect", fakeGitHubImage).Run(); err == nil {
+		return
+	}
 	command := exec.Command("docker", "build", "-t", fakeGitHubImage, ".")
 	command.Dir = "../testdata/fakegithub"
 	output, err := command.CombinedOutput()

@@ -24,7 +24,7 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 go mod download "fiatjaf.com/nostr@$version"
-module_dir=$(go env GOPATH)/pkg/mod/fiatjaf.com/nostr@${version}
+module_dir=$(go env GOMODCACHE)/fiatjaf.com/nostr@${version}
 source_dir="$module_dir/khatru"
 generated_dir="$scratch/internal/khatru"
 
