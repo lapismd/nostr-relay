@@ -57,4 +57,35 @@ docker build --target relay --tag lapis-relay:local .
 docker build --target forge-worker --tag lapis-forge-worker:local .
 ```
 
-Container publication and deployment are manual gates.
+## Continuous integration and public image
+
+Pull requests and `main` changes run formatting, unit tests, specification
+checks, upstream patch-queue verification, the tagged Docker integration
+lanes, a candidate `relay` image build, and a Trivy scan that rejects
+fixable high or critical runtime vulnerabilities.
+
+Trusted `main` pushes, `v*.*.*` tags, and manual workflow runs repeat those
+gates before publishing:
+
+```text
+ghcr.io/<repository-owner>/lapis-relay
+```
+
+Each publication includes `linux/amd64` and `linux/arm64` manifests, an
+SBOM, BuildKit provenance, and GitHub build provenance. The default branch
+produces `edge`; every build produces a `sha-<40-character-commit>` tag;
+version releases additionally produce `<major>.<minor>.<patch>`,
+`<major>.<minor>`, and `latest`.
+
+The image is the Dockerfile `relay` target. The forge-worker binary is in
+the same image; override `LAPIS_PROCESS_BIN=/bin/lapis-forge-worker` when a
+separate worker process is required.
+
+Production deployments should select a version and pin the resolved
+manifest digest. GitHub keeps container-package visibility separate from
+repository visibility. The publish workflow finishes only when the image is
+anonymously readable. If a new package inherits private visibility, a
+package administrator must make `lapis-relay` public and rerun the failed
+workflow.
+
+Deploying a running service remains a manual operator gate.

@@ -64,6 +64,34 @@ externally supplied secret/config paths through the deployment platform.
 WalGit's cache volume is reconstructable; the configured object store is the
 durable Git source when WalGit is authoritative.
 
+## Public container image
+
+Trusted pushes to `main`, semantic version tags `v*.*.*`, and explicitly
+dispatched builds publish `ghcr.io/<repository-owner>/lapis-relay` for
+`linux/amd64` and `linux/arm64`. Publication is gated on the same formatting,
+unit, specification, patch-queue, tagged Docker integration, candidate image,
+and Trivy high/critical checks as CI. The image is the Dockerfile `relay`
+target, carries an OCI source link to this repository, and is published by
+digest with BuildKit SBOM/provenance plus GitHub build provenance.
+
+The default branch produces `edge`; every build produces
+`sha-<40-character-commit>`; version tags additionally produce
+`<major>.<minor>.<patch>`, `<major>.<minor>`, and `latest`. Pin production
+Compose or orchestrator references to a digest. The forge-worker binary is in
+the same image; set `LAPIS_PROCESS_BIN=/bin/lapis-forge-worker` for a
+standalone worker process.
+
+The publish job grants package, attestation, artifact-metadata, and OIDC
+write scopes only after verify succeeds. External Actions, the QEMU helper
+image, and the BuildKit daemon image are pinned immutably. The final step
+drops registry credentials and verifies the digest can be resolved
+anonymously. GitHub keeps package visibility separate from repository
+visibility, so an administrator must make the `lapis-relay` package public
+after its first push; the anonymous-read gate fails until that is done.
+
+Deploying a running service remains a manual operator gate after selecting a
+published digest.
+
 ## Enable application authentication
 
 Application auth is independent of relay NIP-42 enforcement and is disabled by
