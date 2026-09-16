@@ -1,0 +1,24 @@
+diff -ruN base/internal/khatru/ephemeral.go modified/internal/khatru/ephemeral.go
+--- base/internal/khatru/ephemeral.go
++++ modified/internal/khatru/ephemeral.go
+@@ -19,7 +19,7 @@
+ 	}
+
+ 	if nil != rl.OnEphemeralEvent {
+-		rl.OnEphemeralEvent(ctx, evt)
++		return rl.OnEphemeralEvent(ctx, evt)
+ 	}
+
+ 	return nil
+diff -ruN base/internal/khatru/relay.go modified/internal/khatru/relay.go
+--- base/internal/khatru/relay.go
++++ modified/internal/khatru/relay.go
+@@ -76,7 +76,7 @@
+ 	OnEventSaved     func(ctx context.Context, event nostr.Event)
+ 	OnEventDeleted   func(ctx context.Context, deleted nostr.Event)
+ 	AllowDeleting    func(ctx context.Context, target, deletion nostr.Event) bool
+-	OnEphemeralEvent func(ctx context.Context, event nostr.Event)
++	OnEphemeralEvent func(ctx context.Context, event nostr.Event) error
+ 	OnRequest        func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+ 	OnCount          func(ctx context.Context, filter nostr.Filter) (reject bool, msg string)
+ 	OnCountMany      func(ctx context.Context, filters []nostr.Filter) (CountResult, error)

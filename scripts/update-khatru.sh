@@ -47,6 +47,8 @@ for patch in "$patch_dir"/*.patch; do
   [ -e "$patch" ] || continue
   patch -s -d "$scratch" -p1 < "$patch"
 done
+# BSD patch writes .orig backups; they are not part of the vendored tree.
+find "$generated_dir" \( -name '*.orig' -o -name '*.rej' \) -delete
 
 if [ "${1:-}" = "--check" ]; then
   diff -ruN "$generated_dir" "$target_dir"
