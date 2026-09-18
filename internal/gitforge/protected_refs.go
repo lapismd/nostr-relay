@@ -25,11 +25,16 @@ type ProtectedRefRequest struct {
 	ProtectedPatterns []string
 	EmptyRepo         bool
 	CanMaintain       bool
+	AdminBypass       bool
+	IsAdmin           bool
 }
 
 type CompiledProtection struct {
-	DefaultRef string
-	Patterns   []string
+	DefaultRef        string
+	Patterns          []string
+	DocumentPatterns  []string
+	RequiredApprovals int
+	AdminBypass       bool
 }
 
 func NormalizeRefName(ref string) string {
@@ -92,7 +97,10 @@ func RepoHasBranchHeads(refs map[string]string) bool {
 }
 
 func CompileProtection(defaultRef string, rawPatterns []string) CompiledProtection {
-	compiled := CompiledProtection{DefaultRef: NormalizeRefName(defaultRef)}
+	compiled := CompiledProtection{
+		DefaultRef:        NormalizeRefName(defaultRef),
+		RequiredApprovals: DefaultRequiredApprovals,
+	}
 	seen := map[string]struct{}{compiled.DefaultRef: {}}
 	for _, raw := range rawPatterns {
 		pattern, ok := NormalizeProtectedPattern(raw)
@@ -185,6 +193,9 @@ func EvaluateProtectedRefUpdates(request ProtectedRefRequest) ProtectedRefDecisi
 		}
 		if deleting {
 			return ProtectedRefDecision{Code: "protected_ref_delete_denied"}
+		}
+		if request.AdminBypass && request.IsAdmin {
+			continue
 		}
 		return ProtectedRefDecision{Code: "protected_ref_update_denied"}
 	}

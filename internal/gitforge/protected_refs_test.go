@@ -100,6 +100,43 @@ func TestEvaluateProtectedRefUpdatesDeniesExtraPatternUpdate(t *testing.T) {
 	require.True(t, unrelated.Allow)
 }
 
+func TestEvaluateProtectedRefUpdatesAllowsAdminBypassUpdate(t *testing.T) {
+	old := strings.Repeat("a", 40)
+	next := strings.Repeat("b", 40)
+	admin := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		AdminBypass:  true,
+		IsAdmin:      true,
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.True(t, admin.Allow)
+
+	deleteDenied := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		AdminBypass:  true,
+		IsAdmin:      true,
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: strings.Repeat("0", 40), Ref: "refs/heads/main"},
+		},
+	})
+	require.Equal(t, "protected_ref_delete_denied", deleteDenied.Code)
+
+	maintainer := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		AdminBypass:  true,
+		CanMaintain:  true,
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.Equal(t, "protected_ref_update_denied", maintainer.Code)
+}
+
 func TestCompileProtectionIgnoresInvalidAndDefaultPatterns(t *testing.T) {
 	compiled := CompileProtection("main", []string{
 		"release/*", "refs/heads/main", "*", "jj-sync/*", "release/*",

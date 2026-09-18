@@ -468,6 +468,9 @@ type BranchProtection struct {
 	DefaultBranch        string   `json:"default_branch,omitempty"`
 	ProtectedRef         string   `json:"protected_ref,omitempty"`
 	ProtectedPatterns    []string `json:"protected_patterns,omitempty"`
+	DocumentPatterns     []string `json:"document_patterns,omitempty"`
+	RequiredApprovals    int      `json:"required_approvals,omitempty"`
+	AdminBypass          bool     `json:"admin_bypass,omitempty"`
 	PullRequestsRequired bool     `json:"pull_requests_required"`
 	MergeActors          string   `json:"merge_actors,omitempty"`
 	GitHubAuthoritative  bool     `json:"github_authoritative,omitempty"`

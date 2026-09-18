@@ -41,9 +41,9 @@ feature branches and `refs/heads/jj-sync/**` stay writable, empty
 repositories allow a `CanMaintain` bootstrap create of the default, maintainers
 may create a new extra protected ref once, and the merge coordinator plus
 replica principals remain the only privileged writers of later updates.
-Required-approval counts and admin bypass remain future configuration;
-deleting `OWNERS.md` or omitting `protected-ref` tags cannot disable the
-default.
+Required-approval counts and admin bypass are stored on the relay-owned
+NIP-98 protection document; deleting `OWNERS.md` or omitting `protected-ref`
+tags cannot disable the default.
 
 ### Ref-driven activity and automatic PR revisions
 
@@ -95,7 +95,7 @@ Only the original native WalGit automation outcomes remain open:
 
 | Original item | Current status | Follow-up |
 | --- | --- | --- |
-| Protected branches reject ordinary direct updates | implemented for the live default branch and additive `protected-ref` patterns | required-approval counts and admin bypass |
+| Protected branches reject ordinary direct updates | implemented for the live default branch, additive `protected-ref` patterns, required-approval counts, and admin bypass | dismiss-stale remains tip-scoped |
 | Branch updates drive PR revision | refs durable; no automatic `1619` signer | ref-driven revisions |
 | A coordinator updates a protected WalGit target | implemented | merge-queue leftover |
 | Confirmed WalGit merge publishes `1631` | maintainer-signed after confirmed coordinator merge | merge-queue leftover |

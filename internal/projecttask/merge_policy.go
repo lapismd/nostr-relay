@@ -12,7 +12,16 @@ type MergeEligibility struct {
 	MissingOwners []string
 }
 
+type MergePolicy struct {
+	RequiredApprovals int
+	AdminBypass       bool
+}
+
 func EvaluateMergeEligibility(state PullRequestState, actor nostr.PubKey, expectedHead, protectedRef string, authority CollaborationAuthority, owners OwnersDocument, changedPaths []string, extraPatterns ...string) MergeEligibility {
+	return EvaluateMergeEligibilityPolicy(state, actor, expectedHead, protectedRef, authority, owners, changedPaths, MergePolicy{}, extraPatterns)
+}
+
+func EvaluateMergeEligibilityPolicy(state PullRequestState, actor nostr.PubKey, expectedHead, protectedRef string, authority CollaborationAuthority, owners OwnersDocument, changedPaths []string, policy MergePolicy, extraPatterns []string) MergeEligibility {
 	if state.Lifecycle != PullRequestOpen {
 		return MergeEligibility{Code: "pull_request_not_open"}
 	}
@@ -28,14 +37,28 @@ func EvaluateMergeEligibility(state PullRequestState, actor nostr.PubKey, expect
 	if len(state.ChangeRequests) > 0 {
 		return MergeEligibility{Code: "changes_requested"}
 	}
-	if !hasTrustedNonAuthorApproval(state, authority) {
+	adminActor := policy.AdminBypass && authority.Administers(actor)
+	if !adminActor && trustedNonAuthorApprovalCount(state, authority) < normalizeMergeApprovals(policy.RequiredApprovals) {
 		return MergeEligibility{Code: "maintainer_approval_required"}
+	}
+	if adminActor {
+		return MergeEligibility{OK: true}
 	}
 	missing := missingPathOwners(state, authority, owners, changedPaths)
 	if len(missing) > 0 {
 		return MergeEligibility{Code: "owners_approval_required", MissingOwners: missing}
 	}
 	return MergeEligibility{OK: true}
+}
+
+func normalizeMergeApprovals(value int) int {
+	if value <= 0 {
+		return 1
+	}
+	if value > 16 {
+		return 16
+	}
+	return value
 }
 
 func sameProtectedTarget(target, protectedRef string, extraPatterns []string) bool {
@@ -70,16 +93,22 @@ func normalizeMergeRef(value string) string {
 	return "refs/heads/" + strings.TrimPrefix(value, "heads/")
 }
 
-func hasTrustedNonAuthorApproval(state PullRequestState, authority CollaborationAuthority) bool {
+func trustedNonAuthorApprovalCount(state PullRequestState, authority CollaborationAuthority) int {
+	count := 0
+	seen := make(map[nostr.PubKey]struct{})
 	for _, approval := range state.Approvals {
 		if approval.Reviewer == state.Root.PubKey {
 			continue
 		}
+		if _, found := seen[approval.Reviewer]; found {
+			continue
+		}
 		if authority.Allows(approval.Reviewer) {
-			return true
+			seen[approval.Reviewer] = struct{}{}
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func missingPathOwners(state PullRequestState, authority CollaborationAuthority, owners OwnersDocument, changedPaths []string) []string {

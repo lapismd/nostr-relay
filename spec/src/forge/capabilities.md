@@ -87,10 +87,14 @@ Connection, attachment, health, import, migration, and mirror administration
 require `Config.CanManage`. Merge requires `CanMaintain` on the repository channel and the expected
 current head. Hosted WalGit repositories with `collaboration=relay` advertise
 `capabilities.merge=true` plus the relay-owned default-branch protection
-document. That document advertises the live default as `protected_ref` and any
-compiled extra `protected-ref` announcement patterns as `protected_patterns`.
-GitHub-authoritative repositories keep clone/push/protection on
-GitHub and say so in that document.
+document. `GET`/`PUT /api/forge/repositories/<owner>/<repo>/protection`
+stores extra patterns, required-approval count, and admin bypass in relay
+state so deleting a Git file cannot disable the live default. The capability
+document advertises the live default as `protected_ref`, compiled extras as
+`protected_patterns`, `required_approvals`, and `admin_bypass`. Announcement
+`protected-ref` tags remain additive. GitHub-authoritative repositories keep
+clone/push/protection on GitHub and say so in that document. `PUT` requires
+`CanMaintain` and is rejected when GitHub is authoritative.
 
 Provider commands are durable and return `202` plus an operation ID. A caller
 can poll `/api/forge/operations/<operation-id>`. An `Idempotency-Key` is scoped

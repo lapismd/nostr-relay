@@ -389,6 +389,10 @@ func (policy *GitForgePolicy) serveRepositoryForgeAPI(w http.ResponseWriter, r *
 		writeForgeJSON(w, http.StatusOK, map[string]any{
 			"repository": resolved.Repository.Coordinate.String(), "capabilities": policy.advertiseCapabilities(r.Context(), resolved, actor.Hex()),
 		})
+	case r.Method == http.MethodGet && action == "protection":
+		policy.serveRepositoryProtection(w, r, actor, resolved)
+	case r.Method == http.MethodPut && action == "protection":
+		policy.updateRepositoryProtection(w, r, actor, resolved, body)
 	case r.Method == http.MethodGet && action == "health":
 		if !policy.Config.CanManage(actor) {
 			writeGitError(w, http.StatusForbidden, "relay_admin_required")
@@ -675,12 +679,16 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 		resolved.Repository.Integration.GitAuthorityBackend == forge.BackendWalGit {
 		_, compiled := policy.hostedProtection(r.Context(), resolved, actor.Hex())
 		protected := compiled.TargetRef(state.TargetBranch)
-		eligibility := projecttask.EvaluateMergeEligibility(
+		eligibility := projecttask.EvaluateMergeEligibilityPolicy(
 			state, actor, request.ExpectedHead, compiled.DefaultRef,
 			policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement),
 			policy.loadProtectedOwners(r.Context(), resolved, protected),
 			policy.changedPullRequestPaths(r.Context(), resolved, state, actor.Hex()),
-			compiled.Patterns...,
+			projecttask.MergePolicy{
+				RequiredApprovals: compiled.RequiredApprovals,
+				AdminBypass:       compiled.AdminBypass,
+			},
+			compiled.Patterns,
 		)
 		if !eligibility.OK {
 			if len(eligibility.MissingOwners) > 0 {
