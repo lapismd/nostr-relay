@@ -88,11 +88,15 @@ require `Config.CanManage`. Merge requires `CanMaintain` on the repository chann
 current head. Hosted WalGit repositories with `collaboration=relay` advertise
 `capabilities.merge=true` plus the relay-owned default-branch protection
 document. `GET`/`PUT /api/forge/repositories/<owner>/<repo>/protection`
-stores extra patterns, required-approval count, and admin bypass in relay
-state so deleting a Git file cannot disable the live default. The capability
-document advertises the live default as `protected_ref`, compiled extras as
+stores a versioned named-ruleset document in relay state so deleting a Git
+file cannot loosen enforcement. Each rule may set Active/Disabled,
+include/exclude targets including all heads, bypass actors, independent
+restrict create/update/delete flags, and required approvals. The capability
+document advertises those `rules` plus compiled extras as
 `protected_patterns`, `required_approvals`, and `admin_bypass`. Announcement
-`protected-ref` tags remain additive. GitHub-authoritative repositories keep
+`protected-ref` tags remain an additive Active rule. Empty new documents do
+not imply default-branch protection. Legacy single-document fields migrate
+to one Active Default rule. GitHub-authoritative repositories keep
 clone/push/protection on GitHub and say so in that document. `PUT` requires
 `CanMaintain` and is rejected when GitHub is authoritative.
 

@@ -41,9 +41,9 @@ feature branches and `refs/heads/jj-sync/**` stay writable, empty
 repositories allow a `CanMaintain` bootstrap create of the default, maintainers
 may create a new extra protected ref once, and the merge coordinator plus
 replica principals remain the only privileged writers of later updates.
-Required-approval counts and admin bypass are stored on the relay-owned
-NIP-98 protection document; deleting `OWNERS.md` or omitting `protected-ref`
-tags cannot disable the default.
+Required-approval counts and admin bypass live on named rulesets in the
+relay-owned NIP-98 protection document; deleting `OWNERS.md` or omitting
+`protected-ref` tags cannot loosen a matching Active ruleset.
 
 ### Ref-driven activity and automatic PR revisions
 

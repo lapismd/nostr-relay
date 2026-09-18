@@ -348,6 +348,7 @@ func TestGitHTTPRejectsDirectDefaultBranchPush(t *testing.T) {
 	repository := readyHostedRepository(t, policy, store, owner, "notes", "repo-channel")
 	grantGitGroup(policy, "repo-channel", member.Public())
 	policy.ProjectTasks.Groups.SetMemberRoles("repo-channel", member.Public(), []string{"maintainer"})
+	require.NoError(t, policy.saveProtectionDocument(context.Background(), projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}, mustDefaultProtectionDocument(t)))
 	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
 	body := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
 		OldOID: strings.Repeat("a", 40), NewOID: strings.Repeat("b", 40), Ref: "refs/heads/main",
@@ -410,4 +411,15 @@ func TestGitHTTPAllowsJJSyncAndEmptyDefaultBootstrap(t *testing.T) {
 	policy.ServeGitHTTP(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, []string{"git-receive-pack", "git-receive-pack"}, backend.gitCalls)
+}
+
+func mustDefaultProtectionDocument(t *testing.T) gitforge.ProtectionDocument {
+	t.Helper()
+	document, err := gitforge.ParseProtectionDocument([]byte(`{
+		"protected_patterns": [],
+		"required_approvals": 1,
+		"admin_bypass": false
+	}`))
+	require.NoError(t, err)
+	return document
 }

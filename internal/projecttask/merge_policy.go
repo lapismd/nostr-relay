@@ -68,8 +68,17 @@ func sameProtectedTarget(target, protectedRef string, extraPatterns []string) bo
 	}
 	for _, pattern := range extraPatterns {
 		compiled := normalizeMergeRef(pattern)
+		if compiled == "refs/heads/*" || compiled == "refs/heads/**" {
+			return true
+		}
 		if compiled == normalized {
 			return true
+		}
+		if strings.HasSuffix(compiled, "/**") {
+			prefix := strings.TrimSuffix(compiled, "/**")
+			if normalized == prefix || strings.HasPrefix(normalized, prefix+"/") {
+				return true
+			}
 		}
 		if strings.HasSuffix(compiled, "/*") {
 			prefix := strings.TrimSuffix(compiled, "/*") + "/"

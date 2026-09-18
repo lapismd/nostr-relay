@@ -27,14 +27,17 @@ func (policy *GitForgePolicy) authorizeProtectedReceivePack(r *http.Request, res
 	refs, protection := policy.hostedProtection(r.Context(), resolved, actor.Hex())
 	authority := policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement)
 	decision := gitforge.EvaluateProtectedRefUpdates(gitforge.ProtectedRefRequest{
-		Principal:         actor.Hex(),
-		Commands:          commands,
-		ProtectedRef:      protection.DefaultRef,
-		ProtectedPatterns: protection.Patterns,
-		EmptyRepo:         !gitforge.RepoHasBranchHeads(refs),
-		CanMaintain:       authority.Allows(actor),
-		AdminBypass:       protection.AdminBypass,
-		IsAdmin:           authority.Administers(actor),
+		Principal:            actor.Hex(),
+		Commands:             commands,
+		ProtectedRef:         protection.DefaultRef,
+		ProtectedPatterns:    protection.Patterns,
+		AnnouncementPatterns: protection.AnnouncementPatterns,
+		Rules:                protectionRules(protection.Rules),
+		UseRulesets:          true,
+		EmptyRepo:            !gitforge.RepoHasBranchHeads(refs),
+		CanMaintain:          authority.Allows(actor),
+		AdminBypass:          protection.AdminBypass,
+		IsAdmin:              authority.Administers(actor),
 	})
 	if decision.Allow {
 		return 0, ""

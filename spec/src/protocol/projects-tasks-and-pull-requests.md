@@ -141,13 +141,13 @@ channel, not merely the `30617` owner or a relay administrator.
 
 Hosted WalGit repositories advertise `capabilities.merge=true` and accept the
 same NIP-98 merge route. Eligibility requires an open pull request whose
-target is the live protected default branch or a compiled extra
-`protected-ref` pattern, a current tip matching `expected_head`, no
-current-tip `changes-requested` decision, at least the document's
+target is the live default branch, a matching Active ruleset, or a compiled
+extra `protected-ref` pattern, a current tip matching `expected_head`, no
+current-tip `changes-requested` decision, at least the matching ruleset's
 `required_approvals` count of current-tip `CanMaintain` approvals that are
-not the PR author (default one), and an actor who `CanMaintain`. When
-`admin_bypass` is enabled, a channel creator or relay administrator may merge
-without that extra approval count.
+not the PR author (default one), and an actor who `CanMaintain`. When a
+matching ruleset lists an admin bypass actor, a channel creator or relay
+administrator may merge without that extra approval count.
 When `OWNERS.md` exists on the merge-target tip, every changed-path owner
 group also needs a current-tip approval from a listed owner or a channel
 administrator. The relay updates that protected ref as the constrained

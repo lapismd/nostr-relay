@@ -19,22 +19,28 @@ type ProtectedRefDecision struct {
 }
 
 type ProtectedRefRequest struct {
-	Principal         string
-	Commands          []ReceivePackCommand
-	ProtectedRef      string
-	ProtectedPatterns []string
-	EmptyRepo         bool
-	CanMaintain       bool
-	AdminBypass       bool
-	IsAdmin           bool
+	Principal            string
+	Commands             []ReceivePackCommand
+	ProtectedRef         string
+	ProtectedPatterns    []string
+	AnnouncementPatterns []string
+	Rules                []ProtectionRule
+	UseRulesets          bool
+	EmptyRepo            bool
+	CanMaintain          bool
+	AdminBypass          bool
+	IsAdmin              bool
 }
 
 type CompiledProtection struct {
-	DefaultRef        string
-	Patterns          []string
-	DocumentPatterns  []string
-	RequiredApprovals int
-	AdminBypass       bool
+	DefaultRef           string
+	Patterns             []string
+	DocumentPatterns     []string
+	AnnouncementPatterns []string
+	RequiredApprovals    int
+	AdminBypass          bool
+	UseRulesets          bool
+	Rules                []CompiledRule
 }
 
 func NormalizeRefName(ref string) string {
@@ -143,25 +149,20 @@ func ProtectedRefMatches(ref, defaultRef string, patterns []string) bool {
 		return true
 	}
 	for _, pattern := range patterns {
-		compiled, ok := NormalizeProtectedPattern(pattern)
-		if !ok {
-			continue
-		}
-		if compiled == normalized {
+		if RulesetPatternMatches(pattern, normalized) {
 			return true
-		}
-		if strings.HasSuffix(compiled, "/*") {
-			prefix := strings.TrimSuffix(compiled, "/*") + "/"
-			rest := strings.TrimPrefix(normalized, prefix)
-			if rest != normalized && rest != "" && !strings.Contains(rest, "/") {
-				return true
-			}
 		}
 	}
 	return false
 }
 
 func (protection CompiledProtection) Matches(ref string) bool {
+	if protection.UseRulesets {
+		if NormalizeRefName(ref) == protection.DefaultRef {
+			return true
+		}
+		return protection.AnyActiveRuleMatches(ref)
+	}
 	return ProtectedRefMatches(ref, protection.DefaultRef, protection.Patterns)
 }
 
@@ -174,6 +175,9 @@ func (protection CompiledProtection) TargetRef(target string) string {
 }
 
 func EvaluateProtectedRefUpdates(request ProtectedRefRequest) ProtectedRefDecision {
+	if request.UseRulesets {
+		return evaluateRulesetRefUpdates(request)
+	}
 	if IsReplicaPrincipal(request.Principal) || IsMergeCoordinator(request.Principal) {
 		return ProtectedRefDecision{Allow: true}
 	}

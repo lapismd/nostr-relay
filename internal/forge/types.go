@@ -464,16 +464,39 @@ type CollaborationResult struct {
 // BranchProtection is the relay-owned default-branch contract advertised to
 // Community. GitHub-authoritative repositories keep clone/push protection on
 // GitHub and only report that fact here.
+type BranchProtectionRule struct {
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	Enforcement       string                   `json:"enforcement"`
+	Targets           []BranchProtectionTarget `json:"targets"`
+	Bypass            []BranchProtectionBypass `json:"bypass"`
+	RestrictCreations bool                     `json:"restrict_creations"`
+	RestrictUpdates   bool                     `json:"restrict_updates"`
+	RestrictDeletions bool                     `json:"restrict_deletions"`
+	RequiredApprovals int                      `json:"required_approvals"`
+}
+
+type BranchProtectionTarget struct {
+	Type    string `json:"type"`
+	Pattern string `json:"pattern,omitempty"`
+}
+
+type BranchProtectionBypass struct {
+	Kind   string `json:"kind"`
+	Pubkey string `json:"pubkey,omitempty"`
+}
+
 type BranchProtection struct {
-	DefaultBranch        string   `json:"default_branch,omitempty"`
-	ProtectedRef         string   `json:"protected_ref,omitempty"`
-	ProtectedPatterns    []string `json:"protected_patterns,omitempty"`
-	DocumentPatterns     []string `json:"document_patterns,omitempty"`
-	RequiredApprovals    int      `json:"required_approvals,omitempty"`
-	AdminBypass          bool     `json:"admin_bypass,omitempty"`
-	PullRequestsRequired bool     `json:"pull_requests_required"`
-	MergeActors          string   `json:"merge_actors,omitempty"`
-	GitHubAuthoritative  bool     `json:"github_authoritative,omitempty"`
+	DefaultBranch        string                 `json:"default_branch,omitempty"`
+	ProtectedRef         string                 `json:"protected_ref,omitempty"`
+	ProtectedPatterns    []string               `json:"protected_patterns,omitempty"`
+	DocumentPatterns     []string               `json:"document_patterns,omitempty"`
+	RequiredApprovals    int                    `json:"required_approvals,omitempty"`
+	AdminBypass          bool                   `json:"admin_bypass,omitempty"`
+	PullRequestsRequired bool                   `json:"pull_requests_required"`
+	MergeActors          string                 `json:"merge_actors,omitempty"`
+	GitHubAuthoritative  bool                   `json:"github_authoritative,omitempty"`
+	Rules                []BranchProtectionRule `json:"rules,omitempty"`
 }
 
 type ProtectedRefMergeRequest struct {

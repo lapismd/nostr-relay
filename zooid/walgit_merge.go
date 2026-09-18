@@ -30,6 +30,7 @@ func (policy *GitForgePolicy) advertiseCapabilities(ctx context.Context, resolve
 	protection.AdminBypass = advertised.AdminBypass
 	protection.PullRequestsRequired = true
 	protection.MergeActors = advertised.MergeActors
+	protection.Rules = advertised.Rules
 	capabilities.Protection = &protection
 	return capabilities
 }
@@ -69,10 +70,7 @@ func (policy *GitForgePolicy) processRelayMerge(ctx context.Context, resolved fo
 	eligibility := projecttask.EvaluateMergeEligibilityPolicy(
 		state, operation.Actor, operation.ExpectedHead, compiled.DefaultRef,
 		policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement), owners, paths,
-		projecttask.MergePolicy{
-			RequiredApprovals: compiled.RequiredApprovals,
-			AdminBypass:       compiled.AdminBypass,
-		},
+		mergePolicyForRef(compiled, state.TargetBranch),
 		compiled.Patterns,
 	)
 	if !eligibility.OK {
