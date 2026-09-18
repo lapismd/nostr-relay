@@ -84,8 +84,11 @@ URL and `clone.auth=provider`, even when WalGit is the content backend.
 The additive `/api/forge` routes are NIP-98 authenticated. Capabilities require
 repository read access; provider commands require repository write access.
 Connection, attachment, health, import, migration, and mirror administration
-require `Config.CanManage`. Merge additionally requires the repository owner
-or relay administrator and the expected current head.
+require `Config.CanManage`. Merge requires `CanMaintain` on the repository channel and the expected
+current head. Hosted WalGit repositories with `collaboration=relay` advertise
+`capabilities.merge=true` plus the relay-owned default-branch protection
+document. GitHub-authoritative repositories keep clone/push/protection on
+GitHub and say so in that document.
 
 Provider commands are durable and return `202` plus an operation ID. A caller
 can poll `/api/forge/operations/<operation-id>`. An `Idempotency-Key` is scoped

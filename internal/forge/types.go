@@ -161,6 +161,7 @@ type Capabilities struct {
 	PullRequests                bool                  `json:"pull_requests"`
 	Reviews                     bool                  `json:"reviews"`
 	Merge                       bool                  `json:"merge"`
+	Protection                  *BranchProtection     `json:"protection,omitempty"`
 	Mirror                      bool                  `json:"mirror"`
 	GitReplicationTarget        bool                  `json:"git_replication_target,omitempty"`
 	CI                          bool                  `json:"ci"`
@@ -458,6 +459,31 @@ type CollaborationResult struct {
 	ImportedComments int      `json:"imported_comments,omitempty"`
 	Truncated        bool     `json:"truncated,omitempty"`
 	Incomplete       []string `json:"incomplete,omitempty"`
+}
+
+// BranchProtection is the relay-owned default-branch contract advertised to
+// Community. GitHub-authoritative repositories keep clone/push protection on
+// GitHub and only report that fact here.
+type BranchProtection struct {
+	DefaultBranch        string `json:"default_branch,omitempty"`
+	ProtectedRef         string `json:"protected_ref,omitempty"`
+	PullRequestsRequired bool   `json:"pull_requests_required"`
+	MergeActors          string `json:"merge_actors,omitempty"`
+	GitHubAuthoritative  bool   `json:"github_authoritative,omitempty"`
+}
+
+type ProtectedRefMergeRequest struct {
+	Principal    string
+	TargetRef    string
+	ExpectedHead string
+	TargetSHA    string
+	Method       string
+	Title        string
+	Message      string
+}
+
+type ProtectedRefMerger interface {
+	MergeProtectedRef(context.Context, Repository, ProtectedRefMergeRequest) (CollaborationResult, error)
 }
 
 type CollaborationBackend interface {

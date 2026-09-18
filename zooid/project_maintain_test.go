@@ -1,0 +1,97 @@
+package zooid
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"fiatjaf.com/nostr"
+	"github.com/stretchr/testify/require"
+	"zooid/internal/projecttask"
+)
+
+func TestProjectTaskPolicyRequiresMaintainerToCreateRepository(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "repo-channel", false)
+	creator := nostr.Generate()
+	member := nostr.Generate()
+	groups.creatorCache.Store("repo-channel", creator.Public())
+	addProjectTaskTestMember(groups, "repo-channel", member.Public())
+
+	announcement := signedEvent(member, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{
+		{"d", "notes"}, {projecttask.TagBuzzChannel, "repo-channel"},
+	})
+	handled, reason := policy.CheckWrite(context.Background(), announcement)
+	require.True(t, handled)
+	require.Contains(t, reason, "maintainer")
+
+	groups.SetMemberRoles("repo-channel", member.Public(), []string{"maintainer"})
+	handled, reason = policy.CheckWrite(context.Background(), announcement)
+	require.True(t, handled)
+	require.Empty(t, reason)
+
+	creatorAnnouncement := signedEvent(creator, 11, nostr.KindRepositoryAnnouncement, nostr.Tags{
+		{"d", "notes-two"}, {projecttask.TagBuzzChannel, "repo-channel"},
+	})
+	handled, reason = policy.CheckWrite(context.Background(), creatorAnnouncement)
+	require.True(t, handled)
+	require.Empty(t, reason)
+}
+
+func TestProjectTaskPolicyRejectsChannelLessRepository(t *testing.T) {
+	policy, _ := createProjectTaskTestPolicy(t, "repo-channel", false)
+	owner := nostr.Generate()
+	announcement := signedEvent(owner, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{{"d", "notes"}})
+	handled, reason := policy.CheckWrite(context.Background(), announcement)
+	require.True(t, handled)
+	require.Contains(t, reason, "require a channel")
+}
+
+func TestProjectTaskPolicyRejectsReviewWithoutCanMaintain(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "repo-channel", false)
+	owner := nostr.Generate()
+	author := nostr.Generate()
+	reviewer := nostr.Generate()
+	groups.creatorCache.Store("repo-channel", owner.Public())
+	addProjectTaskTestMember(groups, "repo-channel", author.Public())
+	addProjectTaskTestMember(groups, "repo-channel", reviewer.Public())
+	coordinate := projecttask.RepositoryCoordinate{Owner: owner.Public(), ID: "notes"}
+	repository := signedEvent(owner, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{
+		{"d", "notes"}, {projecttask.TagBuzzChannel, "repo-channel"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(repository))
+	root := signedEvent(author, 20, projecttask.KindPullRequest, nostr.Tags{
+		{"a", coordinate.String()}, {"p", owner.Public().Hex()}, {"subject", "Review"},
+		{"c", strings.Repeat("a", 40)}, {"clone", "https://example.com/notes.git"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(root))
+
+	decision := signedEvent(reviewer, 30, nostr.KindTextNote, nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"t", "approval"},
+		{"c", strings.Repeat("a", 40)},
+	})
+	handled, reason := policy.CheckWrite(context.Background(), decision)
+	require.True(t, handled)
+	require.Contains(t, reason, "maintainer")
+
+	authorDecision := signedEvent(author, 31, nostr.KindTextNote, nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"t", "approval"},
+		{"c", strings.Repeat("a", 40)},
+	})
+	groups.SetMemberRoles("repo-channel", author.Public(), []string{"maintainer"})
+	handled, reason = policy.CheckWrite(context.Background(), authorDecision)
+	require.True(t, handled)
+	require.Contains(t, reason, "authors cannot")
+
+	groups.SetMemberRoles("repo-channel", reviewer.Public(), []string{"maintainer"})
+	handled, reason = policy.CheckWrite(context.Background(), decision)
+	require.True(t, handled)
+	require.Empty(t, reason)
+}
+
+func TestCanMaintainFailsClosedForUnknownGroups(t *testing.T) {
+	groups, _ := createTestGroupStore()
+	groups.WarmCaches()
+	pk := nostr.Generate().Public()
+	require.False(t, groups.CanMaintain("", pk))
+	require.False(t, groups.CanMaintain("missing", pk))
+}

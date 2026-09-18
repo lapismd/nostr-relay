@@ -51,7 +51,7 @@ func TestReducePullRequestMatchesBuzzTipStatusAndReviewSemantics(t *testing.T) {
 		prNIP22Comment(id(t, "e"), 30, member, root, id(t, "f")),
 	}
 
-	state, err := ReducePullRequest(root, repository, events)
+	state, err := ReducePullRequest(root, repository, events, Maintainers(owner, requested))
 	require.NoError(t, err)
 	require.Equal(t, coordinate, state.Repository)
 	require.Equal(t, "Review title", state.Title)
@@ -90,11 +90,40 @@ func TestReducePullRequestDefaultsDraftAndFallsBackToInitialDecisionCommit(t *te
 	repository := nostr.Event{Kind: nostr.KindRepositoryAnnouncement, PubKey: owner, Tags: nostr.Tags{{"d", "notes"}}}
 	decision := prReviewDecision(id(t, "2"), 10, owner, root, coordinate, "", "approval")
 
-	state, err := ReducePullRequest(root, repository, []nostr.Event{decision})
+	state, err := ReducePullRequest(root, repository, []nostr.Event{decision}, Maintainers(owner))
 	require.NoError(t, err)
 	require.Equal(t, PullRequestDraft, state.Lifecycle)
 	require.Len(t, state.Approvals, 1)
 	require.Equal(t, commit, state.Approvals[0].Commit)
+}
+
+func TestReducePullRequestIgnoresRequestedReviewerWithoutCanMaintain(t *testing.T) {
+	owner := pubkey(t, "9")
+	author := pubkey(t, "a")
+	requested := pubkey(t, "b")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	commit := strings.Repeat("a", 40)
+	root := validPullRequestEvent(t, id(t, "1"), author, owner, "notes", commit)
+	root.Tags = append(root.Tags, nostr.Tag{"p", requested.Hex()})
+	repository := nostr.Event{Kind: nostr.KindRepositoryAnnouncement, PubKey: owner, Tags: nostr.Tags{{"d", "notes"}}}
+	decision := prReviewDecision(id(t, "2"), 10, requested, root, coordinate, commit, "approval")
+	merged := prStatus(id(t, "3"), 11, owner, root, coordinate, nostr.KindStatusApplied)
+
+	state, err := ReducePullRequest(root, repository, []nostr.Event{decision, merged})
+	require.NoError(t, err)
+	require.Empty(t, state.Approvals)
+	require.Equal(t, PullRequestOpen, state.Lifecycle)
+
+	state, err = ReducePullRequest(root, repository, []nostr.Event{decision, merged}, Maintainers(requested))
+	require.NoError(t, err)
+	require.Len(t, state.Approvals, 1)
+	require.Equal(t, PullRequestOpen, state.Lifecycle, "owner merge is ignored unless the owner CanMaintain")
+
+	root.Tags = append(root.Tags, nostr.Tag{"external-provider", "github"})
+	providerMerged := prStatus(id(t, "4"), 12, author, root, coordinate, nostr.KindStatusApplied)
+	state, err = ReducePullRequest(root, repository, []nostr.Event{providerMerged})
+	require.NoError(t, err)
+	require.Equal(t, PullRequestMerged, state.Lifecycle, "provider-authored roots keep bridge-signed merges")
 }
 
 func TestReducePullRequestKeepsAmbiguousAndNestedNIP22Comments(t *testing.T) {

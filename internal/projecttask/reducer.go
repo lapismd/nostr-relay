@@ -31,7 +31,7 @@ type TaskState struct {
 
 // ReduceTask derives deterministic current state from ordinary wire events.
 // It does not write synthetic events or hide the raw event stream.
-func ReduceTask(issue, repository nostr.Event, related []nostr.Event) (TaskState, error) {
+func ReduceTask(issue, repository nostr.Event, related []nostr.Event, authority ...CollaborationAuthority) (TaskState, error) {
 	if issue.Kind != nostr.KindIssue {
 		return TaskState{}, fmt.Errorf("task root must be kind 1621")
 	}
@@ -46,16 +46,9 @@ func ReduceTask(issue, repository nostr.Event, related []nostr.Event) (TaskState
 		AssignmentHeads: make(map[nostr.PubKey]nostr.ID),
 	}
 
-	trustedStatus := map[nostr.PubKey]struct{}{issue.PubKey: {}, repository.PubKey: {}}
-	for _, tag := range repository.Tags {
-		if len(tag) == 0 || tag[0] != "maintainers" {
-			continue
-		}
-		for _, value := range tag[1:] {
-			if pubkey, err := nostr.PubKeyFromHex(value); err == nil {
-				trustedStatus[pubkey] = struct{}{}
-			}
-		}
+	auth := CollaborationAuthority{}
+	if len(authority) > 0 {
+		auth = authority[0]
 	}
 
 	var uncausedSelf, authoritative, causalSelf []assignmentOperation
@@ -66,7 +59,7 @@ func ReduceTask(issue, repository nostr.Event, related []nostr.Event) (TaskState
 		}
 		switch event.Kind {
 		case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft:
-			if _, trusted := trustedStatus[event.PubKey]; trusted && statusNewer(event, state.StatusEvent) {
+			if auth.Allows(event.PubKey) && statusNewer(event, state.StatusEvent) {
 				copy := event
 				state.Status = event.Kind
 				state.StatusEvent = &copy

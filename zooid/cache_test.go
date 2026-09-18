@@ -776,6 +776,13 @@ func TestCanWrite_WriteRestricted_WithWriterRole(t *testing.T) {
 	if !groups.CanWrite("wrgrp", pk) {
 		t.Error("CanWrite should return true for member with writer role")
 	}
+	if groups.CanMaintain("wrgrp", pk) {
+		t.Error("writer must not imply CanMaintain")
+	}
+	groups.SetMemberRoles("wrgrp", pk, []string{"writer", "maintainer"})
+	if !groups.CanMaintain("wrgrp", pk) {
+		t.Error("CanMaintain should return true for a member with the maintainer role")
+	}
 }
 
 func TestCanWrite_WriteRestricted_Admin(t *testing.T) {

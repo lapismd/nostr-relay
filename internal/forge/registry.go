@@ -211,6 +211,20 @@ func (registry *Registry) Resolve(ctx context.Context, repository Repository) (R
 		result.Capabilities.Reviews = caps.Reviews
 		result.Capabilities.Merge = caps.Merge
 	}
+	if integration.CollaborationBackend == BackendRelay && authorityName == BackendWalGit {
+		result.Capabilities.Merge = true
+		result.Capabilities.Protection = &BranchProtection{
+			DefaultBranch:        "HEAD",
+			ProtectedRef:         "HEAD",
+			PullRequestsRequired: true,
+			MergeActors:          "channel_maintainers",
+		}
+	} else if authorityName == BackendGitHub {
+		result.Capabilities.Protection = &BranchProtection{
+			GitHubAuthoritative: true,
+			MergeActors:         "github",
+		}
+	}
 
 	result.Capabilities.MirrorBackend = integration.MirrorBackend
 	if integration.MirrorBackend != "" && integration.MirrorBackend != BackendNone {

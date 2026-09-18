@@ -22,6 +22,7 @@ type recordingGitBackend struct {
 	gitCalls          []string
 	apiCalls          []string
 	principal         string
+	refsJSON          string
 	resolveRevision   string
 	resolveRevisions  []string
 	resolveResult     string
@@ -46,7 +47,12 @@ func (backend *recordingGitBackend) ProxyRepositoryAPI(w http.ResponseWriter, _ 
 	defer backend.mu.Unlock()
 	backend.apiCalls = append(backend.apiCalls, subpath)
 	backend.principal = principal
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	if backend.refsJSON != "" {
+		_, _ = w.Write([]byte(backend.refsJSON))
+		return
+	}
+	_, _ = w.Write([]byte(`{"refs":[]}`))
 }
 
 func (backend *recordingGitBackend) Resolve(_ context.Context, _ gitforge.Repository, revision, principal string) (string, error) {
@@ -123,7 +129,9 @@ func TestGitHTTPUsesReusableBuzzCredentialAndNIP29Membership(t *testing.T) {
 	grantGitGroup(policy, "repo-channel", member.Public())
 	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
 
-	request := httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader("pack"))
+	request := httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
+		OldOID: strings.Repeat("0", 40), NewOID: strings.Repeat("a", 40), Ref: "refs/heads/feature",
+	}}))))
 	signedGitRequest(t, request, member, http.MethodGet, root)
 	recorder := httptest.NewRecorder()
 	policy.ServeGitHTTP(recorder, request)
@@ -264,6 +272,7 @@ func TestPullRequestDiffUsesPersistedBaseCommitAfterMerge(t *testing.T) {
 	author := nostr.Generate()
 	repository := readyHostedRepository(t, policy, store, owner, "notes", "repo-channel")
 	grantGitGroup(policy, "repo-channel", author.Public())
+	policy.ProjectTasks.Groups.SetMemberRoles("repo-channel", author.Public(), []string{"maintainer"})
 
 	coordinate := projecttask.RepositoryCoordinate{Owner: repository.PubKey, ID: "notes"}
 	root := nostr.Event{Kind: projecttask.KindPullRequest, CreatedAt: nostr.Now(), Content: "Historical review", Tags: nostr.Tags{
@@ -328,4 +337,55 @@ func TestPullRequestDiffRequiresEveryDerivedScope(t *testing.T) {
 	policy.ServePullRequestAPI(recorder, request)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 	require.Empty(t, backend.comparisonRequest.Head)
+}
+
+func TestGitHTTPRejectsDirectDefaultBranchPush(t *testing.T) {
+	backend := &recordingGitBackend{refsJSON: `{"head":{"name":"refs/heads/main","sha":"` + strings.Repeat("a", 40) + `"},"refs":[{"name":"refs/heads/main","sha":"` + strings.Repeat("a", 40) + `"}]}`}
+	policy, store := createGitForgeTestPolicy(t, backend)
+	owner := nostr.Generate()
+	member := nostr.Generate()
+	repository := readyHostedRepository(t, policy, store, owner, "notes", "repo-channel")
+	grantGitGroup(policy, "repo-channel", member.Public())
+	policy.ProjectTasks.Groups.SetMemberRoles("repo-channel", member.Public(), []string{"maintainer"})
+	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
+	body := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
+		OldOID: strings.Repeat("a", 40), NewOID: strings.Repeat("b", 40), Ref: "refs/heads/main",
+	}})
+	request := httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(body)))
+	signedGitRequest(t, request, member, http.MethodGet, root)
+	recorder := httptest.NewRecorder()
+	policy.ServeGitHTTP(recorder, request)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "protected_ref_update_denied")
+	require.Empty(t, backend.gitCalls)
+}
+
+func TestGitHTTPAllowsJJSyncAndEmptyDefaultBootstrap(t *testing.T) {
+	backend := &recordingGitBackend{}
+	policy, store := createGitForgeTestPolicy(t, backend)
+	owner := nostr.Generate()
+	member := nostr.Generate()
+	repository := readyHostedRepository(t, policy, store, owner, "notes", "repo-channel")
+	grantGitGroup(policy, "repo-channel", member.Public())
+	policy.ProjectTasks.Groups.SetMemberRoles("repo-channel", member.Public(), []string{"maintainer"})
+	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
+
+	jj := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
+		OldOID: strings.Repeat("0", 40), NewOID: strings.Repeat("c", 40), Ref: "refs/heads/jj-sync/scope",
+	}})
+	request := httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(jj)))
+	signedGitRequest(t, request, member, http.MethodGet, root)
+	recorder := httptest.NewRecorder()
+	policy.ServeGitHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	seed := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
+		OldOID: strings.Repeat("0", 40), NewOID: strings.Repeat("d", 40), Ref: "refs/heads/main",
+	}})
+	request = httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(seed)))
+	signedGitRequest(t, request, member, http.MethodGet, root)
+	recorder = httptest.NewRecorder()
+	policy.ServeGitHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, []string{"git-receive-pack", "git-receive-pack"}, backend.gitCalls)
 }

@@ -68,6 +68,12 @@ func (policy *GitForgePolicy) ServeGitHTTP(w http.ResponseWriter, r *http.Reques
 		writeGitError(w, status, code)
 		return
 	}
+	if *write && subpath == "git-receive-pack" && r.Method == http.MethodPost {
+		if status, code := policy.authorizeProtectedReceivePack(r, resolved, authEvent.PubKey); status != 0 {
+			writeGitError(w, status, code)
+			return
+		}
+	}
 
 	backend, ok := resolved.Authority.(forge.SmartHTTPBackend)
 	if !ok || (!resolved.Capabilities.SmartHTTP.Read && !*write) || (!resolved.Capabilities.SmartHTTP.Write && *write) {
@@ -432,7 +438,7 @@ func (policy *GitForgePolicy) ServePullRequestAPI(w http.ResponseWriter, r *http
 	}
 
 	related := policy.pullRequestRelatedEvents(r.Context(), root.ID)
-	state, err := projecttask.ReducePullRequest(root, resolved.Repository.Announcement, related)
+	state, err := projecttask.ReducePullRequest(root, resolved.Repository.Announcement, related, policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement))
 	if err != nil || state.CurrentCommit == "" {
 		writeGitError(w, http.StatusUnprocessableEntity, "invalid_pull_request")
 		return

@@ -387,7 +387,7 @@ func (policy *GitForgePolicy) serveRepositoryForgeAPI(w http.ResponseWriter, r *
 			return
 		}
 		writeForgeJSON(w, http.StatusOK, map[string]any{
-			"repository": resolved.Repository.Coordinate.String(), "capabilities": resolved.Capabilities,
+			"repository": resolved.Repository.Coordinate.String(), "capabilities": policy.advertiseCapabilities(r.Context(), resolved, actor.Hex()),
 		})
 	case r.Method == http.MethodGet && action == "health":
 		if !policy.Config.CanManage(actor) {
@@ -640,12 +640,12 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 		http.NotFound(w, r)
 		return
 	}
-	root, resolved, mapping, status, code := policy.resolveMappedWorkItem(r.Context(), eventID, actor, true)
+	root, resolved, mapping, status, code := policy.resolveMergeWorkItem(r.Context(), eventID, actor)
 	if status != 0 {
 		writeGitError(w, status, code)
 		return
 	}
-	if root.Kind != projecttask.KindPullRequest || actor != resolved.Repository.Coordinate.Owner && !policy.Config.CanManage(actor) {
+	if root.Kind != projecttask.KindPullRequest || !policy.ProjectTasks.Groups.CanMaintain(resolved.Repository.Channel, actor) {
 		writeGitError(w, http.StatusForbidden, "merge_not_authorized")
 		return
 	}
@@ -659,7 +659,7 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 		writeGitError(w, http.StatusBadRequest, "invalid_merge_request")
 		return
 	}
-	state, err := projecttask.ReducePullRequest(root, resolved.Repository.Announcement, policy.pullRequestRelatedEvents(r.Context(), root.ID))
+	state, err := projecttask.ReducePullRequest(root, resolved.Repository.Announcement, policy.pullRequestRelatedEvents(r.Context(), root.ID), policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement))
 	if err != nil || !strings.EqualFold(state.CurrentCommit, request.ExpectedHead) {
 		writeGitError(w, http.StatusConflict, "pull_request_head_changed")
 		return
@@ -669,6 +669,34 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 	}
 	if request.Method != "merge" && request.Method != "squash" && request.Method != "rebase" {
 		writeGitError(w, http.StatusBadRequest, "invalid_merge_request")
+		return
+	}
+	if resolved.Repository.Integration.CollaborationBackend == forge.BackendRelay &&
+		resolved.Repository.Integration.GitAuthorityBackend == forge.BackendWalGit {
+		_, protected := policy.hostedProtection(r.Context(), resolved, actor.Hex())
+		eligibility := projecttask.EvaluateMergeEligibility(
+			state, actor, request.ExpectedHead, protected,
+			policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement),
+			policy.loadProtectedOwners(r.Context(), resolved, protected),
+			policy.changedPullRequestPaths(r.Context(), resolved, state, actor.Hex()),
+		)
+		if !eligibility.OK {
+			if len(eligibility.MissingOwners) > 0 {
+				writeForgeJSON(w, http.StatusConflict, map[string]any{
+					"error": eligibility.Code, "missing_owners": eligibility.MissingOwners,
+					"message": "OWNERS.md reviewers are still required: " + strings.Join(eligibility.MissingOwners, ", "),
+				})
+				return
+			}
+			writeGitError(w, http.StatusConflict, eligibility.Code)
+			return
+		}
+		operation, err := policy.enqueueRelayMerge(r.Context(), actor, root, resolved, request.ExpectedHead, request.Method, request.Title, request.Message, idempotencyKey)
+		if err != nil {
+			writeGitBackendFailure(w, err)
+			return
+		}
+		writeForgeJSON(w, http.StatusAccepted, publicForgeOperation(operation))
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -693,6 +721,40 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 		return
 	}
 	writeForgeJSON(w, http.StatusAccepted, publicForgeOperation(operation))
+}
+
+func (policy *GitForgePolicy) resolveMergeWorkItem(ctx context.Context, rawID string, actor nostr.PubKey) (nostr.Event, forge.ResolvedRepository, forgeObjectMapping, int, string) {
+	id, err := nostr.IDFromHex(rawID)
+	if err != nil || id.Hex() != rawID {
+		return nostr.Event{}, forge.ResolvedRepository{}, forgeObjectMapping{}, http.StatusNotFound, "work_item_not_found"
+	}
+	root, found, err := policy.ProjectTasks.EventByID(ctx, id)
+	if err != nil || !found || policy.ProjectTasks.IsTombstoned(ctx, root) || root.Kind != projecttask.KindPullRequest {
+		return nostr.Event{}, forge.ResolvedRepository{}, forgeObjectMapping{}, http.StatusNotFound, "work_item_not_found"
+	}
+	coordinate, err := repositoryCoordinateFromEvent(root)
+	if err != nil {
+		return nostr.Event{}, forge.ResolvedRepository{}, forgeObjectMapping{}, http.StatusNotFound, "repository_not_found"
+	}
+	resolved, found, err := policy.ResolveIntegration(ctx, coordinate)
+	if err != nil || !found {
+		return nostr.Event{}, forge.ResolvedRepository{}, forgeObjectMapping{}, http.StatusNotFound, "repository_not_found"
+	}
+	if status, code := policy.authorizeWorkItem(ctx, actor, root, resolved.Repository, true); status != 0 {
+		return nostr.Event{}, forge.ResolvedRepository{}, forgeObjectMapping{}, status, code
+	}
+	if resolved.Repository.Integration.CollaborationBackend == forge.BackendRelay &&
+		resolved.Repository.Integration.GitAuthorityBackend == forge.BackendWalGit {
+		return root, resolved, forgeObjectMapping{}, 0, ""
+	}
+	if resolved.Collaboration == nil || resolved.Repository.Integration.CollaborationBackend != forge.BackendGitHub {
+		return nostr.Event{}, forge.ResolvedRepository{}, forgeObjectMapping{}, http.StatusConflict, "provider_collaboration_required"
+	}
+	mapping, found, err := policy.loadMappingByNostrRoot(ctx, forge.BackendGitHub, resolved.Repository.Integration.ConnectionID, root.ID.Hex())
+	if err != nil || !found || mapping.ExternalNumber <= 0 {
+		return nostr.Event{}, forge.ResolvedRepository{}, forgeObjectMapping{}, http.StatusConflict, "forge_mapping_missing"
+	}
+	return root, resolved, mapping, 0, ""
 }
 
 func (policy *GitForgePolicy) resolveMappedWorkItem(ctx context.Context, rawID string, actor nostr.PubKey, write bool) (nostr.Event, forge.ResolvedRepository, forgeObjectMapping, int, string) {

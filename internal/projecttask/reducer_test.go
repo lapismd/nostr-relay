@@ -42,7 +42,7 @@ func TestReduceTaskMatchesBuzzAuthorityAndCausalAssignmentRules(t *testing.T) {
 		nip22Comment(id(t, "0"), 90, member, issueID),
 	}
 
-	state, err := ReduceTask(issue, repository, events)
+	state, err := ReduceTask(issue, repository, events, Maintainers(issueAuthor, maintainer))
 	require.NoError(t, err)
 	require.Equal(t, nostr.KindStatusDraft, state.Status, "lowest id wins equal timestamp")
 	require.NotNil(t, state.StatusEvent)

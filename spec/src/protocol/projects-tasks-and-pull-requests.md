@@ -74,8 +74,8 @@ The raw event stream remains authoritative. Clients may derive current task
 state using `internal/projecttask`:
 
 - status defaults to open (`1630`);
-- only the issue author, repository owner, or a repository `maintainers` key
-  changes status;
+- only a `CanMaintain` signer on the repository `buzz-channel` changes task
+  status; the `30617` `maintainers` tag is not authority;
 - equal status timestamps use ascending event ID as the tie-breaker;
 - the issue author or repository owner can assign or unassign anyone;
 - another signer can only operate on itself with exactly one matching `p` tag;
@@ -89,30 +89,69 @@ state using `internal/projecttask`:
 
 Pull requests use the reproducible `PullRequestState` projection. A root is
 Draft when any `t` value case-insensitively equals `draft`, otherwise Open.
-Trusted updates and statuses come only from the PR author or repository owner;
-the newest timestamp wins, with the lexicographically smallest event ID for an
-equal timestamp. Kinds `1630`, `1631`, `1632`, and `1633` mean Open, Merged,
-Closed, and Draft. A merged `1631` may carry a full `merge-commit` only when a
-matching `r` is present. Patch-oriented `q` and `applied-as-commits` tags remain
-ordinary preserved event data and do not trigger relay-side patch handling.
+Trusted `1619` updates still come from the PR author or the `30617` address
+owner. Trusted merged status (`1631`) comes from `CanMaintain` on the
+repository channel, or from the same signer as a provider-authoritative
+pull-request root that carries `external-provider` provenance. That exception
+covers GitHub collaboration-bridge observations; it does not restore
+author- or `30617`-owner self-merge for native pull requests. Trusted close, reopen, and draft statuses (`1632`, `1630`,
+`1633`) come from the PR author or `CanMaintain`. The newest timestamp wins,
+with the lexicographically smallest event ID for an equal timestamp. Kinds
+`1630`, `1631`, `1632`, and `1633` mean Open, Merged, Closed, and Draft. A
+merged `1631` may carry a full `merge-commit` only when a matching `r` is
+present. Patch-oriented `q` and `applied-as-commits` tags remain ordinary
+preserved event data and do not trigger relay-side patch handling.
 `base-commit` is a Lapis extension containing the immutable target-branch tip
 observed for that review revision. When an exact `merge-base` is absent, readers
 perform the normal three-dot comparison between `base-commit` and `c`; they
 never substitute the target branch's current tip for a historical review.
 
-Root `p` recipients and trusted `t:review-request` notes form the reviewer set,
-excluding the PR author. A decision has exactly one of `t:approval` or
-`t:changes-requested`, and is trusted only from a requested reviewer or the
-repository owner, never the author. Missing `c` means the initial tip. Only a
-decision for the current tip is effective; equal-timestamp decisions by one
-reviewer use the lexicographically largest ID. Older decisions remain
-historical. Valid `file`/`side`/`line` anchors are current or outdated by tip;
-invalid anchors remain visible comments with no usable anchor.
+Root `p` recipients and trusted `t:review-request` notes form the reviewer
+set, excluding the PR author. A decision has exactly one of `t:approval` or
+`t:changes-requested`. The relay rejects those decisions at ingest unless the
+signer `CanMaintain` the repository `buzz-channel` and is not the PR author.
+The Lapis reducer trusts the same `CanMaintain` set, never the author, and
+never a requested-reviewer or `30617` owner who lacks the channel role. Missing
+`c` means the initial tip. Only a decision for the current tip is effective;
+equal-timestamp decisions by one reviewer use the lexicographically largest ID.
+Older decisions remain historical. Valid `file`/`side`/`line` anchors are
+current or outdated by tip; invalid anchors remain visible comments with no
+usable anchor. Origin-channel membership alone is not enough to review or
+merge; the repository channel is required.
 
-Buzz Desktop currently trusts the issue author and repository owner for status,
-while the NIP-34 model also permits repository maintainers. The relay retains
-all raw events; the Lapis reducer follows NIP-34 and documents this Desktop
-display divergence rather than rejecting maintainer-authored status events.
+Buzz Desktop may still display author- or owner-trusted reviews and statuses.
+Lapis does not. The relay retains all raw events; the Lapis reducer follows
+channel `CanMaintain` and documents this Desktop display divergence.
+
+## Repository publication
+
+Creating or replacing a hosted or external `kind:30617`, including a
+project-task-anchor, requires an existing `buzz-channel` and `CanMaintain` on
+that channel. Channel-less hosted announcements remain rejected. Rebinding
+`buzz-channel` additionally requires `CanMaintain` on the new channel and
+either `CanMaintain` or administrator status on the previous channel, so a
+maintainer of another channel cannot steal the coordinate. The address owner
+who loses `maintainer` keeps the parameterized-replaceable address but cannot
+create, review, or merge. Channel administrators cannot replace another
+pubkey's `30617`; they bind a new repository instead.
+
+GitHub `/api/forge/.../merge` requires `CanMaintain` on the repository
+channel, not merely the `30617` owner or a relay administrator.
+
+Hosted WalGit repositories advertise `capabilities.merge=true` and accept the
+same NIP-98 merge route. Eligibility requires an open pull request whose
+target is the live protected default branch, a current tip matching
+`expected_head`, no current-tip `changes-requested` decision, at least one
+current-tip approval from `CanMaintain` that is not the PR author, and an
+actor who `CanMaintain`. When `OWNERS.md` exists on the protected tip, every
+changed-path owner group also needs a current-tip approval from a listed
+owner or a channel administrator. The relay updates the protected ref as the
+constrained `merge-coordinator:<owner>/<repo>` principal, waits for the
+confirmed WalGit ref, and returns the merge commit. Community then publishes
+the merging maintainer's signed `1631` with `merge-commit` and `r`. The relay
+never signs that status as a user. A WalGit outage after the Git update is
+retried as a durable operation; `1631` is not expected until the ref is
+confirmed.
 
 ## Channel scope and authorization
 
@@ -120,9 +159,11 @@ display divergence rather than rejecting maintainer-authored status events.
 derives the same channel for repository-scoped issues, PRs, status events,
 updates, notes, comments, reactions, subtasks, and tombstones. A PR root may additionally
 carry an opaque bounded `h` origin channel. Repository and origin channels are
-an intersection: a caller must pass normal NIP-29 policy for every channel,
-and all descendants inherit both. Each check uses an internal event copy with
-only the derived `h`; the signed event is never modified.
+an intersection: a caller must pass normal NIP-29 write policy for every
+channel, and all descendants inherit both. Repository create, trusted review,
+and merge additionally require `CanMaintain` on the repository channel. Each
+check uses an internal event copy with only the derived `h`; the signed event
+is never modified.
 
 Anonymous reads require every resolved channel to exist and be public and
 non-hidden. Scope resolution fails closed when a required parent or group

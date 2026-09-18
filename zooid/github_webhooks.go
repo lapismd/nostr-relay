@@ -820,7 +820,7 @@ func (policy *GitForgePolicy) publishProviderPullRequestUpdate(ctx context.Conte
 	if mapping.Authority != "provider" || !fullForgeObjectID(pull.Head.SHA) {
 		return policy.publishExternalStateObservation(ctx, repository, root, delivery, "GitHub head changed to "+pull.Head.SHA, pull.User)
 	}
-	state, err := projecttask.ReducePullRequest(root, repository.Announcement, policy.pullRequestRelatedEvents(ctx, root.ID))
+	state, err := projecttask.ReducePullRequest(root, repository.Announcement, policy.pullRequestRelatedEvents(ctx, root.ID), policy.ProjectTasks.repositoryAuthority(repository.Announcement))
 	if err == nil && strings.EqualFold(state.CurrentCommit, pull.Head.SHA) {
 		return nil
 	}

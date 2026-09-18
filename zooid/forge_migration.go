@@ -183,7 +183,7 @@ func (policy *GitForgePolicy) verifyMigrationReplicaObjects(ctx context.Context,
 		if policy.ProjectTasks.IsTombstoned(ctx, root) {
 			continue
 		}
-		state, err := projecttask.ReducePullRequest(root, source.Repository.Announcement, policy.pullRequestRelatedEvents(ctx, root.ID))
+		state, err := projecttask.ReducePullRequest(root, source.Repository.Announcement, policy.pullRequestRelatedEvents(ctx, root.ID), policy.ProjectTasks.repositoryAuthority(source.Repository.Announcement))
 		if err == nil {
 			for _, oid := range []string{state.CurrentCommit, state.BaseCommit, state.MergeBase} {
 				if fullForgeObjectID(oid) {
