@@ -465,11 +465,12 @@ type CollaborationResult struct {
 // Community. GitHub-authoritative repositories keep clone/push protection on
 // GitHub and only report that fact here.
 type BranchProtection struct {
-	DefaultBranch        string `json:"default_branch,omitempty"`
-	ProtectedRef         string `json:"protected_ref,omitempty"`
-	PullRequestsRequired bool   `json:"pull_requests_required"`
-	MergeActors          string `json:"merge_actors,omitempty"`
-	GitHubAuthoritative  bool   `json:"github_authoritative,omitempty"`
+	DefaultBranch        string   `json:"default_branch,omitempty"`
+	ProtectedRef         string   `json:"protected_ref,omitempty"`
+	ProtectedPatterns    []string `json:"protected_patterns,omitempty"`
+	PullRequestsRequired bool     `json:"pull_requests_required"`
+	MergeActors          string   `json:"merge_actors,omitempty"`
+	GitHubAuthoritative  bool     `json:"github_authoritative,omitempty"`
 }
 
 type ProtectedRefMergeRequest struct {

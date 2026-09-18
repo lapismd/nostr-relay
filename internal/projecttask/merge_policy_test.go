@@ -67,3 +67,24 @@ func TestEvaluateMergeEligibilityRequiresPathOwnersOrAdmin(t *testing.T) {
 		state, maintainer, state.CurrentCommit, "main", authority, owners, []string{"docs/guide.md"},
 	).OK)
 }
+
+func TestEvaluateMergeEligibilityAcceptsExtraProtectedPattern(t *testing.T) {
+	owner := pubkey(t, "1")
+	author := pubkey(t, "2")
+	maintainer := pubkey(t, "3")
+	root := validPullRequestEvent(t, id(t, "a"), author, owner, "notes", strings.Repeat("b", 40))
+	state := PullRequestState{
+		Root: root, Lifecycle: PullRequestOpen, CurrentCommit: strings.Repeat("b", 40),
+		TargetBranch: "release/1.0",
+		Approvals: []PullRequestDecision{{
+			Reviewer: maintainer, Commit: strings.Repeat("b", 40), Decision: ReviewApproved,
+		}},
+	}
+	authority := Maintainers(maintainer)
+	require.Equal(t, "protected_target_required", EvaluateMergeEligibility(
+		state, maintainer, state.CurrentCommit, "main", authority, OwnersDocument{}, nil,
+	).Code)
+	require.True(t, EvaluateMergeEligibility(
+		state, maintainer, state.CurrentCommit, "main", authority, OwnersDocument{}, nil, "release/*",
+	).OK)
+}

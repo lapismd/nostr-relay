@@ -1,12 +1,16 @@
 package gitforge
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 const (
 	MergeCoordinatorPrefix = "merge-coordinator:"
 	ReplicaPrincipalPrefix = "github-replica:"
 	JJSyncRefPrefix        = "refs/heads/jj-sync/"
 	DefaultBootstrapRef    = "refs/heads/main"
+	maxProtectedPatternLen = 256
 )
 
 type ProtectedRefDecision struct {
@@ -15,11 +19,17 @@ type ProtectedRefDecision struct {
 }
 
 type ProtectedRefRequest struct {
-	Principal    string
-	Commands     []ReceivePackCommand
-	ProtectedRef string
-	EmptyRepo    bool
-	CanMaintain  bool
+	Principal         string
+	Commands          []ReceivePackCommand
+	ProtectedRef      string
+	ProtectedPatterns []string
+	EmptyRepo         bool
+	CanMaintain       bool
+}
+
+type CompiledProtection struct {
+	DefaultRef string
+	Patterns   []string
 }
 
 func NormalizeRefName(ref string) string {
@@ -81,6 +91,80 @@ func RepoHasBranchHeads(refs map[string]string) bool {
 	return false
 }
 
+func CompileProtection(defaultRef string, rawPatterns []string) CompiledProtection {
+	compiled := CompiledProtection{DefaultRef: NormalizeRefName(defaultRef)}
+	seen := map[string]struct{}{compiled.DefaultRef: {}}
+	for _, raw := range rawPatterns {
+		pattern, ok := NormalizeProtectedPattern(raw)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[pattern]; exists {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		compiled.Patterns = append(compiled.Patterns, pattern)
+	}
+	sort.Strings(compiled.Patterns)
+	return compiled
+}
+
+func NormalizeProtectedPattern(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > maxProtectedPatternLen || strings.Contains(raw, "**") {
+		return "", false
+	}
+	normalized := NormalizeRefName(raw)
+	wildcard := strings.HasSuffix(normalized, "/*")
+	prefix := normalized
+	if wildcard {
+		prefix = strings.TrimSuffix(normalized, "/*")
+	}
+	if prefix == "refs/heads" || !strings.HasPrefix(prefix, "refs/heads/") || strings.Contains(prefix, "*") {
+		return "", false
+	}
+	if prefix == strings.TrimSuffix(JJSyncRefPrefix, "/") || strings.HasPrefix(prefix, JJSyncRefPrefix) {
+		return "", false
+	}
+	return normalized, true
+}
+
+func ProtectedRefMatches(ref, defaultRef string, patterns []string) bool {
+	normalized := NormalizeRefName(ref)
+	if normalized == NormalizeRefName(defaultRef) {
+		return true
+	}
+	for _, pattern := range patterns {
+		compiled, ok := NormalizeProtectedPattern(pattern)
+		if !ok {
+			continue
+		}
+		if compiled == normalized {
+			return true
+		}
+		if strings.HasSuffix(compiled, "/*") {
+			prefix := strings.TrimSuffix(compiled, "/*") + "/"
+			rest := strings.TrimPrefix(normalized, prefix)
+			if rest != normalized && rest != "" && !strings.Contains(rest, "/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (protection CompiledProtection) Matches(ref string) bool {
+	return ProtectedRefMatches(ref, protection.DefaultRef, protection.Patterns)
+}
+
+func (protection CompiledProtection) TargetRef(target string) string {
+	normalized := NormalizeRefName(target)
+	if protection.Matches(normalized) {
+		return normalized
+	}
+	return protection.DefaultRef
+}
+
 func EvaluateProtectedRefUpdates(request ProtectedRefRequest) ProtectedRefDecision {
 	if IsReplicaPrincipal(request.Principal) || IsMergeCoordinator(request.Principal) {
 		return ProtectedRefDecision{Allow: true}
@@ -93,10 +177,10 @@ func EvaluateProtectedRefUpdates(request ProtectedRefRequest) ProtectedRefDecisi
 		}
 		creating := IsZeroOID(command.OldOID)
 		deleting := IsZeroOID(command.NewOID)
-		if request.EmptyRepo && creating && !deleting && request.CanMaintain {
+		if !ProtectedRefMatches(ref, protected, request.ProtectedPatterns) {
 			continue
 		}
-		if ref != protected {
+		if creating && !deleting && request.CanMaintain && (ref != protected || request.EmptyRepo) {
 			continue
 		}
 		if deleting {

@@ -105,11 +105,12 @@ func grantGitGroup(policy *GitForgePolicy, channel string, member nostr.PubKey, 
 	members.mu.Unlock()
 }
 
-func readyHostedRepository(t *testing.T, policy *GitForgePolicy, store *EventStore, owner nostr.SecretKey, id, channel string) nostr.Event {
+func readyHostedRepository(t *testing.T, policy *GitForgePolicy, store *EventStore, owner nostr.SecretKey, id, channel string, extra ...nostr.Tag) nostr.Event {
 	t.Helper()
 	event := gitForgeRepositoryEvent(t, owner, id)
 	event.Tags = event.Tags[:1]
 	event.Tags = append(event.Tags, nostr.Tag{projecttask.TagBuzzChannel, channel})
+	event.Tags = append(event.Tags, extra...)
 	require.NoError(t, event.Sign(owner))
 	require.NoError(t, store.SaveEvent(event))
 	require.NoError(t, policy.Remember(context.Background(), event))
@@ -350,6 +351,27 @@ func TestGitHTTPRejectsDirectDefaultBranchPush(t *testing.T) {
 	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
 	body := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
 		OldOID: strings.Repeat("a", 40), NewOID: strings.Repeat("b", 40), Ref: "refs/heads/main",
+	}})
+	request := httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(body)))
+	signedGitRequest(t, request, member, http.MethodGet, root)
+	recorder := httptest.NewRecorder()
+	policy.ServeGitHTTP(recorder, request)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "protected_ref_update_denied")
+	require.Empty(t, backend.gitCalls)
+}
+
+func TestGitHTTPRejectsDirectExtraProtectedBranchPush(t *testing.T) {
+	backend := &recordingGitBackend{refsJSON: `{"head":{"name":"refs/heads/main","sha":"` + strings.Repeat("a", 40) + `"},"refs":[{"name":"refs/heads/main","sha":"` + strings.Repeat("a", 40) + `"},{"name":"refs/heads/release/1.0","sha":"` + strings.Repeat("a", 40) + `"}]}`}
+	policy, store := createGitForgeTestPolicy(t, backend)
+	owner := nostr.Generate()
+	member := nostr.Generate()
+	repository := readyHostedRepository(t, policy, store, owner, "notes", "repo-channel", nostr.Tag{projecttask.TagProtectedRef, "release/*"})
+	grantGitGroup(policy, "repo-channel", member.Public())
+	policy.ProjectTasks.Groups.SetMemberRoles("repo-channel", member.Public(), []string{"maintainer"})
+	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
+	body := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
+		OldOID: strings.Repeat("a", 40), NewOID: strings.Repeat("b", 40), Ref: "refs/heads/release/1.0",
 	}})
 	request := httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(body)))
 	signedGitRequest(t, request, member, http.MethodGet, root)

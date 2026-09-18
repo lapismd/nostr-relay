@@ -65,6 +65,52 @@ func TestEvaluateProtectedRefUpdatesAllowsEmptyBootstrapAndCoordinator(t *testin
 	require.True(t, replica.Allow)
 }
 
+func TestEvaluateProtectedRefUpdatesDeniesExtraPatternUpdate(t *testing.T) {
+	old := strings.Repeat("a", 40)
+	next := strings.Repeat("b", 40)
+	decision := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:         strings.Repeat("c", 64),
+		ProtectedRef:      "refs/heads/main",
+		ProtectedPatterns: []string{"release/*", "*", "jj-sync/*"},
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/release/1.0"},
+		},
+	})
+	require.Equal(t, "protected_ref_update_denied", decision.Code)
+
+	create := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:         strings.Repeat("c", 64),
+		ProtectedRef:      "refs/heads/main",
+		ProtectedPatterns: []string{"refs/heads/release/*"},
+		CanMaintain:       true,
+		Commands: []ReceivePackCommand{
+			{OldOID: strings.Repeat("0", 40), NewOID: next, Ref: "refs/heads/release/1.0"},
+		},
+	})
+	require.True(t, create.Allow)
+
+	unrelated := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:         strings.Repeat("c", 64),
+		ProtectedRef:      "refs/heads/main",
+		ProtectedPatterns: []string{"release/*"},
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/feature"},
+		},
+	})
+	require.True(t, unrelated.Allow)
+}
+
+func TestCompileProtectionIgnoresInvalidAndDefaultPatterns(t *testing.T) {
+	compiled := CompileProtection("main", []string{
+		"release/*", "refs/heads/main", "*", "jj-sync/*", "release/*",
+	})
+	require.Equal(t, "refs/heads/main", compiled.DefaultRef)
+	require.Equal(t, []string{"refs/heads/release/*"}, compiled.Patterns)
+	require.True(t, compiled.Matches("release/1.0"))
+	require.Equal(t, "refs/heads/release/1.0", compiled.TargetRef("release/1.0"))
+	require.False(t, compiled.Matches("feature"))
+}
+
 func TestParseReceivePackCommands(t *testing.T) {
 	old := strings.Repeat("0", 40)
 	next := strings.Repeat("a", 40)

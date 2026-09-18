@@ -19,6 +19,10 @@ const (
 
 	TagBuzzChannel    = "buzz-channel"
 	TagBuzzVisibility = "buzz-visibility"
+	// TagProtectedRef adds an extra compiled branch pattern beside the live
+	// default. Invalid values are ignored at compile time and cannot loosen
+	// default-branch protection.
+	TagProtectedRef = "protected-ref"
 	// TagProjectTaskAnchor marks a repository announcement as a logical
 	// project-level task namespace. It deliberately has no Git backing.
 	TagProjectTaskAnchor = "project-task-anchor"

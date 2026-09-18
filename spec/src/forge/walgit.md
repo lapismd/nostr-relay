@@ -127,16 +127,19 @@ ambiguous or oversized authorization headers.
 After authentication, the `30617` is resolved from the event store. Reads
 require access to its `buzz-channel`; pushes additionally require the existing
 group write policy. Receive-pack commands are then parsed and the live default
-branch (`HEAD` / advertised default) is protected: user principals cannot
-update, force-push, or delete that ref. Feature branches and
-`refs/heads/jj-sync/**` remain writable. The first create of a default branch
-on an empty repository is allowed for `CanMaintain` so the repository can be
-seeded. Replica principals (`github-replica:…`) and the merge coordinator
-principal update the protected ref outside this user path. Tags are
-unprotected unless later configured. The PR diff path checks the complete
-derived scope intersection. The public client cannot supply the service token
-or trusted WalGit principal: the reverse proxy strips them and creates both
-internally.
+branch (`HEAD` / advertised default) is protected together with any additive
+`protected-ref` patterns on the `30617` announcement (`release/*` compiles to
+`refs/heads/release/*`). User principals cannot update, force-push, or delete
+those refs. Overly broad or `jj-sync` patterns are ignored and cannot loosen
+the default. Feature branches and `refs/heads/jj-sync/**` remain writable. The
+first create of a default branch on an empty repository is allowed for
+`CanMaintain` so the repository can be seeded; the first create of an extra
+protected ref is also allowed for `CanMaintain`. Replica principals
+(`github-replica:…`) and the merge coordinator principal update protected
+refs outside this user path. Tags are unprotected unless later configured. The
+PR diff path checks the complete derived scope intersection. The public client
+cannot supply the service token or trusted WalGit principal: the reverse proxy
+strips them and creates both internally.
 
 ## Git and browser APIs
 

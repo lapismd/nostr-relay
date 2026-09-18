@@ -673,12 +673,14 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 	}
 	if resolved.Repository.Integration.CollaborationBackend == forge.BackendRelay &&
 		resolved.Repository.Integration.GitAuthorityBackend == forge.BackendWalGit {
-		_, protected := policy.hostedProtection(r.Context(), resolved, actor.Hex())
+		_, compiled := policy.hostedProtection(r.Context(), resolved, actor.Hex())
+		protected := compiled.TargetRef(state.TargetBranch)
 		eligibility := projecttask.EvaluateMergeEligibility(
-			state, actor, request.ExpectedHead, protected,
+			state, actor, request.ExpectedHead, compiled.DefaultRef,
 			policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement),
 			policy.loadProtectedOwners(r.Context(), resolved, protected),
 			policy.changedPullRequestPaths(r.Context(), resolved, state, actor.Hex()),
+			compiled.Patterns...,
 		)
 		if !eligibility.OK {
 			if len(eligibility.MissingOwners) > 0 {

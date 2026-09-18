@@ -20,10 +20,11 @@ func (policy *GitForgePolicy) advertiseCapabilities(ctx context.Context, resolve
 	if capabilities.Protection == nil || capabilities.Protection.GitHubAuthoritative {
 		return capabilities
 	}
-	_, protected := policy.hostedProtection(ctx, resolved, principal)
+	_, compiled := policy.hostedProtection(ctx, resolved, principal)
 	protection := *capabilities.Protection
-	protection.ProtectedRef = protected
-	protection.DefaultBranch = strings.TrimPrefix(protected, "refs/heads/")
+	protection.ProtectedRef = compiled.DefaultRef
+	protection.DefaultBranch = strings.TrimPrefix(compiled.DefaultRef, "refs/heads/")
+	protection.ProtectedPatterns = compiled.Patterns
 	protection.PullRequestsRequired = true
 	protection.MergeActors = "channel_maintainers"
 	capabilities.Protection = &protection
@@ -58,12 +59,14 @@ func (policy *GitForgePolicy) processRelayMerge(ctx context.Context, resolved fo
 		_ = policy.failForgeOperation(ctx, operation, err)
 		return err
 	}
-	refs, protected := policy.hostedProtection(ctx, resolved, operation.Actor.Hex())
+	refs, compiled := policy.hostedProtection(ctx, resolved, operation.Actor.Hex())
+	protected := compiled.TargetRef(state.TargetBranch)
 	owners := policy.loadProtectedOwners(ctx, resolved, protected)
 	paths := policy.changedPullRequestPaths(ctx, resolved, state, operation.Actor.Hex())
 	eligibility := projecttask.EvaluateMergeEligibility(
-		state, operation.Actor, operation.ExpectedHead, protected,
+		state, operation.Actor, operation.ExpectedHead, compiled.DefaultRef,
 		policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement), owners, paths,
+		compiled.Patterns...,
 	)
 	if !eligibility.OK {
 		err = &forge.Error{Status: http.StatusConflict, Code: eligibility.Code}

@@ -87,7 +87,9 @@ Connection, attachment, health, import, migration, and mirror administration
 require `Config.CanManage`. Merge requires `CanMaintain` on the repository channel and the expected
 current head. Hosted WalGit repositories with `collaboration=relay` advertise
 `capabilities.merge=true` plus the relay-owned default-branch protection
-document. GitHub-authoritative repositories keep clone/push/protection on
+document. That document advertises the live default as `protected_ref` and any
+compiled extra `protected-ref` announcement patterns as `protected_patterns`.
+GitHub-authoritative repositories keep clone/push/protection on
 GitHub and say so in that document.
 
 Provider commands are durable and return `202` plus an operation ID. A caller

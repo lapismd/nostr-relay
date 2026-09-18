@@ -12,7 +12,7 @@ type MergeEligibility struct {
 	MissingOwners []string
 }
 
-func EvaluateMergeEligibility(state PullRequestState, actor nostr.PubKey, expectedHead, protectedRef string, authority CollaborationAuthority, owners OwnersDocument, changedPaths []string) MergeEligibility {
+func EvaluateMergeEligibility(state PullRequestState, actor nostr.PubKey, expectedHead, protectedRef string, authority CollaborationAuthority, owners OwnersDocument, changedPaths []string, extraPatterns ...string) MergeEligibility {
 	if state.Lifecycle != PullRequestOpen {
 		return MergeEligibility{Code: "pull_request_not_open"}
 	}
@@ -22,7 +22,7 @@ func EvaluateMergeEligibility(state PullRequestState, actor nostr.PubKey, expect
 	if !strings.EqualFold(state.CurrentCommit, expectedHead) || expectedHead == "" {
 		return MergeEligibility{Code: "pull_request_head_changed"}
 	}
-	if !sameProtectedTarget(state.TargetBranch, protectedRef) {
+	if !sameProtectedTarget(state.TargetBranch, protectedRef, extraPatterns) {
 		return MergeEligibility{Code: "protected_target_required"}
 	}
 	if len(state.ChangeRequests) > 0 {
@@ -38,18 +38,36 @@ func EvaluateMergeEligibility(state PullRequestState, actor nostr.PubKey, expect
 	return MergeEligibility{OK: true}
 }
 
-func sameProtectedTarget(target, protectedRef string) bool {
-	normalize := func(value string) string {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return "refs/heads/main"
-		}
-		if strings.HasPrefix(value, "refs/") {
-			return value
-		}
-		return "refs/heads/" + strings.TrimPrefix(value, "heads/")
+func sameProtectedTarget(target, protectedRef string, extraPatterns []string) bool {
+	normalized := normalizeMergeRef(target)
+	if normalized == normalizeMergeRef(protectedRef) {
+		return true
 	}
-	return normalize(target) == normalize(protectedRef)
+	for _, pattern := range extraPatterns {
+		compiled := normalizeMergeRef(pattern)
+		if compiled == normalized {
+			return true
+		}
+		if strings.HasSuffix(compiled, "/*") {
+			prefix := strings.TrimSuffix(compiled, "/*") + "/"
+			rest := strings.TrimPrefix(normalized, prefix)
+			if rest != normalized && rest != "" && !strings.Contains(rest, "/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeMergeRef(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "refs/heads/main"
+	}
+	if strings.HasPrefix(value, "refs/") {
+		return value
+	}
+	return "refs/heads/" + strings.TrimPrefix(value, "heads/")
 }
 
 func hasTrustedNonAuthorApproval(state PullRequestState, authority CollaborationAuthority) bool {

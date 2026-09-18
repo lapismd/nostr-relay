@@ -35,12 +35,14 @@ remain manual operator gates.
 ### Protected refs and policy synchronization
 
 Hosted WalGit repositories now protect the live default branch at the relay
-receive-pack boundary: user principals cannot update, force-push, or delete
-that ref, feature branches and `refs/heads/jj-sync/**` stay writable, empty
-repositories allow a `CanMaintain` bootstrap create, and the merge
-coordinator plus replica principals remain the only privileged writers of the
-protected ref. Extra branch patterns, required-approval counts, and admin
-bypass remain future configuration; deleting `OWNERS.md` cannot disable this
+receive-pack boundary together with additive `protected-ref` announcement
+patterns: user principals cannot update, force-push, or delete those refs,
+feature branches and `refs/heads/jj-sync/**` stay writable, empty
+repositories allow a `CanMaintain` bootstrap create of the default, maintainers
+may create a new extra protected ref once, and the merge coordinator plus
+replica principals remain the only privileged writers of later updates.
+Required-approval counts and admin bypass remain future configuration;
+deleting `OWNERS.md` or omitting `protected-ref` tags cannot disable the
 default.
 
 ### Ref-driven activity and automatic PR revisions
@@ -58,10 +60,11 @@ repository-state publication remains a separate protocol decision.
 ### WalGit merge coordinator and execution
 
 Native WalGit merge eligibility, coordinator execution, durable ref
-confirmation, and `capabilities.merge` advertisement are implemented. The
-merging maintainer publishes confirmed `kind:1631` after the operation
-returns the merge commit. A merge-queue scheduler, extra protected-branch
-patterns, and automatic CI-as-a-merge-gate remain out of scope.
+confirmation, and `capabilities.merge` advertisement are implemented. Extra
+`protected-ref` patterns compile into that same eligibility and receive-pack
+path. The merging maintainer publishes confirmed `kind:1631` after the
+operation returns the merge commit. A merge-queue scheduler and automatic
+CI-as-a-merge-gate remain out of scope.
 
 ### Repository retirement
 
@@ -92,7 +95,7 @@ Only the original native WalGit automation outcomes remain open:
 
 | Original item | Current status | Follow-up |
 | --- | --- | --- |
-| Protected branches reject ordinary direct updates | implemented for the live default branch | extra branch patterns |
+| Protected branches reject ordinary direct updates | implemented for the live default branch and additive `protected-ref` patterns | required-approval counts and admin bypass |
 | Branch updates drive PR revision | refs durable; no automatic `1619` signer | ref-driven revisions |
 | A coordinator updates a protected WalGit target | implemented | merge-queue leftover |
 | Confirmed WalGit merge publishes `1631` | maintainer-signed after confirmed coordinator merge | merge-queue leftover |
