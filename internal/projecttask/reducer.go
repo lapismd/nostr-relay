@@ -65,7 +65,7 @@ func ReduceTask(issue, repository nostr.Event, related []nostr.Event, authority 
 				state.StatusEvent = &copy
 			}
 		case nostr.KindTextNote:
-			op, ok := parseAssignment(event, issue.PubKey, repository.PubKey)
+			op, ok := parseAssignment(event, auth)
 			state.Activity = append(state.Activity, Activity{
 				Event:               event,
 				Encoding:            CommentBuzzKind1,
@@ -120,7 +120,7 @@ type assignmentOperation struct {
 	accepted bool
 }
 
-func parseAssignment(event nostr.Event, issueAuthor, repositoryOwner nostr.PubKey) (assignmentOperation, bool) {
+func parseAssignment(event nostr.Event, authority CollaborationAuthority) (assignmentOperation, bool) {
 	assignment := tagHasValue(event.Tags, "t", "assignment")
 	unassignment := tagHasValue(event.Tags, "t", "unassignment")
 	if assignment == unassignment {
@@ -137,7 +137,7 @@ func parseAssignment(event nostr.Event, issueAuthor, repositoryOwner nostr.PubKe
 			pubkeys = append(pubkeys, pubkey)
 		}
 	}
-	authoritative := event.PubKey == issueAuthor || event.PubKey == repositoryOwner
+	authoritative := authority.Allows(event.PubKey)
 	self := len(pubkeys) == 1 && pubkeys[0] == event.PubKey
 	if !authoritative && !self {
 		return assignmentOperation{}, false

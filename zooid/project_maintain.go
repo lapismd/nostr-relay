@@ -11,14 +11,44 @@ func (policy *ProjectTaskPolicy) checkMaintainRules(ctx context.Context, event n
 	switch {
 	case event.Kind == nostr.KindRepositoryAnnouncement:
 		return policy.checkRepositoryAnnouncement(ctx, event)
-	case event.Kind == nostr.KindStatusApplied:
-		if !policy.canMaintainRepositoryEvent(ctx, event) {
-			return "restricted: merging requires a channel maintainer role"
-		}
 	case projecttask.IsReviewDecision(event):
 		return policy.checkReviewDecision(ctx, event)
+	case isCollaborationStatus(event.Kind):
+		return policy.checkStatusDecision(ctx, event)
 	}
 	return ""
+}
+
+func isCollaborationStatus(kind nostr.Kind) bool {
+	switch kind {
+	case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft:
+		return true
+	default:
+		return false
+	}
+}
+
+func (policy *ProjectTaskPolicy) checkStatusDecision(ctx context.Context, event nostr.Event) string {
+	root, repository, ok := policy.reviewTargets(ctx, event)
+	if !ok {
+		return ""
+	}
+	channel := projecttask.BuzzChannel(repository)
+	if policy.Groups.CanMaintain(channel, event.PubKey) {
+		return ""
+	}
+	if root.Kind == projecttask.KindPullRequest &&
+		event.Kind != nostr.KindStatusApplied &&
+		event.PubKey == root.PubKey {
+		return ""
+	}
+	if event.Kind == nostr.KindStatusApplied {
+		return "restricted: merging requires a channel maintainer role"
+	}
+	if root.Kind == nostr.KindIssue {
+		return "restricted: task status requires a channel maintainer role"
+	}
+	return "restricted: pull request status requires a channel maintainer role"
 }
 
 func (policy *ProjectTaskPolicy) checkRepositoryAnnouncement(ctx context.Context, event nostr.Event) string {

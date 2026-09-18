@@ -77,7 +77,8 @@ state using `internal/projecttask`:
 - only a `CanMaintain` signer on the repository `buzz-channel` changes task
   status; the `30617` `maintainers` tag is not authority;
 - equal status timestamps use ascending event ID as the tie-breaker;
-- the issue author or repository owner can assign or unassign anyone;
+- only a `CanMaintain` signer can assign or unassign anyone; the issue
+  author and `30617` owner are not assignment authority;
 - another signer can only operate on itself with exactly one matching `p` tag;
 - self operations without `prior` are applied first, authoritative operations
   second, and causal self operations last, preserving chronological order

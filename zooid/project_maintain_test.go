@@ -88,6 +88,85 @@ func TestProjectTaskPolicyRejectsReviewWithoutCanMaintain(t *testing.T) {
 	require.Empty(t, reason)
 }
 
+func TestProjectTaskPolicyRejectsTaskStatusWithoutCanMaintain(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "repo-channel", false)
+	owner := nostr.Generate()
+	author := nostr.Generate()
+	member := nostr.Generate()
+	groups.creatorCache.Store("repo-channel", owner.Public())
+	addProjectTaskTestMember(groups, "repo-channel", author.Public())
+	addProjectTaskTestMember(groups, "repo-channel", member.Public())
+	coordinate := projecttask.RepositoryCoordinate{Owner: owner.Public(), ID: "notes"}
+	repository := signedEvent(owner, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{
+		{"d", "notes"}, {projecttask.TagBuzzChannel, "repo-channel"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(repository))
+	issue := signedEvent(author, 20, nostr.KindIssue, nostr.Tags{
+		{"a", coordinate.String()}, {"subject", "Ship"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(issue))
+
+	closed := signedEvent(member, 30, nostr.KindStatusClosed, nostr.Tags{
+		{"e", issue.ID.Hex(), "", "root"}, {"a", coordinate.String()},
+	})
+	handled, reason := policy.CheckWrite(context.Background(), closed)
+	require.True(t, handled)
+	require.Contains(t, reason, "task status")
+
+	authorClosed := signedEvent(author, 31, nostr.KindStatusClosed, nostr.Tags{
+		{"e", issue.ID.Hex(), "", "root"}, {"a", coordinate.String()},
+	})
+	handled, reason = policy.CheckWrite(context.Background(), authorClosed)
+	require.True(t, handled)
+	require.Contains(t, reason, "task status")
+
+	groups.SetMemberRoles("repo-channel", member.Public(), []string{"maintainer"})
+	handled, reason = policy.CheckWrite(context.Background(), closed)
+	require.True(t, handled)
+	require.Empty(t, reason)
+}
+
+func TestProjectTaskPolicyAllowsAuthorToClosePullRequest(t *testing.T) {
+	policy, groups := createProjectTaskTestPolicy(t, "repo-channel", false)
+	owner := nostr.Generate()
+	author := nostr.Generate()
+	member := nostr.Generate()
+	groups.creatorCache.Store("repo-channel", owner.Public())
+	addProjectTaskTestMember(groups, "repo-channel", author.Public())
+	addProjectTaskTestMember(groups, "repo-channel", member.Public())
+	coordinate := projecttask.RepositoryCoordinate{Owner: owner.Public(), ID: "notes"}
+	repository := signedEvent(owner, 10, nostr.KindRepositoryAnnouncement, nostr.Tags{
+		{"d", "notes"}, {projecttask.TagBuzzChannel, "repo-channel"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(repository))
+	root := signedEvent(author, 20, projecttask.KindPullRequest, nostr.Tags{
+		{"a", coordinate.String()}, {"p", owner.Public().Hex()}, {"subject", "Review"},
+		{"c", strings.Repeat("a", 40)}, {"clone", "https://example.com/notes.git"},
+	})
+	require.NoError(t, policy.Events.SaveEvent(root))
+
+	closed := signedEvent(author, 30, nostr.KindStatusClosed, nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()},
+	})
+	handled, reason := policy.CheckWrite(context.Background(), closed)
+	require.True(t, handled)
+	require.Empty(t, reason)
+
+	merged := signedEvent(author, 31, nostr.KindStatusApplied, nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()},
+	})
+	handled, reason = policy.CheckWrite(context.Background(), merged)
+	require.True(t, handled)
+	require.Contains(t, reason, "merging")
+
+	memberClosed := signedEvent(member, 32, nostr.KindStatusClosed, nostr.Tags{
+		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()},
+	})
+	handled, reason = policy.CheckWrite(context.Background(), memberClosed)
+	require.True(t, handled)
+	require.Contains(t, reason, "pull request status")
+}
+
 func TestCanMaintainFailsClosedForUnknownGroups(t *testing.T) {
 	groups, _ := createTestGroupStore()
 	groups.WarmCaches()
