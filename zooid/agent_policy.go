@@ -209,6 +209,14 @@ func (agentPolicy *AgentPolicy) CheckWrite(ctx context.Context, event nostr.Even
 	}
 
 	switch event.Kind {
+	case repositoryLiveContextKind:
+		h, valid := agentPolicy.liveContextGroup(event)
+		if !valid {
+			return "invalid: malformed live repository context"
+		}
+		if !agentPolicy.Groups.IsMember(h, event.PubKey) {
+			return "restricted: channel membership is required"
+		}
 	case protocol.KindPresence:
 		if h, err := exactOptionalTag(event.Tags, "h"); err != nil {
 			return "invalid: " + err.Error()
@@ -273,6 +281,10 @@ func managedAuthTag(tags nostr.Tags) (nostr.Tag, bool) {
 }
 
 func (agentPolicy *AgentPolicy) CanRead(reader nostr.PubKey, event nostr.Event) bool {
+	if event.Kind == repositoryLiveContextKind {
+		h, valid := agentPolicy.liveContextGroup(event)
+		return valid && agentPolicy.Groups.IsMember(h, reader) && agentPolicy.Groups.IsMember(h, event.PubKey)
+	}
 	if event.Kind == protocol.KindPersona {
 		if policy.CanReadPrivateEvent(reader, event) {
 			return true

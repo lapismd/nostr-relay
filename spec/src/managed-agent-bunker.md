@@ -171,3 +171,5 @@ rumors; arbitrary private payloads and unapproved recipient sets are rejected.
 | Surface | Verification |
 | --- | --- |
 | Managed DM policy | Signed-instance, participant-set, owner-control and revocation tests in the agent bunker suite. |
+
+Channel-scoped live agent context uses ephemeral kind `23908`, with exact `r`, `a`, and `h` tags and bounded JSON. Signing requires repository/channel agreement and membership; delivery requires the reader to be a member, even for public channels. These events MUST NOT be retained or replayed. Owner telemetry remains encrypted kind `24200`.

@@ -813,7 +813,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if a.Status != StatusActive {
 		return errors.New("agent is inactive")
 	}
-	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 3901, 3902, 3903, 3904, 3905, 3906, 3907, 3908, 20001, 20002, 24200, 27235, 30023, 30617, 30621, 33901, 40100, nostr.KindDMRelayList}, event.Kind) {
+	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 3901, 3902, 3903, 3904, 3905, 3906, 3907, 3908, 20001, 20002, 23908, 24200, 27235, 30023, 30617, 30621, 33901, 40100, nostr.KindDMRelayList}, event.Kind) {
 		return errors.New("event kind is not allowed")
 	}
 	if event.Kind == nostr.KindSeal && (len(event.Tags) != 0 || event.Content == "") {
@@ -899,7 +899,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 }
 
 func isJJContextKind(kind nostr.Kind) bool {
-	return (kind >= 3901 && kind <= 3908) || kind == 33901
+	return (kind >= 3901 && kind <= 3908) || kind == 33901 || kind == 23908
 }
 
 func (s *Service) authorizeRelayAuthentication(a Agent, event nostr.Event) error {
