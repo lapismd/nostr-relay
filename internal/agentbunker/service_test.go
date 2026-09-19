@@ -219,7 +219,7 @@ func testService(t *testing.T) (*Service, *memoryStore, nostr.SecretKey) {
 	require.NoError(t, err)
 	store := newMemoryStore()
 	relay := nostr.Generate()
-	service, err := NewService(Config{PublicURL: "https://relay.example", AllowedBrowserOrigins: []string{"https://community.example"}, RelayPubkey: relay.Public()}, store, wrapper)
+	service, err := NewService(Config{PublicURL: "https://relay.example", GitPublicURL: "https://relay.example", AllowedBrowserOrigins: []string{"https://community.example"}, RelayPubkey: relay.Public()}, store, wrapper)
 	require.NoError(t, err)
 	now := time.Unix(2_000_000_000, 0)
 	service.Now = func() time.Time { return now }
@@ -415,7 +415,7 @@ func TestManagedAgentPolicyRejectsForbiddenSigningAndNonOwnerEncryption(t *testi
 	now := service.Now()
 	store.agents[agentSecret.Public().Hex()] = Agent{Pubkey: agentSecret.Public().Hex(), OwnerPubkey: owner.Public().Hex(), RelayPubkey: service.Config.RelayPubkey.Hex(), Status: StatusActive, Key: key, CreatedAt: now}
 	store.clients[agentSecret.Public().Hex()+":"+clientSecret.Public().Hex()] = Client{AgentPubkey: agentSecret.Public().Hex(), ClientPubkey: clientSecret.Public().Hex(), Status: ClientActive, CreatedAt: now}
-	template := eventTemplate{Kind: 27235, CreatedAt: now.Unix(), Tags: [][]string{}, Content: ""}
+	template := eventTemplate{Kind: 1, CreatedAt: now.Unix(), Tags: [][]string{}, Content: ""}
 	raw, _ := json.Marshal(template)
 	request := rpcEvent(t, agentSecret.Public(), agentSecret, clientSecret, nip46.Request{ID: "forbidden", Method: "sign_event", Params: []string{string(raw)}}, now)
 	event, err := service.HandleNIP46(context.Background(), request)
@@ -426,6 +426,50 @@ func TestManagedAgentPolicyRejectsForbiddenSigningAndNonOwnerEncryption(t *testi
 	event, err = service.HandleNIP46(context.Background(), encrypt)
 	require.NoError(t, err)
 	require.Contains(t, decodeBunkerResponse(t, event, agentSecret.Public(), clientSecret).Error, "not approved by the owner")
+}
+
+func TestManagedAgentSignsOnlyScopedJJAndGitTemplates(t *testing.T) {
+	service, _, _ := testService(t)
+	agentKey, owner, repositoryOwner := nostr.Generate(), nostr.Generate(), nostr.Generate()
+	agent := Agent{Pubkey: agentKey.Public().Hex(), OwnerPubkey: owner.Public().Hex(), Status: StatusActive}
+	now := nostr.Timestamp(service.Now().Unix())
+	repository := nostr.Event{
+		Kind: nostr.KindRepositoryAnnouncement, PubKey: repositoryOwner.Public(), CreatedAt: now,
+		Tags: nostr.Tags{{"d", "notes"}, {"buzz-channel", "room"}, {"h", "room"}},
+	}
+	coordinate := "30617:" + repositoryOwner.Public().Hex() + ":notes"
+	service.CurrentEvent = func(kind nostr.Kind, author nostr.PubKey, d string) *nostr.Event {
+		if kind == nostr.KindRepositoryAnnouncement && author == repositoryOwner.Public() && d == "notes" {
+			return &repository
+		}
+		return nil
+	}
+	service.IsMember = func(group string, key nostr.PubKey) bool {
+		return group == "room" && key == agentKey.Public()
+	}
+
+	jj := nostr.Event{Kind: 3908, CreatedAt: now, Tags: nostr.Tags{
+		{"t", "jj-agent-context-page"}, {"r", "scope"}, {"o", "operation"},
+		{"d", "checkpoint"}, {"sequence", "0"}, {"a", coordinate}, {"h", "room"},
+	}, Content: `{"schema":"jj-sync/agent-context-page"}`}
+	require.NoError(t, service.authorizeSigning(agent, jj))
+
+	wrongRepository := jj
+	wrongRepository.Tags = jj.Tags.CloneDeep()
+	wrongRepository.Tags[5][1] = "30617:" + repositoryOwner.Public().Hex() + ":other"
+	require.ErrorContains(t, service.authorizeSigning(agent, wrongRepository), "JJ context")
+
+	extraTag := jj
+	extraTag.Tags = append(jj.Tags.CloneDeep(), nostr.Tag{"client", "untrusted"})
+	require.ErrorContains(t, service.authorizeSigning(agent, extraTag), "JJ context tags")
+
+	gitAuth := nostr.Event{Kind: nostr.KindHTTPAuth, CreatedAt: now, Tags: nostr.Tags{
+		{"u", "https://relay.example/git/" + repositoryOwner.Public().Hex() + "/notes"},
+		{"method", http.MethodGet},
+	}}
+	require.NoError(t, service.authorizeSigning(agent, gitAuth))
+	gitAuth.Tags[0][1] = "https://attacker.example/git/" + repositoryOwner.Public().Hex() + "/notes"
+	require.ErrorContains(t, service.authorizeSigning(agent, gitAuth), "repository URL")
 }
 
 func TestManagedAgentSupportsOwnerOnlyNIP17(t *testing.T) {

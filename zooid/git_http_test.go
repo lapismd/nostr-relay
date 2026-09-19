@@ -413,6 +413,38 @@ func TestGitHTTPAllowsJJSyncAndEmptyDefaultBootstrap(t *testing.T) {
 	require.Equal(t, []string{"git-receive-pack", "git-receive-pack"}, backend.gitCalls)
 }
 
+func TestGitHTTPRestrictsManagedAgentsToJJSyncRefs(t *testing.T) {
+	backend := &recordingGitBackend{}
+	policy, store := createGitForgeTestPolicy(t, backend)
+	owner := nostr.Generate()
+	agent := nostr.Generate()
+	repository := readyHostedRepository(t, policy, store, owner, "notes", "repo-channel")
+	grantGitGroup(policy, "repo-channel", agent.Public())
+	policy.ProjectTasks.Groups.SetMemberRoles("repo-channel", agent.Public(), []string{"maintainer"})
+	policy.IsManagedAgent = func(pubkey nostr.PubKey) bool { return pubkey == agent.Public() }
+	root := "https://relay.example/git/" + repository.PubKey.Hex() + "/notes.git"
+
+	feature := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
+		OldOID: strings.Repeat("0", 40), NewOID: strings.Repeat("b", 40), Ref: "refs/heads/feature",
+	}})
+	request := httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(feature)))
+	signedGitRequest(t, request, agent, http.MethodGet, root)
+	recorder := httptest.NewRecorder()
+	policy.ServeGitHTTP(recorder, request)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "managed_agent_ref_update_denied")
+
+	checkpoint := gitforge.EncodeReceivePackCommands([]gitforge.ReceivePackCommand{{
+		OldOID: strings.Repeat("0", 40), NewOID: strings.Repeat("c", 40), Ref: "refs/heads/jj-sync/scope",
+	}})
+	request = httptest.NewRequest(http.MethodPost, root+"/git-receive-pack", strings.NewReader(string(checkpoint)))
+	signedGitRequest(t, request, agent, http.MethodGet, root)
+	recorder = httptest.NewRecorder()
+	policy.ServeGitHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, []string{"git-receive-pack"}, backend.gitCalls)
+}
+
 func mustDefaultProtectionDocument(t *testing.T) gitforge.ProtectionDocument {
 	t.Helper()
 	document, err := gitforge.ParseProtectionDocument([]byte(`{

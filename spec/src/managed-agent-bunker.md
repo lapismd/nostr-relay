@@ -65,7 +65,9 @@ content under the same ID is rejected.
 
 Bootstrap permits `connect`, `get_public_key`, and one exact pending kind `0`.
 Active clients may sign only kinds `13`, `22242`, `9`, `7`, `10050`, `20001`,
-`20002`, `24200`, and the bounded relay-tool kinds described below;
+`20002`, `24200`, repository-scoped JJ kinds `3901` through `3908` and
+`33901`, kind `27235` Git credentials, and the bounded relay-tool kinds
+described below;
 group-scoped events require current NIP-29 membership.
 Kind `10050` must advertise only the bunker relay. Kind `13` is limited to an
 empty-tag NIP-17 seal and may use the protocol-defined randomized timestamp up
@@ -77,9 +79,23 @@ The `lapis_nip17_unwrap` NIP-46 extension accepts one complete signed kind
 managed agent, leaving seal, rumor, author, recipient, and policy validation to
 the controller. This gives the controller the outer ephemeral-key operation
 needed by NIP-17 without exposing general NIP-44 decryption for arbitrary peer
-keys. NIP-04, arbitrary profile changes, Git and NIP-98 signing, unknown
+keys. NIP-04, arbitrary profile changes, general-purpose NIP-98 signing, unknown
 methods or kinds, malformed tags, and timestamps outside the method-specific
 bounds are rejected.
+
+Repository-scoped JJ events must carry exactly one `a`, `h`, and `r` tag. The
+repository coordinate must resolve to the same current channel named by `h`,
+the agent must be a current member of that channel, and only the tags defined
+by the JJ event profile are accepted. The bunker does not accept a repository
+or channel supplied only in event content.
+
+A managed client may request kind `27235` only for an exact repository root
+under the configured public Git URL, with empty content and one `u` plus one
+`method` tag. The method is limited to `GET` or `POST`. Git receive-pack applies
+an independent managed-principal gate: every command must update a
+`refs/heads/jj-sync/**` ref. This permits checkpoint replication without giving
+the agent authority to update working branches, tags, protected refs, or other
+Git namespaces.
 
 ## Relay tool signing
 

@@ -17,6 +17,7 @@ const (
 
 type Config struct {
 	PublicURL             string
+	GitPublicURL          string
 	AllowedBrowserOrigins []string
 	InvitationLifetime    time.Duration
 	MaxActivePerOwner     int

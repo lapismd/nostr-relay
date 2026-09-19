@@ -136,7 +136,9 @@ documents leave unmatched refs unrestricted. Legacy documents migrate to one
 Active Default rule that includes the default branch plus stored patterns
 and restricts updates and deletions. Feature branches and
 `refs/heads/jj-sync/**` remain writable unless a matching Active rule
-restricts them. Replica principals (`github-replica:…`) and the merge
+restricts them. Active managed-agent principals are restricted to that JJ
+replication namespace for receive-pack even when they otherwise have channel
+write access. Replica principals (`github-replica:…`) and the merge
 coordinator principal update protected refs outside this user path. Tags are
 unprotected unless later configured. The PR diff path checks the complete
 derived scope intersection. The public client cannot supply the service token

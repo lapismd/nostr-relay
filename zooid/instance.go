@@ -193,6 +193,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		}
 		instance.AgentBunker, err = agentbunker.NewService(agentbunker.Config{
 			PublicURL:             config.Agents.Bunker.PublicURL,
+			GitPublicURL:          config.Git.PublicURL,
 			AllowedBrowserOrigins: config.Agents.Bunker.AllowedBrowserOrigins,
 			InvitationLifetime:    config.AgentBunkerInvitationLifetime(),
 			MaxActivePerOwner:     config.Agents.Bunker.MaxActivePerOwner,
@@ -342,6 +343,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	if config.Git.Enabled {
 		forgeRegistry := forge.NewRegistry()
 		instance.GitForge = NewGitForgePolicyWithRegistry(ctx, config, events, groups, instance.ProjectTasks, forgeRegistry)
+		instance.GitForge.IsManagedAgent = instance.Agents.IsKnownActiveAgent
 		if instance.Auth != nil {
 			instance.GitForge.UserCredentialMode = instance.Auth.GitHubCredentialMode
 		}

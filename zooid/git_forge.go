@@ -32,6 +32,7 @@ type GitForgePolicy struct {
 	EventSource        forge.EventSource
 	PersistEvent       func(context.Context, nostr.Event) error
 	UserCredentialMode func(context.Context, nostr.PubKey) (string, error)
+	IsManagedAgent     func(nostr.PubKey) bool
 	RelayMerger        forge.ProtectedRefMerger
 
 	ctx    context.Context

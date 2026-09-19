@@ -24,6 +24,13 @@ func (policy *GitForgePolicy) authorizeProtectedReceivePack(r *http.Request, res
 	if err != nil {
 		return http.StatusForbidden, "protected_ref_update_denied"
 	}
+	if policy.IsManagedAgent != nil && policy.IsManagedAgent(actor) {
+		for _, command := range commands {
+			if !gitforge.IsJJSyncRef(command.Ref) {
+				return http.StatusForbidden, "managed_agent_ref_update_denied"
+			}
+		}
+	}
 	refs, protection := policy.hostedProtection(r.Context(), resolved, actor.Hex())
 	authority := policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement)
 	decision := gitforge.EvaluateProtectedRefUpdates(gitforge.ProtectedRefRequest{

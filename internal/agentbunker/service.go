@@ -813,7 +813,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if a.Status != StatusActive {
 		return errors.New("agent is inactive")
 	}
-	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 20001, 20002, 24200, 30023, 30617, 30621, 40100, nostr.KindDMRelayList}, event.Kind) {
+	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 3901, 3902, 3903, 3904, 3905, 3906, 3907, 3908, 20001, 20002, 24200, 27235, 30023, 30617, 30621, 33901, 40100, nostr.KindDMRelayList}, event.Kind) {
 		return errors.New("event kind is not allowed")
 	}
 	if event.Kind == nostr.KindSeal && (len(event.Tags) != 0 || event.Content == "") {
@@ -822,8 +822,18 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if event.Kind == nostr.KindDMRelayList && (event.Content != "" || len(event.Tags) != 1 || len(event.Tags[0]) != 2 || event.Tags[0][0] != "relay" || event.Tags[0][1] != s.inboxRelayURL()) {
 		return errors.New("invalid NIP-17 inbox relay list")
 	}
+	if event.Kind == 22242 {
+		if err := s.authorizeRelayAuthentication(a, event); err != nil {
+			return err
+		}
+	}
+	if event.Kind == 27235 {
+		if err := s.authorizeGitAuthentication(a, event); err != nil {
+			return err
+		}
+	}
 	h := exactTag(event.Tags, "h")
-	if event.Kind == 9 || event.Kind == 20002 || event.Kind == 5 || event.Kind == 1111 || isRelayToolKind(event.Kind) {
+	if event.Kind == 9 || event.Kind == 20002 || event.Kind == 5 || event.Kind == 1111 || isRelayToolKind(event.Kind) || isJJContextKind(event.Kind) {
 		if h == "" {
 			return errors.New("group tag is required")
 		}
@@ -877,8 +887,113 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 			return err
 		}
 	}
+	if isJJContextKind(event.Kind) {
+		if err := s.authorizeJJContextSigning(event, h); err != nil {
+			return err
+		}
+	}
 	if event.Kind == 24200 && exactTag(event.Tags, "p") != a.OwnerPubkey {
 		return errors.New("owner tag is required")
+	}
+	return nil
+}
+
+func isJJContextKind(kind nostr.Kind) bool {
+	return (kind >= 3901 && kind <= 3908) || kind == 33901
+}
+
+func (s *Service) authorizeRelayAuthentication(a Agent, event nostr.Event) error {
+	if event.Content != "" || exactTag(event.Tags, "relay") != s.inboxRelayURL() || exactTag(event.Tags, "challenge") == "" {
+		return errors.New("invalid relay authentication template")
+	}
+	auth := ""
+	for _, tag := range event.Tags {
+		if len(tag) == 0 || !slices.Contains([]string{"relay", "challenge", "lapis-managed"}, tag[0]) {
+			return errors.New("invalid relay authentication tags")
+		}
+		if tag[0] == "lapis-managed" {
+			if auth != "" || len(tag) != 3 || tag[1] != a.OwnerPubkey || tag[2] != s.Config.RelayPubkey.Hex() {
+				return errors.New("invalid managed authentication tag")
+			}
+			auth = tag[1]
+		}
+	}
+	if auth == "" || len(event.Tags) != 3 {
+		return errors.New("managed authentication tag is required")
+	}
+	return nil
+}
+
+func (s *Service) authorizeGitAuthentication(a Agent, event nostr.Event) error {
+	if event.Content != "" || len(event.Tags) != 2 {
+		return errors.New("invalid Git authentication template")
+	}
+	method := exactTag(event.Tags, "method")
+	if method != http.MethodGet && method != http.MethodPost {
+		return errors.New("invalid Git authentication method")
+	}
+	group, ok := s.gitRepositoryGroup(exactTag(event.Tags, "u"))
+	if !ok {
+		return errors.New("invalid Git repository URL")
+	}
+	if s.IsMember == nil || !s.IsMember(group, nostr.MustPubKeyFromHex(a.Pubkey)) {
+		return errors.New("Git repository membership is required")
+	}
+	return nil
+}
+
+func (s *Service) gitRepositoryGroup(raw string) (string, bool) {
+	base, baseErr := url.Parse(strings.TrimRight(s.Config.GitPublicURL, "/"))
+	target, targetErr := url.Parse(strings.TrimSpace(raw))
+	if baseErr != nil || targetErr != nil || base.Scheme == "" || base.Host == "" || target.User != nil || target.RawQuery != "" || target.Fragment != "" ||
+		!strings.EqualFold(base.Scheme, target.Scheme) || !strings.EqualFold(base.Host, target.Host) {
+		return "", false
+	}
+	prefix := strings.TrimRight(base.Path, "/") + "/git/"
+	if !strings.HasPrefix(target.Path, prefix) {
+		return "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(target.Path, prefix), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	owner, err := nostr.PubKeyFromHex(parts[0])
+	if err != nil {
+		return "", false
+	}
+	repositoryID, err := url.PathUnescape(strings.TrimSuffix(parts[1], ".git"))
+	if err != nil || repositoryID == "" || strings.Contains(repositoryID, "/") || s.CurrentEvent == nil {
+		return "", false
+	}
+	repository := s.CurrentEvent(nostr.KindRepositoryAnnouncement, owner, repositoryID)
+	if repository == nil {
+		return "", false
+	}
+	group := exactTag(repository.Tags, "buzz-channel")
+	if h := exactTag(repository.Tags, "h"); h != "" && group != "" && h != group {
+		return "", false
+	} else if group == "" {
+		group = h
+	}
+	return group, group != ""
+}
+
+func (s *Service) authorizeJJContextSigning(event nostr.Event, group string) error {
+	if event.Content == "" || !validJSONObject(event.Content) || exactTag(event.Tags, "r") == "" || exactTag(event.Tags, "a") == "" ||
+		!s.repositoryMatchesGroup(exactTag(event.Tags, "a"), group) {
+		return errors.New("invalid JJ context template")
+	}
+	allowed := map[string]bool{
+		"t": true, "r": true, "o": true, "x": true, "O": true, "v": true,
+		"c": true, "i": true, "d": true, "sequence": true, "a": true, "h": true,
+	}
+	for _, tag := range event.Tags {
+		if len(tag) != 2 || !allowed[tag[0]] {
+			return errors.New("invalid JJ context tags")
+		}
+	}
+	if event.Kind == 33901 && exactTag(event.Tags, "d") == "" {
+		return errors.New("JJ heads identifier is required")
 	}
 	return nil
 }
