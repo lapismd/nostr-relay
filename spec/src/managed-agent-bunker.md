@@ -89,6 +89,13 @@ the agent must be a current member of that channel, and only the tags defined
 by the JJ event profile are accepted. The bunker does not accept a repository
 or channel supplied only in event content.
 
+Version-2 kind `3908` context pages may use the original nonnegative timestamp
+of their single logical record, including after a long turn or an offline delay.
+The event timestamp must equal the record's millisecond timestamp rounded down
+to seconds. The normal future timestamp limit, current repository binding and
+membership checks still apply. Authentication and ephemeral live updates retain
+their usual strict freshness window.
+
 A managed client may request kind `27235` only for an exact repository root
 under the configured public Git URL, with empty content and one `u` plus one
 `method` tag. The method is limited to `GET` or `POST`. Git receive-pack applies

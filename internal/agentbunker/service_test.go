@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -453,6 +454,21 @@ func TestManagedAgentSignsOnlyScopedJJAndGitTemplates(t *testing.T) {
 		{"d", "checkpoint"}, {"sequence", "0"}, {"a", coordinate}, {"h", "room"},
 	}, Content: `{"schema":"jj-sync/agent-context-page"}`}
 	require.NoError(t, service.authorizeSigning(agent, jj))
+
+	oldPage := jj
+	oldPage.CreatedAt = now - 86400
+	oldPage.Content = fmt.Sprintf(`{"schema":"jj-sync/agent-context-page","version":2,"records":[{"created_at_ms":%d}]}`, int64(oldPage.CreatedAt)*1000)
+	require.NoError(t, service.authorizeSigning(agent, oldPage))
+	mismatch := oldPage
+	mismatch.CreatedAt++
+	require.ErrorContains(t, service.authorizeSigning(agent, mismatch), "timestamp")
+	liveOld := oldPage
+	liveOld.Kind = 23908
+	require.ErrorContains(t, service.authorizeSigning(agent, liveOld), "timestamp")
+	future := oldPage
+	future.CreatedAt = now + 86400
+	future.Content = fmt.Sprintf(`{"schema":"jj-sync/agent-context-page","version":2,"records":[{"created_at_ms":%d}]}`, int64(future.CreatedAt)*1000)
+	require.ErrorContains(t, service.authorizeSigning(agent, future), "timestamp")
 
 	wrongRepository := jj
 	wrongRepository.Tags = jj.Tags.CloneDeep()

@@ -798,7 +798,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if event.Kind == nostr.KindSeal {
 		maxAge = 48 * time.Hour
 	}
-	if created.Before(now.Add(-maxAge)) || created.After(now.Add(2*time.Minute)) {
+	if event.CreatedAt < 0 || (created.Before(now.Add(-maxAge)) && !retainedContextTimestamp(event)) || created.After(now.Add(2*time.Minute)) {
 		return errors.New("event timestamp is stale")
 	}
 	if a.Status == StatusPending {
@@ -896,6 +896,25 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 		return errors.New("owner tag is required")
 	}
 	return nil
+}
+
+// Retained pages keep stable event IDs even when a turn or delivery takes time.
+func retainedContextTimestamp(event nostr.Event) bool {
+	if event.Kind != 3908 {
+		return false
+	}
+	var page struct {
+		Schema  string `json:"schema"`
+		Version int    `json:"version"`
+		Records []struct {
+			CreatedAtMS *int64 `json:"created_at_ms"`
+		} `json:"records"`
+	}
+	if json.Unmarshal([]byte(event.Content), &page) != nil || page.Schema != "jj-sync/agent-context-page" || page.Version != 2 || len(page.Records) != 1 {
+		return false
+	}
+	stamp := page.Records[0].CreatedAtMS
+	return stamp != nil && *stamp >= 0 && *stamp/1000 == int64(event.CreatedAt)
 }
 
 func isJJContextKind(kind nostr.Kind) bool {
