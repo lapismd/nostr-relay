@@ -24,7 +24,9 @@ exposes matching `pnpm local:*` aliases. The persistent Compose project is
    the intended Cloudflare zone when prompted. The named tunnel has two routes
    and a final 404 rule; conflicting DNS routes are rejected.
 5. Run `scripts/local-dev.sh build`, then `scripts/local-dev.sh up`.
-   Missing credentials or locally built images fail explicitly.
+   Missing credentials or locally built images fail explicitly. Running
+   relay or WalGit containers whose digest no longer matches the configured
+   tag are recreated onto the current images.
 
 | Provider setting | URL |
 | --- | --- |
@@ -58,11 +60,11 @@ Community domain, never the loopback wildcard.
 | `capture-github` | Save the existing test App connection and binding without history. |
 | `tunnel:setup` | Create the named tunnel and DNS routes once. |
 | `build` | Build local relay, WalGit and fixture images explicitly. |
-| `up` | Check prerequisites, stop the old GitHub worker, start the persistent stack, hydrate, attach GitHub, start Vite and open HTTPS Community. |
+| `up` | Check prerequisites, stop the old GitHub worker, start the persistent stack, recreate relay or WalGit when the running digest does not match the configured tag, hydrate, attach GitHub, start Vite and open HTTPS Community. |
 | `rehydrate` | Restore missing baseline groups, additive roles, blobs and events. |
 | `reset --yes` | Quiesce writes, export and verify signed encrypted Keytr records, reset only this project's volumes, restore records and seed. Managed agents are removed and their controller bundles become invalid. |
 | `down` | Stop owned Vite and containers, retaining volumes. |
-| `doctor` | Validate credentials, images and service readiness. |
+| `doctor` | Validate credentials, images, that running relay and WalGit containers use the current tagged digests, and service readiness. |
 | `logs`, `ps` | Inspect the owned stack. |
 | `site` | Start the optional static renderer using the same relay. |
 
@@ -130,7 +132,8 @@ provider credentials from read-only `/run/secrets` mounts. Secret values are
 not interpolated into the Compose service environment. The original provider
 secret references remain unchanged inside the relay.
 
-`doctor` verifies that NIP-11 advertises NIP-46 and
+`doctor` verifies that running relay and WalGit containers use the current
+tagged image digests, that NIP-11 advertises NIP-46 and
 `lapis_managed_agents`, the advertised API and bunker URLs resolve to the local
 relay, the Community and desktop renderer origins receive auth/provisioning
 CORS while an unapproved origin does not, `/nip46` upgrades to WebSocket, and

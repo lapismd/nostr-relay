@@ -445,6 +445,44 @@ def compose(directory, args, capture=False):
     )
 
 
+STACK_IMAGE_KEYS = (("relay", "LAPIS_RELAY_IMAGE"), ("walgit", "LAPIS_WALGIT_IMAGE"))
+
+
+def stale_stack_services(directory, env):
+    stale = []
+    for service, key in STACK_IMAGE_KEYS:
+        image = env.get(key)
+        container = compose(directory, ["ps", "-aq", service], capture=True).strip()
+        if not image or not container:
+            continue
+        running = invoke(
+            ["docker", "inspect", "-f", "{{.Image}}", container], capture=True
+        ).strip()
+        tagged = invoke(
+            ["docker", "image", "inspect", "-f", "{{.Id}}", image], capture=True
+        ).strip()
+        if running != tagged:
+            stale.append(service)
+    return stale
+
+
+def start_stack(directory, env):
+    stale = stale_stack_services(directory, env)
+    services = ["relay", "cloudflared"]
+    if "walgit" in stale:
+        services.append("walgit")
+    args = ["up", "-d", "--no-build", "--wait"]
+    if stale:
+        args.append("--force-recreate")
+        print(
+            "Recreating stale local services onto current tagged images: "
+            + ", ".join(stale),
+            file=sys.stderr,
+        )
+    compose(directory, [*args, *services])
+    return stale
+
+
 def wait_url(url, timeout=90, host=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -812,6 +850,12 @@ def main():
             ) from None
     if args.command == "doctor":
         compose(directory, ["ps"])
+        stale = stale_stack_services(directory, env)
+        if stale:
+            raise RuntimeError(
+                "Running containers must use the current tagged images: "
+                + ", ".join(stale)
+            )
         wait_url(env["LAPIS_AUTH_PUBLIC_URL"] + "/health", 10)
         config = None
         for origin in browser_origin_probes(env):
@@ -985,7 +1029,7 @@ def main():
         ).strip()
         if old:
             invoke(["docker", "stop", *old.splitlines()], capture=True)
-        compose(directory, ["up", "-d", "--no-build", "--wait", "relay", "cloudflared"])
+        start_stack(directory, env)
         wait_url("http://127.0.0.1:" + env["LAPIS_RELAY_PORT"] + "/health")
         if args.command == "reset":
             admin(directory, "restore", env)

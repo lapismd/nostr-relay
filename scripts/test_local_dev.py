@@ -317,5 +317,91 @@ class CredentialsTest(unittest.TestCase):
             self.assertIn('master_key_ref = "file:lapis_agent_bunker_master_key"', content)
 
 
+class StackImageTest(unittest.TestCase):
+    def test_stale_stack_services_detects_moved_tag(self):
+        containers = {"relay": "relaycid", "walgit": "walgitcid"}
+        inspect_ids = {
+            "relaycid": "sha256:old-relay",
+            "walgitcid": "sha256:current-walgit",
+            "lapis-relay:community-local": "sha256:new-relay",
+            "lapis-walgit:local": "sha256:current-walgit",
+        }
+
+        def compose(_directory, args, **kwargs):
+            self.assertEqual(args[:2], ["ps", "-aq"])
+            return containers[args[2]] + "\n"
+
+        def invoke(args, **kwargs):
+            if args[:3] == ["docker", "inspect", "-f"] or args[:4] == [
+                "docker",
+                "image",
+                "inspect",
+                "-f",
+            ]:
+                return inspect_ids[args[-1]] + "\n"
+            raise AssertionError(args)
+
+        with (
+            patch.object(dev, "compose", side_effect=compose),
+            patch.object(dev, "invoke", side_effect=invoke),
+        ):
+            stale = dev.stale_stack_services(
+                Path("/tmp/community"),
+                {
+                    "LAPIS_RELAY_IMAGE": "lapis-relay:community-local",
+                    "LAPIS_WALGIT_IMAGE": "lapis-walgit:local",
+                },
+            )
+        self.assertEqual(stale, ["relay"])
+
+    def test_stale_stack_services_skips_absent_containers(self):
+        with (
+            patch.object(dev, "compose", return_value=""),
+            patch.object(dev, "invoke") as invoke,
+        ):
+            stale = dev.stale_stack_services(
+                Path("/tmp/community"),
+                {
+                    "LAPIS_RELAY_IMAGE": "lapis-relay:community-local",
+                    "LAPIS_WALGIT_IMAGE": "lapis-walgit:local",
+                },
+            )
+        self.assertEqual(stale, [])
+        invoke.assert_not_called()
+
+    def test_start_stack_recreates_stale_services(self):
+        with (
+            patch.object(dev, "stale_stack_services", return_value=["relay", "walgit"]),
+            patch.object(dev, "compose") as compose,
+        ):
+            stale = dev.start_stack(Path("/tmp/community"), {})
+        self.assertEqual(stale, ["relay", "walgit"])
+        compose.assert_called_once_with(
+            Path("/tmp/community"),
+            [
+                "up",
+                "-d",
+                "--no-build",
+                "--wait",
+                "--force-recreate",
+                "relay",
+                "cloudflared",
+                "walgit",
+            ],
+        )
+
+    def test_start_stack_leaves_current_images_in_place(self):
+        with (
+            patch.object(dev, "stale_stack_services", return_value=[]),
+            patch.object(dev, "compose") as compose,
+        ):
+            stale = dev.start_stack(Path("/tmp/community"), {})
+        self.assertEqual(stale, [])
+        compose.assert_called_once_with(
+            Path("/tmp/community"),
+            ["up", "-d", "--no-build", "--wait", "relay", "cloudflared"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
