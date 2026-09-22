@@ -56,7 +56,13 @@ wildcards are never WebAuthn origins. When omitted, WebAuthn retains the
 relay-origin behavior for compatibility. The master key file contains exactly
 32 bytes encoded as hexadecimal or base64.
 Provider secrets and the master key are loaded from the configured credential
-directory and are never stored in PostgreSQL.
+directory and are never stored in PostgreSQL. The container entrypoint enables
+GitHub or Google only when that provider's client ID and client-secret
+reference are both set. A missing `AUTH_GITHUB_CLIENT_ID`,
+`AUTH_GITHUB_CLIENT_SECRET_REF`, `AUTH_GOOGLE_CLIENT_ID`, or
+`AUTH_GOOGLE_CLIENT_SECRET_REF` clears that provider's pair and leaves it
+disabled. A hand-written configuration that sets only one of the two is still
+rejected.
 
 The Compose overlays are deliberately composable. Start with
 `docker-compose.auth.yml`, then add `docker-compose.auth-github.yml`,
