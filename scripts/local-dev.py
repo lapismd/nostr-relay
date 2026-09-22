@@ -503,6 +503,16 @@ def wait_url(url, timeout=90, host=None):
     raise RuntimeError("Public service readiness timed out")
 
 
+def wait_public_community(env, timeout=90):
+    wait_url(
+        "http://127.0.0.1:7036",
+        timeout=timeout,
+        host=urlparse(env["LAPIS_COMMUNITY_PUBLIC_URL"]).netloc,
+    )
+    wait_url(env["LAPIS_COMMUNITY_PUBLIC_URL"], timeout=timeout)
+    wait_url(env["LAPIS_AUTH_PUBLIC_URL"].rstrip("/") + "/health", timeout=timeout)
+
+
 def websocket_probe(url, origin):
     parsed = urlparse(url)
     connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=10)
@@ -632,6 +642,7 @@ def render_tunnel(directory, values):
     config = {
         "tunnel": tunnel_id,
         "credentials-file": "/run/secrets/tunnel_credentials",
+        "protocol": "http2",
         "ingress": [
             {"hostname": values["LAPIS_RELAY_HOST"], "service": "http://relay:3334"},
             {
@@ -1054,10 +1065,7 @@ def main():
             stderr=log,
             start_new_session=True,
         )
-        wait_url(
-            "http://127.0.0.1:7036",
-            host=urlparse(env["LAPIS_COMMUNITY_PUBLIC_URL"]).netloc,
-        )
+        wait_public_community(env)
         print("Community ready: " + env["LAPIS_COMMUNITY_PUBLIC_URL"])
 
 

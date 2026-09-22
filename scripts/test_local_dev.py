@@ -18,6 +18,26 @@ spec.loader.exec_module(dev)
 
 
 class CredentialsTest(unittest.TestCase):
+    def test_wait_url_rejects_disconnected_tunnel_status(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(530)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "readiness timed out"):
+                dev.wait_url(f"http://127.0.0.1:{server.server_port}", timeout=1)
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
     def test_wait_url_can_preserve_a_public_virtual_host_over_loopback(self):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -42,6 +62,63 @@ class CredentialsTest(unittest.TestCase):
             server.shutdown()
             thread.join()
             server.server_close()
+
+    def test_render_tunnel_forces_http2_and_keeps_named_routes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            tunnel_id = "00000000-0000-4000-8000-000000000001"
+            dev.private_write(
+                directory / "tunnel-credentials.json",
+                '{"AccountTag":"unused","TunnelID":"%s","TunnelSecret":"unused"}\n'
+                % tunnel_id,
+            )
+            dev.render_tunnel(
+                directory,
+                {
+                    "LAPIS_RELAY_HOST": "local-relay.lapis.md",
+                    "LAPIS_COMMUNITY_PUBLIC_URL": "https://local-community.lapis.md",
+                },
+            )
+            config = dev.json.loads((directory / "tunnel.json").read_text())
+            self.assertEqual(config["protocol"], "http2")
+            self.assertEqual(config["tunnel"], tunnel_id)
+            self.assertEqual(
+                config["credentials-file"], "/run/secrets/tunnel_credentials"
+            )
+            self.assertEqual(
+                [rule.get("hostname") for rule in config["ingress"]],
+                ["local-relay.lapis.md", "local-community.lapis.md", None],
+            )
+            self.assertEqual(config["ingress"][0]["service"], "http://relay:3334")
+            self.assertEqual(
+                config["ingress"][1]["service"],
+                "http://host.docker.internal:7036",
+            )
+            self.assertEqual(config["ingress"][2]["service"], "http_status:404")
+            self.assertNotIn("unused", (directory / "tunnel.json").read_text())
+
+    def test_wait_public_community_requires_loopback_then_tunnel(self):
+        calls = []
+
+        def record(url, timeout=90, host=None):
+            calls.append((url, timeout, host))
+
+        with patch.object(dev, "wait_url", side_effect=record):
+            dev.wait_public_community(
+                {
+                    "LAPIS_COMMUNITY_PUBLIC_URL": "https://local-community.lapis.md",
+                    "LAPIS_AUTH_PUBLIC_URL": "https://local-relay.lapis.md",
+                },
+                timeout=15,
+            )
+        self.assertEqual(
+            calls,
+            [
+                ("http://127.0.0.1:7036", 15, "local-community.lapis.md"),
+                ("https://local-community.lapis.md", 15, None),
+                ("https://local-relay.lapis.md/health", 15, None),
+            ],
+        )
 
     def test_copy_is_private_independent_and_repeatable(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -283,6 +360,18 @@ class CredentialsTest(unittest.TestCase):
             secret = (directory / "agent-bunker-master-key").read_text().strip()
             if secret in rendered:
                 self.fail("Rendered Compose configuration exposed the bunker key")
+            self.assertEqual(
+                data["services"]["cloudflared"]["command"],
+                [
+                    "tunnel",
+                    "--no-autoupdate",
+                    "--protocol",
+                    "http2",
+                    "--config",
+                    "/etc/cloudflared/config.json",
+                    "run",
+                ],
+            )
 
     def test_entrypoint_adds_bunker_to_existing_generated_configuration_once(self):
         with tempfile.TemporaryDirectory() as temporary:

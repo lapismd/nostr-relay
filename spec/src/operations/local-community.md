@@ -22,7 +22,10 @@ exposes matching `pnpm local:*` aliases. The persistent Compose project is
    never reused as the application-auth master key.
 4. Install `cloudflared` and run `scripts/local-dev.sh tunnel:setup`. Authenticate
    the intended Cloudflare zone when prompted. The named tunnel has two routes
-   and a final 404 rule; conflicting DNS routes are rejected.
+   and a final 404 rule; conflicting DNS routes are rejected. Generated
+   `tunnel.json` and the Compose connector both force HTTP/2 over TCP 7844.
+   Docker Desktop QUIC to Cloudflare edge often times out even when the host
+   can reach UDP 7844, and the pinned connector does not fall back on its own.
 5. Run `scripts/local-dev.sh build`, then `scripts/local-dev.sh up`.
    Missing credentials or locally built images fail explicitly. Running
    relay or WalGit containers whose digest no longer matches the configured
@@ -60,7 +63,7 @@ Community domain, never the loopback wildcard.
 | `capture-github` | Save the existing test App connection and binding without history. |
 | `tunnel:setup` | Create the named tunnel and DNS routes once. |
 | `build` | Build local relay, WalGit and fixture images explicitly. |
-| `up` | Check prerequisites, stop the old GitHub worker, start the persistent stack, recreate relay or WalGit when the running digest does not match the configured tag, hydrate, attach GitHub, start Vite and open HTTPS Community. |
+| `up` | Check prerequisites, stop the old GitHub worker, start the persistent stack, recreate relay or WalGit when the running digest does not match the configured tag, hydrate, attach GitHub, start Vite, wait for loopback 7036, then wait for public Community HTTPS and relay `/health` through the named tunnel. A Cloudflare 530 means the connector is disconnected; the command fails instead of reporting ready. |
 | `rehydrate` | Restore missing baseline groups, additive roles, blobs and events. |
 | `reset --yes` | Quiesce writes, export and verify signed encrypted Keytr records, reset only this project's volumes, restore records and seed. Managed agents are removed and their controller bundles become invalid. |
 | `down` | Stop owned Vite and containers, retaining volumes. |
@@ -138,7 +141,8 @@ tagged image digests, that NIP-11 advertises NIP-46 and
 relay, the Community and desktop renderer origins receive auth/provisioning
 CORS while an unapproved origin does not, `/nip46` upgrades to WebSocket, and
 the relay sees the enabled feature and mounted master-key file without reading
-or printing its contents.
+or printing its contents. Public Community HTTPS must return 200; a
+disconnected-tunnel 530 is a doctor failure.
 
 Run `pnpm test:local:e2e` from the sibling `nostr-agent-controller` checkout for
 the disposable agent acceptance lane. It builds the controller, provisions and

@@ -103,7 +103,7 @@ services:
     restart: unless-stopped
   cloudflared:
     image: cloudflare/cloudflared@sha256:51c9cefcb4569df44e1ad403ab1d3d8065aa8e84339bcfc6aee75502e1140339
-    command: [tunnel, --no-autoupdate, --config, /etc/cloudflared/config.json, run]
+    command: [tunnel, --no-autoupdate, --protocol, http2, --config, /etc/cloudflared/config.json, run]
     secrets: [tunnel_credentials]
     volumes: ['${LAPIS_COMMUNITY_DIR}/tunnel.json:/etc/cloudflared/config.json:ro']
     extra_hosts: [host.docker.internal:host-gateway]
