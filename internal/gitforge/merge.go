@@ -2,7 +2,6 @@ package gitforge
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -34,12 +33,10 @@ func (backend *WalGitBackend) MergeProtectedRef(ctx context.Context, repository 
 		principal = MergeCoordinatorPrincipal(repository.Coordinate.Owner.Hex(), repository.Coordinate.ID)
 	}
 	configPath := filepath.Join(directory, "destination.gitconfig")
-	config := fmt.Sprintf("[http \"%s\"]\n\textraHeader = Authorization: Bearer %s\n\textraHeader = X-Walgit-Principal: %s\n",
-		escapeGitConfig(destination.String()), escapeGitConfig(backend.token), escapeGitConfig(principal))
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte(mergeCoordinatorGitConfig(destination.String(), backend.token, principal)), 0o600); err != nil {
 		return forge.CollaborationResult{}, &forge.Error{Status: http.StatusServiceUnavailable, Code: "merge_workspace_unavailable"}
 	}
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL="+configPath)
+	env := mergeCoordinatorGitEnv(configPath)
 	if err := runGit(ctx, gitPath, directory, env, "clone", "--", destination.String(), work); err != nil {
 		return forge.CollaborationResult{}, err
 	}

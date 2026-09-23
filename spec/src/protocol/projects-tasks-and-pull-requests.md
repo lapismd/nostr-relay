@@ -164,10 +164,14 @@ ref, and returns the merge commit. The coordinator clones dest Git and MUST
 fetch the pull-request `c` commit before `git merge`. dest-Git-sync stores
 those dest-Git commits as carrier parents on `refs/heads/jj-sync/**` and
 `refs/jj-sync/**` rather than on the protected target, so an ordinary clone
-does not make a Log review mergeable. A dest-Git commit that exists but
-shares no history with the target MUST still merge (`--allow-unrelated-histories`).
-A dest-Git commit dest Git does not have is `merge_head_not_found`. A
-conflicted tree is `merge_conflict`. Community then publishes the merging
+does not make a Log review mergeable. The merge workspace MUST set a
+synthetic coordinator `user.name` / `user.email` because
+`GIT_CONFIG_GLOBAL` is only the dest HTTP headers and `git merge --no-ff`
+creates a commit. A dest-Git commit that exists but shares no history with
+the target MUST still merge (`--allow-unrelated-histories`). A dest-Git
+commit dest Git does not have is `merge_head_not_found`. A conflicted tree
+is `merge_conflict`. A merge commit that still has no identity is
+`merge_identity_unavailable`. Community then publishes the merging
 maintainer's signed `1631` with `merge-commit` and `r`. The relay never signs
 that status as a user. A WalGit outage after the Git update is retried as a
 durable operation; `1631` is not expected until the ref is confirmed.

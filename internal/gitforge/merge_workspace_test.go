@@ -59,6 +59,35 @@ func TestApplyProtectedMergeAllowsUnrelatedHistories(t *testing.T) {
 	require.FileExists(t, filepath.Join(target, "target.txt"))
 }
 
+func TestApplyProtectedMergeNeedsCoordinatorIdentity(t *testing.T) {
+	gitPath := lookPathGit(t)
+	root := t.TempDir()
+	env := append(testGitEnv(), "GIT_CONFIG_NOSYSTEM=1")
+	repo := filepath.Join(root, "repo")
+	initCommitRepo(t, gitPath, repo, env, "base.txt", "base\n", "base")
+	writeFile(t, filepath.Join(repo, "dest-git.txt"), "snapshot\n")
+	runTestGit(t, gitPath, repo, env, "add", "dest-git.txt")
+	runTestGit(t, gitPath, repo, env, "commit", "-m", "dest-Git snapshot")
+	head := strings.TrimSpace(runTestGitOutput(t, gitPath, repo, env, "rev-parse", "HEAD"))
+	runTestGit(t, gitPath, repo, env, "reset", "--hard", "HEAD~1")
+	runTestGit(t, gitPath, repo, env, "config", "--unset", "user.name")
+	runTestGit(t, gitPath, repo, env, "config", "--unset", "user.email")
+	blank := filepath.Join(root, "blank.gitconfig")
+	writeFile(t, blank, "[commit]\n\tgpgsign = false\n[user]\n\tuseConfigOnly = true\n")
+	blankEnv := append(withoutGitIdentity(os.Environ()),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+blank,
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	output, err := runGitCombined(context.Background(), gitPath, repo, blankEnv, "merge", "--no-ff", "-m", "Merge pull request", head)
+	require.Error(t, err)
+	require.Equal(t, "merge_identity_unavailable", mergeFailureCode(output))
+	config := filepath.Join(root, "coordinator.gitconfig")
+	writeFile(t, config, mergeCoordinatorGitConfig("http://127.0.0.1/dest.git", "token", "merge-coordinator:owner/notes"))
+	require.NoError(t, applyProtectedMerge(context.Background(), gitPath, repo, mergeCoordinatorGitEnv(config), "merge", "Merge pull request", head))
+	require.FileExists(t, filepath.Join(repo, "dest-git.txt"))
+}
+
 func TestFetchMergeHeadMissingCommit(t *testing.T) {
 	gitPath := lookPathGit(t)
 	root := t.TempDir()
@@ -70,6 +99,20 @@ func TestFetchMergeHeadMissingCommit(t *testing.T) {
 	var forgeErr *forge.Error
 	require.ErrorAs(t, err, &forgeErr)
 	require.Equal(t, "merge_head_not_found", forgeErr.Code)
+}
+
+func withoutGitIdentity(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, item := range env {
+		name, _, _ := strings.Cut(item, "=")
+		switch name {
+		case "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_GLOBAL", "EMAIL":
+			continue
+		default:
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func lookPathGit(t *testing.T) string {

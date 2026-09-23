@@ -2,7 +2,9 @@ package gitforge
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -65,6 +67,28 @@ func gitHasCommit(ctx context.Context, gitPath, directory string, env []string, 
 	return runGit(ctx, gitPath, directory, env, "cat-file", "-e", head+"^{commit}") == nil
 }
 
+const (
+	mergeCoordinatorName  = "Lapis merge coordinator"
+	mergeCoordinatorEmail = "merge-coordinator@invalid"
+)
+
+func mergeCoordinatorGitConfig(destination, token, principal string) string {
+	return fmt.Sprintf("[http \"%s\"]\n\textraHeader = Authorization: Bearer %s\n\textraHeader = X-Walgit-Principal: %s\n[user]\n\tname = %s\n\temail = %s\n[commit]\n\tgpgsign = false\n",
+		escapeGitConfig(destination), escapeGitConfig(token), escapeGitConfig(principal),
+		escapeGitConfig(mergeCoordinatorName), escapeGitConfig(mergeCoordinatorEmail))
+}
+
+func mergeCoordinatorGitEnv(configPath string) []string {
+	return append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_GLOBAL="+configPath,
+		"GIT_AUTHOR_NAME="+mergeCoordinatorName,
+		"GIT_AUTHOR_EMAIL="+mergeCoordinatorEmail,
+		"GIT_COMMITTER_NAME="+mergeCoordinatorName,
+		"GIT_COMMITTER_EMAIL="+mergeCoordinatorEmail,
+	)
+}
+
 func mergeFailureCode(output string) string {
 	lower := strings.ToLower(output)
 	switch {
@@ -75,6 +99,10 @@ func mergeFailureCode(output string) string {
 		return "merge_head_not_found"
 	case strings.Contains(lower, "refusing to merge unrelated histories"):
 		return "unrelated_histories"
+	case strings.Contains(lower, "please tell me who you are"),
+		strings.Contains(lower, "committer identity unknown"),
+		strings.Contains(lower, "author identity unknown"):
+		return "merge_identity_unavailable"
 	case strings.Contains(lower, "conflict"),
 		strings.Contains(lower, "automatic merge failed"):
 		return "merge_conflict"
