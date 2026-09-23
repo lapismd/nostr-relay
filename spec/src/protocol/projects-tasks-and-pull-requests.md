@@ -147,7 +147,8 @@ channel, not merely the `30617` owner or a relay administrator.
 Hosted WalGit repositories advertise `capabilities.merge=true` and accept the
 same NIP-98 merge route. Eligibility requires an open pull request whose
 target is the live default branch (a missing `target-branch` means that
-default, not `refs/heads/main`), a matching Active ruleset, or a compiled
+default, not `refs/heads/main`; a Log review target that is not itself
+protected also means that default), a matching Active ruleset, or a compiled
 extra `protected-ref` pattern, a current tip matching `expected_head`, no
 current-tip `changes-requested` decision, at least the matching ruleset's
 `required_approvals` count of current-tip `CanMaintain` approvals that are
@@ -161,9 +162,10 @@ group also needs a current-tip approval from a listed owner or a channel
 administrator. The relay updates that protected ref as the constrained
 `merge-coordinator:<owner>/<repo>` principal, waits for the confirmed WalGit
 ref, and returns the merge commit. A Log review names `branch-name`
-`review/<author-npub>/<change-id>`. Before that review is mergeable, the
+`review/<author-npub>/<change-id>`. When that pull request is stored, the
 coordinator MUST point `refs/heads/review/<author-npub>/<change-id>` at the
-pull-request `c` commit. The npub MUST decode to the pull-request author and
+pull-request `c` commit so the ref is an ordinary branch other repository
+views can list. The npub MUST decode to the pull-request author and
 the change id MUST be 32 hexadecimal characters. The coordinator takes that
 commit from the review ref when the ref already exists, and otherwise from
 dest-Git-sync carrier parents on `refs/heads/jj-sync/**` and

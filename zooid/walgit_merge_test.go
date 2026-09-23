@@ -17,13 +17,19 @@ import (
 )
 
 type fakeRelayMerger struct {
-	requests []forge.ProtectedRefMergeRequest
-	result   forge.CollaborationResult
+	requests  []forge.ProtectedRefMergeRequest
+	published []string
+	result    forge.CollaborationResult
 }
 
 func (merger *fakeRelayMerger) MergeProtectedRef(_ context.Context, _ forge.Repository, request forge.ProtectedRefMergeRequest) (forge.CollaborationResult, error) {
 	merger.requests = append(merger.requests, request)
 	return merger.result, nil
+}
+
+func (merger *fakeRelayMerger) PublishReviewRef(_ context.Context, _ forge.Repository, _, reviewRef, head string) error {
+	merger.published = append(merger.published, reviewRef+"@"+head)
+	return nil
 }
 
 func TestRelayMergeRequiresMaintainerApprovalAndUsesCoordinator(t *testing.T) {
@@ -162,11 +168,12 @@ func TestRelayMergePassesLogReviewRef(t *testing.T) {
 	ref, ok := gitforge.LogReviewRef(logReviewBranch(author.Public(), strings.Repeat("ab", 16)), author.Public())
 	require.True(t, ok)
 	require.Equal(t, ref, merger.requests[0].ReviewRef)
+	require.Equal(t, []string{ref + "@" + strings.Repeat("b", 40)}, merger.published)
 }
 
 func TestRelayMergeRejectsForeignReviewRef(t *testing.T) {
 	author := nostr.Generate()
-	merger, err := enqueueHostedMergeResult(t, author, logReviewBranch(nostr.Generate().Public(), strings.Repeat("cd", 16)))
+	merger, err := enqueueHostedMergeResult(t, author, logReviewBranch(nostr.Generate().Public(), strings.Repeat("cd", 16)), "")
 	var forgeErr *forge.Error
 	require.ErrorAs(t, err, &forgeErr)
 	require.Equal(t, "invalid_merge_request", forgeErr.Code)
@@ -179,12 +186,20 @@ func logReviewBranch(author nostr.PubKey, changeID string) string {
 
 func enqueueHostedMerge(t *testing.T, author nostr.SecretKey, branch string) *fakeRelayMerger {
 	t.Helper()
-	merger, err := enqueueHostedMergeResult(t, author, branch)
+	merger, err := enqueueHostedMergeResult(t, author, branch, "")
 	require.NoError(t, err)
 	return merger
 }
 
-func enqueueHostedMergeResult(t *testing.T, author nostr.SecretKey, branch string) (*fakeRelayMerger, error) {
+func TestRelayMergeLogReviewUsesLiveDefaultForUnprotectedTarget(t *testing.T) {
+	author := nostr.Generate()
+	merger, err := enqueueHostedMergeResult(t, author, logReviewBranch(author.Public(), strings.Repeat("ab", 16)), "main")
+	require.NoError(t, err)
+	require.Len(t, merger.requests, 1)
+	require.Equal(t, "refs/heads/trunk", merger.requests[0].TargetRef)
+}
+
+func enqueueHostedMergeResult(t *testing.T, author nostr.SecretKey, branch, targetBranch string) (*fakeRelayMerger, error) {
 	t.Helper()
 	headSHA := strings.Repeat("a", 40)
 	backend := &recordingGitBackend{
@@ -208,10 +223,14 @@ func enqueueHostedMergeResult(t *testing.T, author nostr.SecretKey, branch strin
 	if branch != "" {
 		tags = append(tags, nostr.Tag{"branch-name", branch})
 	}
+	if targetBranch != "" {
+		tags = append(tags, nostr.Tag{"target-branch", targetBranch})
+	}
 	root := nostr.Event{Kind: projecttask.KindPullRequest, CreatedAt: nostr.Now(), Tags: tags}
 	require.NoError(t, root.Sign(author))
 	require.NoError(t, store.SaveEvent(root))
 	require.NoError(t, policy.ProjectTasks.Remember(context.Background(), root))
+	require.NoError(t, policy.Remember(context.Background(), root))
 	approval := nostr.Event{Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "lgtm", Tags: nostr.Tags{
 		{"e", root.ID.Hex(), "", "root"}, {"a", coordinate.String()}, {"t", "approval"}, {"c", head},
 	}}
@@ -223,5 +242,8 @@ func enqueueHostedMergeResult(t *testing.T, author nostr.SecretKey, branch strin
 	recorder := httptest.NewRecorder()
 	policy.ServeForgeAPI(recorder, request)
 	require.Equal(t, http.StatusAccepted, recorder.Code)
+	if err := policy.ProcessForgeOutboxOnce(context.Background()); err != nil {
+		return merger, err
+	}
 	return merger, policy.ProcessForgeOutboxOnce(context.Background())
 }

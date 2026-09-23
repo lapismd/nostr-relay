@@ -678,6 +678,7 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 	if resolved.Repository.Integration.CollaborationBackend == forge.BackendRelay &&
 		resolved.Repository.Integration.GitAuthorityBackend == forge.BackendWalGit {
 		_, compiled := policy.hostedProtection(r.Context(), resolved, actor.Hex())
+		state = logReviewEligibilityState(state, compiled)
 		protected := compiled.TargetRef(state.TargetBranch)
 		eligibility := projecttask.EvaluateMergeEligibilityPolicy(
 			state, actor, request.ExpectedHead, compiled.DefaultRef,

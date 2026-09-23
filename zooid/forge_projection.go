@@ -10,6 +10,7 @@ import (
 
 	"fiatjaf.com/nostr"
 	"zooid/internal/forge"
+	"zooid/internal/gitforge"
 	"zooid/internal/githubforge"
 	"zooid/internal/projecttask"
 )
@@ -167,6 +168,9 @@ func (policy *GitForgePolicy) rememberForgeProjection(ctx context.Context, event
 	if err != nil || !found {
 		return err
 	}
+	if err := policy.rememberLogReviewRef(ctx, event, resolved); err != nil {
+		return err
+	}
 	githubCollaboration := resolved.Repository.Integration.CollaborationBackend == forge.BackendGitHub && resolved.Collaboration != nil
 	githubMirror := resolved.Repository.Integration.MirrorBackend == forge.BackendGitHub && resolved.Mirror != nil
 	if !githubCollaboration && !githubMirror {
@@ -182,6 +186,34 @@ func (policy *GitForgePolicy) rememberForgeProjection(ctx context.Context, event
 		Coordinate:   coordinate, Command: command, ObjectType: objectType,
 		Actor: event.PubKey, RootEventID: root.ID.Hex(), SourceEventID: event.ID.Hex(),
 		Payload: encoded, IdempotencyKey: idempotency,
+	})
+	return err
+}
+
+func (policy *GitForgePolicy) rememberLogReviewRef(ctx context.Context, event nostr.Event, resolved forge.ResolvedRepository) error {
+	if event.Kind != projecttask.KindPullRequest || resolved.Repository.Integration.GitAuthorityBackend != forge.BackendWalGit {
+		return nil
+	}
+	reviewRef, ok := gitforge.LogReviewRef(forgeFirstTag(event, "branch-name"), event.PubKey)
+	if !ok {
+		return nil
+	}
+	head := strings.ToLower(forgeFirstTag(event, "c"))
+	if !fullForgeObjectID(head) {
+		return nil
+	}
+	coordinate, err := repositoryCoordinateFromEvent(event)
+	if err != nil {
+		return nil
+	}
+	payload, _ := json.Marshal(map[string]string{"review_ref": reviewRef})
+	idempotency := "review-ref:" + event.ID.Hex()
+	digest := sha256.Sum256([]byte(idempotency))
+	_, err = policy.enqueueForgeOperation(ctx, forgeOperation{
+		ID: "rev_" + hex.EncodeToString(digest[:16]), Provider: forge.BackendRelay,
+		Coordinate: coordinate, Command: "publish_review_ref", ObjectType: "pull_request",
+		Actor: event.PubKey, RootEventID: event.ID.Hex(), SourceEventID: event.ID.Hex(),
+		ExpectedHead: head, Payload: payload, IdempotencyKey: idempotency,
 	})
 	return err
 }

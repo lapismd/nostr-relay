@@ -465,6 +465,9 @@ func (policy *GitForgePolicy) ProcessForgeOutboxOnce(ctx context.Context) error 
 	if operation.Provider == forge.BackendRelay && operation.Command == "merge" {
 		return policy.processRelayMerge(ctx, resolved, operation)
 	}
+	if operation.Provider == forge.BackendRelay && operation.Command == "publish_review_ref" {
+		return policy.processPublishReviewRef(ctx, resolved, operation)
+	}
 	result := operation.ProviderResult
 	if operation.Command == "initial_import" && result != nil {
 		return policy.finishForgeOperation(ctx, operation)

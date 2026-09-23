@@ -64,6 +64,7 @@ func (policy *GitForgePolicy) processRelayMerge(ctx context.Context, resolved fo
 		return err
 	}
 	refs, compiled := policy.hostedProtection(ctx, resolved, operation.Actor.Hex())
+	state = logReviewEligibilityState(state, compiled)
 	protected := compiled.TargetRef(state.TargetBranch)
 	owners := policy.loadProtectedOwners(ctx, resolved, protected)
 	paths := policy.changedPullRequestPaths(ctx, resolved, state, operation.Actor.Hex())
@@ -112,6 +113,45 @@ func (policy *GitForgePolicy) processRelayMerge(ctx context.Context, resolved fo
 		return err
 	}
 	if err := policy.storeForgeProviderResult(ctx, operation, result); err != nil {
+		return err
+	}
+	return policy.finishForgeOperation(ctx, operation)
+}
+
+func logReviewEligibilityState(state projecttask.PullRequestState, compiled gitforge.CompiledProtection) projecttask.PullRequestState {
+	if _, ok := gitforge.LogReviewRef(state.BranchName, state.Root.PubKey); !ok {
+		return state
+	}
+	if strings.TrimSpace(state.TargetBranch) == "" || compiled.TargetRef(state.TargetBranch) != compiled.DefaultRef {
+		return state
+	}
+	if gitforge.NormalizeRefName(state.TargetBranch) == compiled.DefaultRef {
+		return state
+	}
+	state.TargetBranch = ""
+	return state
+}
+
+func (policy *GitForgePolicy) processPublishReviewRef(ctx context.Context, resolved forge.ResolvedRepository, operation forgeOperation) error {
+	var payload struct {
+		ReviewRef string `json:"review_ref"`
+	}
+	if err := json.Unmarshal(operation.Payload, &payload); err != nil || strings.TrimSpace(payload.ReviewRef) == "" {
+		err = &forge.Error{Status: http.StatusBadRequest, Code: "invalid_merge_request"}
+		_ = policy.failForgeOperation(ctx, operation, err)
+		return err
+	}
+	publisher, ok := policy.relayMerger(resolved).(interface {
+		PublishReviewRef(context.Context, forge.Repository, string, string, string) error
+	})
+	if !ok {
+		err := &forge.Error{Status: http.StatusConflict, Code: "walgit_merge_unavailable"}
+		_ = policy.failForgeOperation(ctx, operation, err)
+		return err
+	}
+	principal := gitforge.MergeCoordinatorPrincipal(resolved.Repository.Coordinate.Owner.Hex(), resolved.Repository.Coordinate.ID)
+	if err := publisher.PublishReviewRef(ctx, resolved.Repository, principal, payload.ReviewRef, operation.ExpectedHead); err != nil {
+		_ = policy.failForgeOperation(ctx, operation, err)
 		return err
 	}
 	return policy.finishForgeOperation(ctx, operation)
