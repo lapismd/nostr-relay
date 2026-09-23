@@ -507,6 +507,7 @@ type ProtectedRefMergeRequest struct {
 	Method       string
 	Title        string
 	Message      string
+	ReviewRef    string
 }
 
 type ProtectedRefMerger interface {

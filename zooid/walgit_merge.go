@@ -87,6 +87,12 @@ func (policy *GitForgePolicy) processRelayMerge(ctx context.Context, resolved fo
 	var payload map[string]any
 	_ = json.Unmarshal(operation.Payload, &payload)
 	targetSHA := refs[protected]
+	reviewRef, reviewOK := gitforge.LogReviewRef(state.BranchName, root.PubKey)
+	if gitforge.IsLogReviewBranchName(state.BranchName) && !reviewOK {
+		err = &forge.Error{Status: http.StatusBadRequest, Code: "invalid_merge_request"}
+		_ = policy.failForgeOperation(ctx, operation, err)
+		return err
+	}
 	result, err := merger.MergeProtectedRef(ctx, resolved.Repository, forge.ProtectedRefMergeRequest{
 		Principal:    gitforge.MergeCoordinatorPrincipal(resolved.Repository.Coordinate.Owner.Hex(), resolved.Repository.Coordinate.ID),
 		TargetRef:    protected,
@@ -95,6 +101,7 @@ func (policy *GitForgePolicy) processRelayMerge(ctx context.Context, resolved fo
 		Method:       stringValue(payload["merge_method"]),
 		Title:        stringValue(payload["commit_title"]),
 		Message:      stringValue(payload["commit_message"]),
+		ReviewRef:    reviewRef,
 	})
 	if err != nil {
 		_ = policy.failForgeOperation(ctx, operation, err)

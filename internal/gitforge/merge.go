@@ -53,7 +53,11 @@ func (backend *WalGitBackend) MergeProtectedRef(ctx context.Context, repository 
 			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "protected_target_changed"}
 		}
 	}
-	if err := fetchMergeHead(ctx, gitPath, work, env, request.ExpectedHead); err != nil {
+	if request.ReviewRef != "" {
+		if err := materializeReviewRef(ctx, gitPath, work, directory, env, destination.String(), request.ReviewRef, request.ExpectedHead); err != nil {
+			return forge.CollaborationResult{}, err
+		}
+	} else if err := fetchMergeHead(ctx, gitPath, work, env, request.ExpectedHead); err != nil {
 		return forge.CollaborationResult{}, err
 	}
 	message := strings.TrimSpace(request.Message)

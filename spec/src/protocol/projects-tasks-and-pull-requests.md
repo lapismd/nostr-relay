@@ -160,17 +160,22 @@ When `OWNERS.md` exists on the merge-target tip, every changed-path owner
 group also needs a current-tip approval from a listed owner or a channel
 administrator. The relay updates that protected ref as the constrained
 `merge-coordinator:<owner>/<repo>` principal, waits for the confirmed WalGit
-ref, and returns the merge commit. The coordinator clones dest Git and MUST
-fetch the pull-request `c` commit before `git merge`. dest-Git-sync stores
-those dest-Git commits as carrier parents on `refs/heads/jj-sync/**` and
-`refs/jj-sync/**` rather than on the protected target, so an ordinary clone
-does not make a Log review mergeable. The merge workspace MUST set a
+ref, and returns the merge commit. A Log review names `branch-name`
+`review/<author-npub>/<change-id>`. Before that review is mergeable, the
+coordinator MUST point `refs/heads/review/<author-npub>/<change-id>` at the
+pull-request `c` commit. The npub MUST decode to the pull-request author and
+the change id MUST be 32 hexadecimal characters. The coordinator takes that
+commit from the review ref when the ref already exists, and otherwise from
+dest-Git-sync carrier parents on `refs/heads/jj-sync/**` and
+`refs/jj-sync/**`. If that commit is absent, the merge fails with
+`merge_head_not_found` and the review ref is not published. `review/**`
+remains an ordinary feature branch. The coordinator then merges that
+review-ref tip into the protected target. The merge workspace MUST set a
 synthetic coordinator `user.name` / `user.email` because
 `GIT_CONFIG_GLOBAL` is only the dest HTTP headers and `git merge --no-ff`
 creates a commit. A dest-Git commit that exists but shares no history with
-the target MUST still merge (`--allow-unrelated-histories`). A dest-Git
-commit dest Git does not have is `merge_head_not_found`. A conflicted tree
-is `merge_conflict`. A merge commit that still has no identity is
+the target MUST still merge (`--allow-unrelated-histories`). A conflicted
+tree is `merge_conflict`. A merge commit that still has no identity is
 `merge_identity_unavailable`. Community then publishes the merging
 maintainer's signed `1631` with `merge-commit` and `r`. The relay never signs
 that status as a user. A WalGit outage after the Git update is retried as a
