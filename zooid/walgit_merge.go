@@ -70,7 +70,7 @@ func (policy *GitForgePolicy) processRelayMerge(ctx context.Context, resolved fo
 	eligibility := projecttask.EvaluateMergeEligibilityPolicy(
 		state, operation.Actor, operation.ExpectedHead, compiled.DefaultRef,
 		policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement), owners, paths,
-		mergePolicyForRef(compiled, state.TargetBranch),
+		mergePolicyForRef(compiled, protected),
 		compiled.Patterns,
 	)
 	if !eligibility.OK {

@@ -62,6 +62,9 @@ func normalizeMergeApprovals(value int) int {
 }
 
 func sameProtectedTarget(target, protectedRef string, extraPatterns []string) bool {
+	if strings.TrimSpace(target) == "" {
+		target = protectedRef
+	}
 	normalized := normalizeMergeRef(target)
 	if normalized == normalizeMergeRef(protectedRef) {
 		return true

@@ -684,7 +684,7 @@ func (policy *GitForgePolicy) servePullRequestForgeAPI(w http.ResponseWriter, r 
 			policy.ProjectTasks.repositoryAuthority(resolved.Repository.Announcement),
 			policy.loadProtectedOwners(r.Context(), resolved, protected),
 			policy.changedPullRequestPaths(r.Context(), resolved, state, actor.Hex()),
-			mergePolicyForRef(compiled, state.TargetBranch),
+			mergePolicyForRef(compiled, protected),
 			compiled.Patterns,
 		)
 		if !eligibility.OK {

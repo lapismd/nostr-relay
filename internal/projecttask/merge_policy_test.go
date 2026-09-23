@@ -102,6 +102,30 @@ func TestEvaluateMergeEligibilityAcceptsExtraProtectedPattern(t *testing.T) {
 	).OK)
 }
 
+func TestEvaluateMergeEligibilityTreatsMissingTargetAsLiveDefault(t *testing.T) {
+	owner := pubkey(t, "1")
+	author := pubkey(t, "2")
+	maintainer := pubkey(t, "3")
+	root := validPullRequestEvent(t, id(t, "a"), author, owner, "notes", strings.Repeat("b", 40))
+	state := PullRequestState{
+		Root: root, Lifecycle: PullRequestOpen, CurrentCommit: strings.Repeat("b", 40),
+		Approvals: []PullRequestDecision{{
+			Reviewer: maintainer, Commit: strings.Repeat("b", 40), Decision: ReviewApproved,
+		}},
+	}
+	authority := Maintainers(maintainer)
+	require.True(t, EvaluateMergeEligibility(
+		state, maintainer, state.CurrentCommit, "refs/heads/trunk", authority, OwnersDocument{}, nil,
+	).OK)
+	require.True(t, EvaluateMergeEligibility(
+		state, maintainer, state.CurrentCommit, "master", authority, OwnersDocument{}, nil,
+	).OK)
+	state.TargetBranch = "develop"
+	require.Equal(t, "protected_target_required", EvaluateMergeEligibility(
+		state, maintainer, state.CurrentCommit, "refs/heads/trunk", authority, OwnersDocument{}, nil,
+	).Code)
+}
+
 func TestEvaluateMergeEligibilityRequiresApprovalCount(t *testing.T) {
 	owner := pubkey(t, "1")
 	author := pubkey(t, "2")

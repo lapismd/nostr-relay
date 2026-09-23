@@ -167,6 +167,9 @@ func (protection CompiledProtection) Matches(ref string) bool {
 }
 
 func (protection CompiledProtection) TargetRef(target string) string {
+	if strings.TrimSpace(target) == "" {
+		return protection.DefaultRef
+	}
 	normalized := NormalizeRefName(target)
 	if protection.Matches(normalized) {
 		return normalized

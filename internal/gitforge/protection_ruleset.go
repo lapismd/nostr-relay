@@ -226,6 +226,9 @@ func (protection CompiledProtection) AnyActiveRuleMatches(ref string) bool {
 }
 
 func (protection CompiledProtection) PolicyForRef(ref string) (int, bool) {
+	if strings.TrimSpace(ref) == "" {
+		ref = protection.DefaultRef
+	}
 	approvals := 0
 	adminBypass := false
 	for _, rule := range protection.Rules {

@@ -148,6 +148,37 @@ func TestCompileProtectionIgnoresInvalidAndDefaultPatterns(t *testing.T) {
 	require.False(t, compiled.Matches("feature"))
 }
 
+func TestCompiledProtectionTargetRefUsesDefaultWhenMissing(t *testing.T) {
+	compiled := CompileRulesets("refs/heads/trunk", ProtectionDocument{
+		Rules: []ProtectionRule{{
+			Name:        "All heads",
+			Enforcement: RulesetEnforcementActive,
+			Targets:     []RulesetTarget{{Type: RulesetTargetAll}},
+		}},
+	}, nil)
+	require.Equal(t, "refs/heads/trunk", compiled.TargetRef(""))
+	require.Equal(t, "refs/heads/trunk", compiled.TargetRef("   "))
+	require.Equal(t, "refs/heads/develop", compiled.TargetRef("develop"))
+}
+
+func TestCompiledProtectionPolicyForRefUsesDefaultWhenMissing(t *testing.T) {
+	compiled := CompileRulesets("refs/heads/trunk", ProtectionDocument{
+		Rules: []ProtectionRule{{
+			Name:              "Default",
+			Enforcement:       RulesetEnforcementActive,
+			Targets:           []RulesetTarget{{Type: RulesetTargetDefault}},
+			RequiredApprovals: 2,
+			Bypass:            []RulesetBypass{{Kind: RulesetBypassAdmin}},
+		}},
+	}, nil)
+	approvals, adminBypass := compiled.PolicyForRef("")
+	require.Equal(t, 2, approvals)
+	require.True(t, adminBypass)
+	approvals, adminBypass = compiled.PolicyForRef("develop")
+	require.Equal(t, DefaultRequiredApprovals, approvals)
+	require.False(t, adminBypass)
+}
+
 func TestParseReceivePackCommands(t *testing.T) {
 	old := strings.Repeat("0", 40)
 	next := strings.Repeat("a", 40)
