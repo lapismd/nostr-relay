@@ -81,7 +81,12 @@ func (policy *ProjectTaskPolicy) checkReviewDecision(ctx context.Context, event 
 	if !policy.Groups.CanMaintain(projecttask.BuzzChannel(repository), event.PubKey) {
 		return "restricted: trusted reviews require a channel maintainer role"
 	}
-	if event.PubKey == root.PubKey {
+	if !projecttask.AllowsAuthorReviewDecision(
+		event.PubKey,
+		root.PubKey,
+		repository.PubKey,
+		policy.repositoryAuthority(repository),
+	) {
 		return "restricted: pull request authors cannot approve or request changes on their own pull request"
 	}
 	return ""

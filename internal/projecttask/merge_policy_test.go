@@ -32,6 +32,19 @@ func TestEvaluateMergeEligibilityRequiresMaintainerApprovalAndBlocksAuthor(t *te
 	require.True(t, EvaluateMergeEligibility(
 		state, maintainer, state.CurrentCommit, "main", authority, OwnersDocument{}, nil,
 	).OK)
+
+	state.Approvals = []PullRequestDecision{{
+		Reviewer: author, Commit: state.CurrentCommit, Decision: ReviewApproved,
+	}}
+	adminAuthor := CollaborationAuthority{
+		CanMaintain: func(pubkey nostr.PubKey) bool {
+			return pubkey == author || pubkey == maintainer
+		},
+		IsAdmin: func(pubkey nostr.PubKey) bool { return pubkey == author },
+	}
+	require.Equal(t, "maintainer_approval_required", EvaluateMergeEligibility(
+		state, author, state.CurrentCommit, "refs/heads/main", adminAuthor, OwnersDocument{}, nil,
+	).Code)
 }
 
 func TestEvaluateMergeEligibilityRequiresPathOwnersOrAdmin(t *testing.T) {

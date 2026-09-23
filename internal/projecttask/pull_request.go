@@ -221,7 +221,9 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event, auth
 			_, comment.IsTrustedReviewRequest = trustedRootActors[comment.Event.PubKey]
 		}
 		if comment.ReviewDecision != "" {
-			comment.IsTrustedReviewDecision = comment.Event.PubKey != root.PubKey && auth.Allows(comment.Event.PubKey)
+			comment.IsTrustedReviewDecision = TrustsReviewDecision(
+				comment.Event.PubKey, root.PubKey, repository.PubKey, auth,
+			)
 			if comment.IsTrustedReviewDecision {
 				commit := comment.Commit
 				if commit == "" {

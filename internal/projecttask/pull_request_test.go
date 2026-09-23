@@ -80,6 +80,41 @@ func TestReducePullRequestMatchesBuzzTipStatusAndReviewSemantics(t *testing.T) {
 	require.Equal(t, CommentNIP22, comments[id(t, "e")].Encoding)
 }
 
+func TestReducePullRequestTrustsOwnerAuthorReviewDecision(t *testing.T) {
+	owner := pubkey(t, "1")
+	maintainer := pubkey(t, "2")
+	coordinate := RepositoryCoordinate{Owner: owner, ID: "notes"}
+	commit := strings.Repeat("a", 40)
+	root := validPullRequestEvent(t, id(t, "a"), owner, owner, "notes", commit)
+	repository := nostr.Event{
+		Kind: nostr.KindRepositoryAnnouncement, PubKey: owner,
+		Tags: nostr.Tags{{"d", "notes"}, {TagBuzzChannel, "repo-channel"}},
+	}
+	ownerApproval := prReviewDecision(id(t, "1"), 10, owner, root, coordinate, commit, "approval")
+	maintainerRoot := validPullRequestEvent(t, id(t, "b"), maintainer, owner, "notes", commit)
+	maintainerApproval := prReviewDecision(id(t, "2"), 11, maintainer, maintainerRoot, coordinate, commit, "approval")
+
+	ownerState, err := ReducePullRequest(root, repository, []nostr.Event{ownerApproval}, CollaborationAuthority{
+		CanMaintain: func(pubkey nostr.PubKey) bool {
+			return pubkey == owner || pubkey == maintainer
+		},
+		IsAdmin: func(nostr.PubKey) bool { return false },
+	})
+	require.NoError(t, err)
+	require.True(t, commentsByID(ownerState.Comments)[id(t, "1")].IsTrustedReviewDecision)
+	require.Len(t, ownerState.Approvals, 1)
+
+	maintainerState, err := ReducePullRequest(maintainerRoot, repository, []nostr.Event{maintainerApproval}, CollaborationAuthority{
+		CanMaintain: func(pubkey nostr.PubKey) bool {
+			return pubkey == owner || pubkey == maintainer
+		},
+		IsAdmin: func(nostr.PubKey) bool { return false },
+	})
+	require.NoError(t, err)
+	require.False(t, commentsByID(maintainerState.Comments)[id(t, "2")].IsTrustedReviewDecision)
+	require.Empty(t, maintainerState.Approvals)
+}
+
 func TestReducePullRequestDefaultsDraftAndFallsBackToInitialDecisionCommit(t *testing.T) {
 	owner := pubkey(t, "5")
 	author := pubkey(t, "6")

@@ -17,6 +17,27 @@ func (authority CollaborationAuthority) Administers(pubkey nostr.PubKey) bool {
 	return authority.IsAdmin != nil && authority.IsAdmin(pubkey)
 }
 
+// AllowsAuthorReviewDecision reports whether a review-decision signer may be
+// the pull-request author. Ordinary maintainers cannot self-review; the
+// 30617 owner or a channel/relay administrator may.
+func AllowsAuthorReviewDecision(
+	signer, author, repositoryOwner nostr.PubKey,
+	authority CollaborationAuthority,
+) bool {
+	if signer != author {
+		return true
+	}
+	return signer == repositoryOwner || authority.Administers(signer)
+}
+
+func TrustsReviewDecision(
+	signer, author, repositoryOwner nostr.PubKey,
+	authority CollaborationAuthority,
+) bool {
+	return authority.Allows(signer) &&
+		AllowsAuthorReviewDecision(signer, author, repositoryOwner, authority)
+}
+
 // Maintainers builds a test or adapter authority from an explicit pubkey list.
 func Maintainers(pubkeys ...nostr.PubKey) CollaborationAuthority {
 	allowed := make(map[nostr.PubKey]struct{}, len(pubkeys))

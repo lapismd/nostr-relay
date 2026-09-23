@@ -55,11 +55,16 @@ administrator.
 
 `CanMaintain` is the only channel authority for creating or replacing a
 `kind:30617` repository or project-task-anchor, for trusted pull-request
-review decisions, and for merge or trusted close. The `30617` announcement
-signer remains the NIP-01 address owner and can still replace or tombstone
-that coordinate, but losing `maintainer` or administrator status removes
-create, review, and merge authority. A `30617` `maintainers` tag and a
-requested-reviewer `p` tag are not authority.
+review decisions, and for merge or trusted close. A pull-request author who
+only holds `maintainer` cannot approve or request changes on that pull
+request. The `30617` announcement signer or a channel operator
+(`Administers`: group creator or relay `can_manage`) may publish those
+decisions on their own pull request when they still `CanMaintain`. The
+`30617` announcement signer remains the NIP-01 address owner and can still
+replace or tombstone that coordinate, but losing `maintainer` or
+administrator status removes create, review, and merge authority. A
+`30617` `maintainers` tag and a requested-reviewer `p` tag are not
+authority.
 
 ## Retention
 

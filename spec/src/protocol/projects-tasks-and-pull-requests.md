@@ -110,19 +110,24 @@ never substitute the target branch's current tip for a historical review.
 Root `p` recipients and trusted `t:review-request` notes form the reviewer
 set, excluding the PR author. A decision has exactly one of `t:approval` or
 `t:changes-requested`. The relay rejects those decisions at ingest unless the
-signer `CanMaintain` the repository `buzz-channel` and is not the PR author.
-The Lapis reducer trusts the same `CanMaintain` set, never the author, and
-never a requested-reviewer or `30617` owner who lacks the channel role. Missing
-`c` means the initial tip. Only a decision for the current tip is effective;
+signer `CanMaintain` the repository `buzz-channel`. A pull-request author
+still cannot publish them unless that signer is also the `30617` announcement
+owner or `Administers` the repository channel (group creator or relay
+`can_manage`). Ordinary `maintainer` authors remain rejected. The Lapis
+reducer trusts the same `CanMaintain` set, never a requested-reviewer or a
+`30617` owner who lacks the channel role, and trusts an author decision only
+when that owner or administrator exemption applies. Missing `c` means the
+initial tip. Only a decision for the current tip is effective;
 equal-timestamp decisions by one reviewer use the lexicographically largest ID.
 Older decisions remain historical. Valid `file`/`side`/`line` anchors are
 current or outdated by tip; invalid anchors remain visible comments with no
 usable anchor. Origin-channel membership alone is not enough to review or
 merge; the repository channel is required.
 
-Buzz Desktop may still display author- or owner-trusted reviews and statuses.
-Lapis does not. The relay retains all raw events; the Lapis reducer follows
-channel `CanMaintain` and documents this Desktop display divergence.
+Buzz Desktop may still display other author-trusted reviews and statuses.
+Lapis does not, except for the owner or administrator self-review exemption
+above. The relay retains all raw events; the Lapis reducer follows channel
+`CanMaintain` and documents this Desktop display divergence.
 
 ## Repository publication
 
@@ -145,7 +150,9 @@ target is the live default branch, a matching Active ruleset, or a compiled
 extra `protected-ref` pattern, a current tip matching `expected_head`, no
 current-tip `changes-requested` decision, at least the matching ruleset's
 `required_approvals` count of current-tip `CanMaintain` approvals that are
-not the PR author (default one), and an actor who `CanMaintain`. When a
+not the PR author (default one), and an actor who `CanMaintain`. An author
+self-approval, even from the `30617` owner or an administrator, does not
+count toward that total or toward `OWNERS.md` path groups. When a
 matching ruleset lists an admin bypass actor, a channel creator or relay
 administrator may merge without that extra approval count.
 When `OWNERS.md` exists on the merge-target tip, every changed-path owner
