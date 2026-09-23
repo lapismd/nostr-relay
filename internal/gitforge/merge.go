@@ -56,6 +56,9 @@ func (backend *WalGitBackend) MergeProtectedRef(ctx context.Context, repository 
 			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "protected_target_changed"}
 		}
 	}
+	if err := fetchMergeHead(ctx, gitPath, work, env, request.ExpectedHead); err != nil {
+		return forge.CollaborationResult{}, err
+	}
 	message := strings.TrimSpace(request.Message)
 	if message == "" {
 		message = strings.TrimSpace(request.Title)
@@ -67,24 +70,8 @@ func (backend *WalGitBackend) MergeProtectedRef(ctx context.Context, repository 
 	if method == "" {
 		method = "merge"
 	}
-	switch method {
-	case "merge":
-		if err := runGit(ctx, gitPath, work, env, "merge", "--no-ff", "-m", message, request.ExpectedHead); err != nil {
-			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "walgit_merge_rejected"}
-		}
-	case "squash":
-		if err := runGit(ctx, gitPath, work, env, "merge", "--squash", request.ExpectedHead); err != nil {
-			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "walgit_merge_rejected"}
-		}
-		if err := runGit(ctx, gitPath, work, env, "commit", "-m", message); err != nil {
-			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "walgit_merge_rejected"}
-		}
-	case "rebase":
-		if err := runGit(ctx, gitPath, work, env, "rebase", request.ExpectedHead); err != nil {
-			return forge.CollaborationResult{}, &forge.Error{Status: http.StatusConflict, Code: "walgit_merge_rejected"}
-		}
-	default:
-		return forge.CollaborationResult{}, &forge.Error{Status: http.StatusBadRequest, Code: "invalid_merge_request"}
+	if err := applyProtectedMerge(ctx, gitPath, work, env, method, message, request.ExpectedHead); err != nil {
+		return forge.CollaborationResult{}, err
 	}
 	merged, err := runGitOutput(ctx, gitPath, work, env, "rev-parse", "HEAD")
 	if err != nil {

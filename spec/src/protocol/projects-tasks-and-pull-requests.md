@@ -160,7 +160,14 @@ When `OWNERS.md` exists on the merge-target tip, every changed-path owner
 group also needs a current-tip approval from a listed owner or a channel
 administrator. The relay updates that protected ref as the constrained
 `merge-coordinator:<owner>/<repo>` principal, waits for the confirmed WalGit
-ref, and returns the merge commit. Community then publishes the merging
+ref, and returns the merge commit. The coordinator clones dest Git and MUST
+fetch the pull-request `c` commit before `git merge`. dest-Git-sync stores
+those dest-Git commits as carrier parents on `refs/heads/jj-sync/**` and
+`refs/jj-sync/**` rather than on the protected target, so an ordinary clone
+does not make a Log review mergeable. A dest-Git commit that exists but
+shares no history with the target MUST still merge (`--allow-unrelated-histories`).
+A dest-Git commit dest Git does not have is `merge_head_not_found`. A
+conflicted tree is `merge_conflict`. Community then publishes the merging
 maintainer's signed `1631` with `merge-commit` and `r`. The relay never signs
 that status as a user. A WalGit outage after the Git update is retried as a
 durable operation; `1631` is not expected until the ref is confirmed.
