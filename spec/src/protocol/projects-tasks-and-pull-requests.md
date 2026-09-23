@@ -147,8 +147,10 @@ channel, not merely the `30617` owner or a relay administrator.
 Hosted WalGit repositories advertise `capabilities.merge=true` and accept the
 same NIP-98 merge route. Eligibility requires an open pull request whose
 target is the live default branch (a missing `target-branch` means that
-default, not `refs/heads/main`; a Log review target that is not itself
-protected also means that default), a matching Active ruleset, or a compiled
+default; the default is the HEAD named by the repository refs summary, so a
+branch listing that omits `head` does not select another branch; a Log
+review target that is not itself protected also means that default), a
+matching Active ruleset, or a compiled
 extra `protected-ref` pattern, a current tip matching `expected_head`, no
 current-tip `changes-requested` decision, at least the matching ruleset's
 `required_approvals` count of current-tip `CanMaintain` approvals that are

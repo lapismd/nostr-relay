@@ -23,6 +23,7 @@ type recordingGitBackend struct {
 	apiCalls          []string
 	principal         string
 	refsJSON          string
+	refsBySubpath     map[string]string
 	resolveRevision   string
 	resolveRevisions  []string
 	resolveResult     string
@@ -48,6 +49,10 @@ func (backend *recordingGitBackend) ProxyRepositoryAPI(w http.ResponseWriter, _ 
 	backend.apiCalls = append(backend.apiCalls, subpath)
 	backend.principal = principal
 	w.Header().Set("Content-Type", "application/json")
+	if body, ok := backend.refsBySubpath[subpath]; ok {
+		_, _ = w.Write([]byte(body))
+		return
+	}
 	if backend.refsJSON != "" {
 		_, _ = w.Write([]byte(backend.refsJSON))
 		return

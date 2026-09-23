@@ -26,10 +26,13 @@ func (policy *GitForgePolicy) hostedLiveRefs(ctx context.Context, resolved forge
 		if snapshot, err := resolved.Authority.SnapshotRefs(ctx, resolved.Repository); err == nil {
 			refs = snapshot
 		}
+		if page, err := resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{Principal: principal}); err == nil && page.Head != nil {
+			headName = page.Head.Name
+		}
 		if page, err := resolved.Authority.Refs(ctx, resolved.Repository, forge.RefsRequest{
 			Kind: "branches", Principal: principal,
 		}); err == nil {
-			if page.Head != nil {
+			if headName == "" && page.Head != nil {
 				headName = page.Head.Name
 			}
 			for _, ref := range page.Refs {

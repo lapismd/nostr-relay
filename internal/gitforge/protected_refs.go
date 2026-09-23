@@ -82,8 +82,10 @@ func LiveDefaultRef(headName string, refs map[string]string) string {
 	if symbolic, ok := refs["HEAD"]; ok && symbolic != "" && !isFullObjectID(symbolic) {
 		return NormalizeRefName(symbolic)
 	}
-	if _, ok := refs[DefaultBootstrapRef]; ok {
-		return DefaultBootstrapRef
+	for name := range refs {
+		if NormalizeRefName(name) == DefaultBootstrapRef {
+			return DefaultBootstrapRef
+		}
 	}
 	for name := range refs {
 		if IsBranchHead(name) {

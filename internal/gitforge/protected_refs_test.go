@@ -7,6 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestLiveDefaultRefUsesSummaryHeadAndNamedMain(t *testing.T) {
+	refs := map[string]string{"community-visible": strings.Repeat("a", 40), "main": strings.Repeat("b", 40)}
+	require.Equal(t, "refs/heads/main", LiveDefaultRef("", refs))
+	require.Equal(t, "refs/heads/trunk", LiveDefaultRef("trunk", refs))
+}
+
 func TestEvaluateProtectedRefUpdatesDeniesUserDefaultBranch(t *testing.T) {
 	old := strings.Repeat("a", 40)
 	next := strings.Repeat("b", 40)

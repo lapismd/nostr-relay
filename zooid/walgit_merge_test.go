@@ -191,6 +191,21 @@ func enqueueHostedMerge(t *testing.T, author nostr.SecretKey, branch string) *fa
 	return merger
 }
 
+func TestRelayMergeLogReviewKeepsMainWhenBranchListOmitsHead(t *testing.T) {
+	author := nostr.Generate()
+	headSHA := strings.Repeat("a", 40)
+	mainSHA := strings.Repeat("d", 40)
+	merger, err := enqueueHostedMergeOn(t, author, logReviewBranch(author.Public(), strings.Repeat("ab", 16)), "main", &recordingGitBackend{
+		refsBySubpath: map[string]string{
+			"refs":          `{"head":{"name":"main","sha":"` + mainSHA + `"}}`,
+			"refs/branches": `{"refs":[{"name":"community-visible","sha":"` + headSHA + `"},{"name":"main","sha":"` + mainSHA + `"}],"more":false}`,
+			"refs/tags":     `{"refs":[]}`,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "refs/heads/main", merger.requests[0].TargetRef)
+}
+
 func TestRelayMergeLogReviewUsesLiveDefaultForUnprotectedTarget(t *testing.T) {
 	author := nostr.Generate()
 	merger, err := enqueueHostedMergeResult(t, author, logReviewBranch(author.Public(), strings.Repeat("ab", 16)), "main")
@@ -202,9 +217,13 @@ func TestRelayMergeLogReviewUsesLiveDefaultForUnprotectedTarget(t *testing.T) {
 func enqueueHostedMergeResult(t *testing.T, author nostr.SecretKey, branch, targetBranch string) (*fakeRelayMerger, error) {
 	t.Helper()
 	headSHA := strings.Repeat("a", 40)
-	backend := &recordingGitBackend{
+	return enqueueHostedMergeOn(t, author, branch, targetBranch, &recordingGitBackend{
 		refsJSON: `{"head":{"name":"refs/heads/trunk","sha":"` + headSHA + `"},"refs":[{"name":"refs/heads/trunk","sha":"` + headSHA + `"}]}`,
-	}
+	})
+}
+
+func enqueueHostedMergeOn(t *testing.T, author nostr.SecretKey, branch, targetBranch string, backend *recordingGitBackend) (*fakeRelayMerger, error) {
+	t.Helper()
 	policy, store := createGitForgeTestPolicy(t, backend)
 	merger := &fakeRelayMerger{result: forge.CollaborationResult{State: "merged", MergedCommit: strings.Repeat("c", 40)}}
 	policy.RelayMerger = merger
