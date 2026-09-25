@@ -27,6 +27,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # scripts/update-architecture-baseline.sh --check reads the pinned
+          # upstream commit from history, so a shallow clone cannot verify the
+          # architecture exclusion manifest.
+          fetch-depth: 0
 
       - name: Build the pinned CI toolchain image
         shell: bash

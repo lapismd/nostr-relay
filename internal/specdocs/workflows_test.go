@@ -20,6 +20,9 @@ func TestGitHubCIWorkflow(t *testing.T) {
 	requireContains(t, workflow, "./scripts/ci-images.sh fixtures")
 	requireContains(t, workflow, "./scripts/ci-integration.sh")
 	requireContains(t, workflow, "./scripts/ci-image.sh")
+	// The architecture exclusion manifest check reads the pinned upstream commit
+	// from history, so the verify job must not use a shallow clone.
+	requireContains(t, workflow, "fetch-depth: 0")
 	assertLocalCIScripts(t)
 	assertRuntimeVulnerabilityGate(t, readScript(t, "ci-image.sh"))
 	assertFalseContains(t, workflow, "pull_request_target:")
@@ -51,6 +54,9 @@ func TestGitHubPublishImageWorkflow(t *testing.T) {
 	requireContains(t, workflow, "docker logout ghcr.io")
 	requireContains(t, workflow, "docker buildx imagetools inspect")
 	requireContains(t, workflow, "org.opencontainers.image.source=https://github.com/${{ github.repository }}")
+	// scripts/ci.sh runs the same verify gates, so the publish job also needs the
+	// full history the architecture manifest check reads.
+	requireContains(t, workflow, "fetch-depth: 0")
 	assertLocalCIScripts(t)
 	assertRuntimeVulnerabilityGate(t, readScript(t, "ci-image.sh"))
 	assertFalseContains(t, workflow, "pull_request:")
@@ -83,10 +89,13 @@ func assertLocalCIScripts(t *testing.T) {
 	verify := readScript(t, "ci-verify.sh")
 	requireContains(t, verify, "gofmt -l -s cmd internal modules zooid testdata")
 	requireContains(t, verify, "GOWORK=off go test ./internal/specdocs")
+	requireContains(t, verify, "GOWORK=off go test ./internal/architecture")
 	requireContains(t, verify, "GOWORK=off go test ./...")
 	requireContains(t, verify, "./scripts/update-khatru.sh --check")
 	requireContains(t, readRepoFile(t, "scripts/update-khatru.sh"), "go env GOMODCACHE")
 	requireContains(t, verify, "./scripts/update-buzz-agent-upstream.sh --check")
+	requireContains(t, verify, "./scripts/update-architecture-baseline.sh --check")
+	requireContains(t, readRepoFile(t, "scripts/update-architecture-baseline.sh"), "ls-tree -r --name-only")
 	requireContains(t, verify, "mdbook build spec")
 
 	integration := readScript(t, "ci-integration.sh")
@@ -130,6 +139,8 @@ func assertLocalCIScripts(t *testing.T) {
 	justfile := readRepoFile(t, "justfile")
 	requireContains(t, justfile, "./scripts/ci-images.sh")
 	requireContains(t, justfile, "./scripts/ci.sh")
+	requireContains(t, justfile, "GOWORK=off go test ./internal/architecture")
+	requireContains(t, justfile, "./scripts/update-architecture-baseline.sh --update")
 }
 
 func requireContains(t *testing.T, workflow, needle string) {

@@ -13,8 +13,10 @@ if [ -n "$unformatted" ]; then
 fi
 
 GOWORK=off go test ./internal/specdocs
+GOWORK=off go test ./internal/architecture
 (cd modules/buzzagents && GOWORK=off go test ./...)
 GOWORK=off go test ./...
 ./scripts/update-khatru.sh --check
 ./scripts/update-buzz-agent-upstream.sh --check
+./scripts/update-architecture-baseline.sh --check
 mdbook build spec

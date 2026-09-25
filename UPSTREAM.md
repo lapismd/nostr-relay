@@ -105,3 +105,12 @@ its Git/storage semantics into Go.
 When updating, fetch the upstream remote with Jujutsu, review the complete
 upstream range, rebase or merge it into a dedicated update change, and rerun
 the unit, integration, and container acceptance lanes before committing.
+
+An upstream refresh that moves the imported commit must also regenerate the
+architecture gate's exclusion manifest, because the set of inherited `.go`
+paths changes with it. Run `./scripts/update-architecture-baseline.sh --update`
+and review the diff: `internal/architecture/upstream-paths.txt` follows the new
+pin, and `internal/architecture/baseline.json` may only lower or remove a
+budget. `--check` fails on drift, and both CI `verify` jobs check out full
+history so the pin stays readable. See
+`spec/src/maintenance/architecture-budgets.md`.

@@ -14,11 +14,18 @@ buzz-agent-check:
 fmt:
   gofmt -w -s .
 
+arch:
+	GOWORK=off go test ./internal/architecture
+
+arch-baseline:
+	./scripts/update-architecture-baseline.sh --update
+
 spec-build:
   mdbook build spec
 
 spec-check:
   go test ./internal/specdocs
+  GOWORK=off go test ./internal/architecture
   mdbook build spec
 
 spec-serve:

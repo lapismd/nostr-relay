@@ -60,6 +60,7 @@
 - [Compatibility](compatibility/buzz-desktop.md)
   - [Buzz agents](compatibility/buzz-agents.md)
 - [Maintenance](maintenance/upstream.md)
+  - [Architecture budgets](maintenance/architecture-budgets.md)
   - [Deferred forge work](roadmap/deferred-forge-work.md)
 - [Historical audits](audits/walgit-abstraction.md)
   - [Git replica abstraction audit](audits/git-replica.md)

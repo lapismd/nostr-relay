@@ -1,0 +1,154 @@
+{
+  "production": [
+    {
+      "path": "cmd/local-admin/main.go",
+      "budget": 560
+    },
+    {
+      "path": "internal/agentbunker/service.go",
+      "budget": 1132
+    },
+    {
+      "path": "internal/auth/service.go",
+      "budget": 1083
+    },
+    {
+      "path": "internal/auth/sqlstore.go",
+      "budget": 509
+    },
+    {
+      "path": "internal/buzzcompat/handler.go",
+      "budget": 609
+    },
+    {
+      "path": "internal/forge/types.go",
+      "budget": 532
+    },
+    {
+      "path": "internal/gitforge/protection_document.go",
+      "budget": 309
+    },
+    {
+      "path": "internal/githubforge/backend.go",
+      "budget": 910
+    },
+    {
+      "path": "internal/githubforge/collaboration.go",
+      "budget": 345
+    },
+    {
+      "path": "internal/githubforge/import.go",
+      "budget": 319
+    },
+    {
+      "path": "internal/projecttask/model.go",
+      "budget": 589
+    },
+    {
+      "path": "internal/projecttask/pull_request.go",
+      "budget": 429
+    },
+    {
+      "path": "internal/projecttask/scope.go",
+      "budget": 505
+    },
+    {
+      "path": "modules/buzzagents/protocol/envelope.go",
+      "budget": 312
+    },
+    {
+      "path": "zooid/agent_policy.go",
+      "budget": 486
+    },
+    {
+      "path": "zooid/count.go",
+      "budget": 335
+    },
+    {
+      "path": "zooid/forge_ci.go",
+      "budget": 468
+    },
+    {
+      "path": "zooid/forge_http.go",
+      "budget": 1296
+    },
+    {
+      "path": "zooid/forge_migration.go",
+      "budget": 422
+    },
+    {
+      "path": "zooid/forge_operations.go",
+      "budget": 866
+    },
+    {
+      "path": "zooid/forge_projection.go",
+      "budget": 332
+    },
+    {
+      "path": "zooid/git_forge.go",
+      "budget": 416
+    },
+    {
+      "path": "zooid/git_http.go",
+      "budget": 805
+    },
+    {
+      "path": "zooid/git_replicas.go",
+      "budget": 633
+    },
+    {
+      "path": "zooid/github_forge_store.go",
+      "budget": 312
+    },
+    {
+      "path": "zooid/github_webhooks.go",
+      "budget": 1075
+    },
+    {
+      "path": "zooid/registry_policy.go",
+      "budget": 303
+    }
+  ],
+  "test": [
+    {
+      "path": "internal/agentbunker/service_test.go",
+      "budget": 730
+    },
+    {
+      "path": "internal/auth/service_test.go",
+      "budget": 475
+    },
+    {
+      "path": "internal/buzzcompat/handler_test.go",
+      "budget": 587
+    },
+    {
+      "path": "internal/githubforge/backend_test.go",
+      "budget": 313
+    },
+    {
+      "path": "internal/projecttask/model_test.go",
+      "budget": 366
+    },
+    {
+      "path": "zooid/agent_policy_test.go",
+      "budget": 316
+    },
+    {
+      "path": "zooid/forge_http_test.go",
+      "budget": 328
+    },
+    {
+      "path": "zooid/forge_operations_test.go",
+      "budget": 340
+    },
+    {
+      "path": "zooid/git_http_test.go",
+      "budget": 422
+    },
+    {
+      "path": "zooid/github_webhooks_test.go",
+      "budget": 425
+    }
+  ]
+}
