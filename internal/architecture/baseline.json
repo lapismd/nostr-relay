@@ -21,10 +21,6 @@
       "budget": 309
     },
     {
-      "path": "internal/githubforge/backend.go",
-      "budget": 910
-    },
-    {
       "path": "internal/githubforge/collaboration.go",
       "budget": 345
     },
