@@ -89,10 +89,6 @@
       "budget": 312
     },
     {
-      "path": "zooid/github_webhooks.go",
-      "budget": 1075
-    },
-    {
       "path": "zooid/registry_policy.go",
       "budget": 303
     }
