@@ -69,10 +69,6 @@
       "budget": 416
     },
     {
-      "path": "zooid/git_http.go",
-      "budget": 805
-    },
-    {
       "path": "zooid/git_replicas.go",
       "budget": 633
     },
