@@ -5,10 +5,6 @@
       "budget": 509
     },
     {
-      "path": "internal/forge/types.go",
-      "budget": 532
-    },
-    {
       "path": "internal/gitforge/protection_document.go",
       "budget": 309
     },
