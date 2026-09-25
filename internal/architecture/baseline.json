@@ -25,10 +25,6 @@
       "budget": 319
     },
     {
-      "path": "internal/projecttask/model.go",
-      "budget": 589
-    },
-    {
       "path": "internal/projecttask/pull_request.go",
       "budget": 429
     },
