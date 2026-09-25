@@ -5,10 +5,6 @@
       "budget": 560
     },
     {
-      "path": "internal/agentbunker/service.go",
-      "budget": 1132
-    },
-    {
       "path": "internal/auth/service.go",
       "budget": 1083
     },
