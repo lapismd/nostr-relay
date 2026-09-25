@@ -108,9 +108,9 @@ ownership and must be recorded in `internal/architecture/allowlist.json` with a
 reason naming the call site. Two edges are recorded today:
 
 - `internal/auth` to `internal/gitforge`, for the `VerifyRequestAuth` call in
-  `internal/auth/service.go`.
+  `internal/auth/service_session.go`.
 - `internal/forge` to `internal/projecttask`, for the `RepositoryCoordinate`
-  identity used by `internal/forge/types.go`.
+  identity used by `internal/forge/types.go` and `internal/forge/types_ci.go`.
 
 The allowlist may only shrink. An entry that no longer matches a real edge, or
 that has become a legitimate downward edge, fails. Adding an entry requires a
