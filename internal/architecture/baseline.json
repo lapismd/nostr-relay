@@ -1,10 +1,6 @@
 {
   "production": [
     {
-      "path": "cmd/local-admin/main.go",
-      "budget": 560
-    },
-    {
       "path": "internal/auth/sqlstore.go",
       "budget": 509
     },
