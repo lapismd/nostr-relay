@@ -9,10 +9,6 @@
       "budget": 509
     },
     {
-      "path": "internal/buzzcompat/handler.go",
-      "budget": 609
-    },
-    {
       "path": "internal/forge/types.go",
       "budget": 532
     },
