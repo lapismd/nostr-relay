@@ -45,10 +45,6 @@
       "budget": 416
     },
     {
-      "path": "zooid/git_replicas.go",
-      "budget": 633
-    },
-    {
       "path": "zooid/github_forge_store.go",
       "budget": 312
     },
