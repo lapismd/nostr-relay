@@ -55,16 +55,8 @@
   ],
   "test": [
     {
-      "path": "internal/agentbunker/service_test.go",
-      "budget": 730
-    },
-    {
       "path": "internal/auth/service_test.go",
       "budget": 475
-    },
-    {
-      "path": "internal/buzzcompat/handler_test.go",
-      "budget": 587
     },
     {
       "path": "internal/githubforge/backend_test.go",
