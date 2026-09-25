@@ -1,3 +1,4 @@
+// Local development administration. Secrets are read from files, never argv.
 package main
 
 import (

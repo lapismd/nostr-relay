@@ -1,3 +1,5 @@
+// Package projecttask defines Buzz-compatible NIP-34 project and task wire
+// contracts. It deliberately has no dependency on the relay runtime or store.
 package projecttask
 
 import (

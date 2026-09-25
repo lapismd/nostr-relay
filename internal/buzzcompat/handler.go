@@ -1,3 +1,6 @@
+// Package buzzcompat implements the small authenticated HTTP bridge used by
+// Buzz clients. It is deliberately isolated from the upstream-derived relay so
+// upstream merges have a single integration point.
 package buzzcompat
 
 import (
