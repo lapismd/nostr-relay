@@ -61,10 +61,6 @@
       "budget": 422
     },
     {
-      "path": "zooid/forge_operations.go",
-      "budget": 866
-    },
-    {
       "path": "zooid/forge_projection.go",
       "budget": 332
     },
