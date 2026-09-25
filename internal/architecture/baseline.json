@@ -17,10 +17,6 @@
       "budget": 429
     },
     {
-      "path": "internal/projecttask/scope.go",
-      "budget": 505
-    },
-    {
       "path": "modules/buzzagents/protocol/envelope.go",
       "budget": 312
     },
