@@ -1,10 +1,6 @@
 {
   "production": [
     {
-      "path": "internal/auth/sqlstore.go",
-      "budget": 509
-    },
-    {
       "path": "internal/gitforge/protection_document.go",
       "budget": 309
     },
