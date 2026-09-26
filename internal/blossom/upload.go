@@ -14,7 +14,7 @@ import (
 
 const maxUploadBytes = 10 << 20
 
-func prepareUpload(w http.ResponseWriter, r *http.Request, serviceURL string) *nostr.Event {
+func prepareUpload(w http.ResponseWriter, r *http.Request, serviceURL, action string) *nostr.Event {
 	if r.ContentLength < 0 && r.Header.Get("Content-Length") == "" {
 		http.Error(w, "Content-Length required", http.StatusLengthRequired)
 		return nil
@@ -49,7 +49,7 @@ func prepareUpload(w http.ResponseWriter, r *http.Request, serviceURL string) *n
 			return nil
 		}
 	}
-	auth, err := authorize(r, serviceURL, "upload", hash, true)
+	auth, err := authorize(r, serviceURL, action, hash, true)
 	if err != nil || auth == nil {
 		http.Error(w, "upload authorization required or invalid", http.StatusUnauthorized)
 		return nil
@@ -57,30 +57,31 @@ func prepareUpload(w http.ResponseWriter, r *http.Request, serviceURL string) *n
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	r.Header.Set("X-SHA-256", hash)
 	return auth
 }
 
-func prepareUploadCheck(w http.ResponseWriter, r *http.Request, serviceURL string) bool {
+func prepareUploadCheck(w http.ResponseWriter, r *http.Request, serviceURL, action string) *nostr.Event {
 	hash := r.Header.Get("X-SHA-256")
 	length := r.Header.Get("X-Content-Length")
 	mediaType := r.Header.Get("X-Content-Type")
 	size, err := strconv.Atoi(length)
 	if !blobHash.MatchString(hash) || err != nil || size <= 0 || mediaType == "" {
 		http.Error(w, "invalid upload preflight headers", http.StatusBadRequest)
-		return false
+		return nil
 	}
 	if _, _, err := mime.ParseMediaType(mediaType); err != nil {
 		http.Error(w, "invalid X-Content-Type", http.StatusBadRequest)
-		return false
+		return nil
 	}
 	if size > maxUploadBytes {
 		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
-		return false
+		return nil
 	}
-	auth, err := authorize(r, serviceURL, "upload", hash, true)
+	auth, err := authorize(r, serviceURL, action, hash, true)
 	if err != nil || auth == nil {
 		http.Error(w, "upload authorization required or invalid", http.StatusUnauthorized)
-		return false
+		return nil
 	}
-	return true
+	return auth
 }

@@ -21,20 +21,31 @@ func Wrap(next http.Handler, options Options) http.Handler {
 		case r.URL.Path == "/report" && r.Method == http.MethodPut:
 			handleReport(w, r, options.SaveReport)
 		case r.URL.Path == "/upload" && r.Method == http.MethodHead:
-			if prepareUploadCheck(w, r, options.ServiceURL) {
+			if prepareUploadCheck(w, r, options.ServiceURL, "upload") != nil {
 				next.ServeHTTP(w, r)
 			}
 		case r.URL.Path == "/upload" && r.Method == http.MethodPut:
-			if auth := prepareUpload(w, r, options.ServiceURL); auth != nil {
-				enrichDescriptor(next, w, r, *auth, options)
+			if auth := prepareUpload(w, r, options.ServiceURL, "upload"); auth != nil {
+				status := http.StatusCreated
+				if options.LoadBlob != nil {
+					if reader, err := options.LoadBlob(r.Header.Get("X-SHA-256")); err == nil {
+						reader.Close()
+						status = http.StatusOK
+					}
+				}
+				enrichDescriptor(next, w, r, *auth, options, status)
 			}
+		case r.URL.Path == "/media" && r.Method == http.MethodHead:
+			handleMediaCheck(w, r, options)
+		case r.URL.Path == "/media" && r.Method == http.MethodPut:
+			handleMedia(w, r, options)
 		case r.URL.Path == "/mirror" && r.Method == http.MethodPut:
 			auth, err := authorize(r, options.ServiceURL, "upload", "", true)
 			if err != nil || auth == nil {
 				http.Error(w, "mirror authorization required or invalid", http.StatusUnauthorized)
 				return
 			}
-			enrichDescriptor(next, w, r, *auth, options)
+			enrichDescriptor(next, w, r, *auth, options, 0)
 		case strings.HasPrefix(r.URL.Path, "/list/") && r.Method == http.MethodGet:
 			pubkey, err := nostr.PubKeyFromHex(strings.TrimPrefix(r.URL.Path, "/list/"))
 			if err != nil {

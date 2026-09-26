@@ -3,13 +3,19 @@ package zooid
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
+	upstream "fiatjaf.com/nostr/nipb7/blossom"
 	"github.com/spf13/afero"
 	lapisblossom "zooid/internal/blossom"
 	"zooid/internal/khatru/blossom"
@@ -54,27 +60,45 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		ListBlobs:  bl.listBlobs,
 		OnUpload:   bl.saveUploadTags,
 		OnDelete:   bl.removeUploadTags,
+		StageIndex: stageBlobIndex,
 		LoadBlob:   func(hash string) (io.ReadCloser, error) { return fs.Open(dir + "/" + hash) },
 		SaveReport: bl.saveReport,
+		CanMedia: func(pubkey nostr.PubKey) bool {
+			return allowBlobWrite(instance.Config, instance.Management.IsMember(pubkey))
+		},
+		StoreMedia: func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (upstream.BlobDescriptor, error) {
+			sum := sha256.Sum256(data)
+			hash := hex.EncodeToString(sum[:])
+			if err := writeBlobAtomic(dir, hash, data); err != nil {
+				return upstream.BlobDescriptor{}, err
+			}
+			descriptor := upstream.BlobDescriptor{
+				URL:    publicURL + "/" + hash + upstream.GetExtension(mediaType),
+				SHA256: hash, Size: len(data), Type: mediaType, Uploaded: nostr.Now(),
+			}
+			if err := backend.Store.Keep(ctx, descriptor, auth.PubKey); err != nil {
+				return upstream.BlobDescriptor{}, err
+			}
+			return descriptor, nil
+		},
 	}))
 	instance.Relay.SetRouter(outerRouter)
 
-	backend.Store = blossom.EventStoreBlobIndexWrapper{
+	backend.Store = checkedBlobIndex{blossom.EventStoreBlobIndexWrapper{
 		Store:      bl.Events,
 		ServiceURL: publicURL,
-	}
+	}}
 
 	backend.StoreBlob = func(ctx context.Context, sha256 string, ext string, body []byte) error {
-		file, err := fs.Create(dir + "/" + sha256)
-		if err != nil {
+		if err := writeBlobAtomic(dir, sha256, body); err != nil {
 			return err
 		}
-		defer file.Close()
-
-		if _, err := io.Copy(file, bytes.NewReader(body)); err != nil {
-			return err
+		if pending := pendingBlobIndex(ctx); pending != nil {
+			if pending.descriptor.SHA256 != sha256 {
+				return fmt.Errorf("staged descriptor hash does not match blob")
+			}
+			return checkedBlobIndex{blossom.EventStoreBlobIndexWrapper{Store: bl.Events, ServiceURL: publicURL}}.save(ctx, pending.descriptor, pending.owner)
 		}
-
 		return nil
 	}
 
@@ -131,4 +155,32 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 
 		return false, "", 200
 	}
+}
+
+func writeBlobAtomic(dir, hash string, body []byte) error {
+	sum := sha256.Sum256(body)
+	if hex.EncodeToString(sum[:]) != hash {
+		return fmt.Errorf("blob hash does not match content")
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, hash)
+	file, err := os.CreateTemp(dir, ".blossom-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := io.Copy(file, bytes.NewReader(body)); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
 }
