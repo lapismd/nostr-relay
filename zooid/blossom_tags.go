@@ -20,6 +20,11 @@ func (store *BlossomStore) saveUploadTags(auth nostr.Event, descriptor upstream.
 		return err
 	}
 	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO %s (pubkey, sha256, uploaded_at, mime_type, size) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (pubkey, sha256) DO NOTHING", store.Schema.Prefix("blossom_blobs")),
+		auth.PubKey.Hex(), descriptor.SHA256, int64(descriptor.Uploaded), descriptor.Type, descriptor.Size)
+	if err != nil {
+		return err
+	}
 	table := store.Schema.Prefix("blossom_tags")
 	for source, key := range map[string]string{"lapis-purpose": "purpose", "lapis-plugin": "plugin", "lapis-slot": "slot"} {
 		for tag := range auth.Tags.FindAll(source) {
@@ -58,8 +63,22 @@ func (store *BlossomStore) tagsForOwner(ctx context.Context, pubkey nostr.PubKey
 func (store *BlossomStore) removeUploadTags(auth nostr.Event, hash string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := GetDb().ExecContext(ctx,
+	tx, err := GetDb().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
 		fmt.Sprintf("DELETE FROM %s WHERE pubkey=$1 AND sha256=$2", store.Schema.Prefix("blossom_tags")),
 		auth.PubKey.Hex(), hash)
-	return err
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
+		fmt.Sprintf("DELETE FROM %s WHERE pubkey=$1 AND sha256=$2", store.Schema.Prefix("blossom_blobs")),
+		auth.PubKey.Hex(), hash)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

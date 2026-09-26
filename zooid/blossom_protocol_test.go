@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -33,6 +34,11 @@ func TestBlossomTagFilteringAndReportPersistence(t *testing.T) {
 		}, owner); err != nil {
 			t.Fatal(err)
 		}
+		if err := store.saveUploadTags(nostr.Event{PubKey: owner}, upstream.BlobDescriptor{
+			SHA256: item.hash, Type: "image/png", Size: 42, Uploaded: item.uploaded,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.saveUploadTags(nostr.Event{PubKey: owner, Tags: nostr.Tags{{"lapis-purpose", "avatar"}}}, upstream.BlobDescriptor{SHA256: avatarHash}); err != nil {
 		t.Fatal(err)
@@ -52,6 +58,12 @@ func TestBlossomTagFilteringAndReportPersistence(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].SHA256 != avatarHash {
 		t.Fatalf("avatar filter: %#v, %v", listed, err)
 	}
+	listed, err = store.listBlobs(request, owner, lapisblossom.ListQuery{Limit: 10, Tags: map[string][]string{
+		"purpose": {"avatar", "plugin"}, "plugin": {"notes"}, "m": {"image/png"},
+	}})
+	if err != nil || len(listed) != 1 || listed[0].SHA256 != pluginHash {
+		t.Fatalf("combined SQL filters: %#v, %v", listed, err)
+	}
 	listed, err = store.listBlobs(request, owner, lapisblossom.ListQuery{Limit: 1, Cursor: pluginHash})
 	if err != nil || len(listed) != 1 || listed[0].SHA256 != avatarHash {
 		t.Fatalf("cursor: %#v, %v", listed, err)
@@ -59,6 +71,20 @@ func TestBlossomTagFilteringAndReportPersistence(t *testing.T) {
 	_, err = store.listBlobs(request, owner, lapisblossom.ListQuery{Limit: 1, Cursor: strings.Repeat("c", 64)})
 	if !errors.Is(err, lapisblossom.ErrCursorNotFound) {
 		t.Fatalf("missing cursor: %v", err)
+	}
+	if _, err := GetDb().Exec("DELETE FROM "+events.Schema.Prefix("blossom_blobs")+" WHERE pubkey = $1", owner.Hex()); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := os.ReadFile("migrations/025_blossom_blobs.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GetDb().Exec(events.Schema.Render(string(migration))); err != nil {
+		t.Fatalf("legacy blob backfill failed: %v", err)
+	}
+	listed, err = store.listBlobs(request, owner, lapisblossom.ListQuery{Limit: 10})
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("legacy blob backfill: %#v, %v", listed, err)
 	}
 	report := nostr.Event{Kind: nostr.KindReporting, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"x", avatarHash, "spam"}}}
 	if err := report.Sign(nostr.Generate()); err != nil {
