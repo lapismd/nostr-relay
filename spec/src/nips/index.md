@@ -45,6 +45,7 @@ upgrades transport-only support to implemented.
 | [NIP-7D](NIP-7D.md) | partial | implemented | not applicable | Forum visibility follows NIP-29 group policy. |
 | [NIP-86](NIP-86.md) | implemented | not applicable | not applicable | Lapis adds role methods with inert unknown roles. |
 | [NIP-92](NIP-92.md) | transport-only | implemented | not applicable | Hash verification is a Community policy. |
+| [NIP-94](NIP-94.md) | implemented | unsupported | not applicable | Metadata acceptance does not upload or retain file bytes. |
 | [NIP-98](NIP-98.md) | implemented | implemented | not applicable | Git credential-helper profile differs from generic HTTP. |
 | [NIP-AA](NIP-AA.md) | implemented | not applicable | required | Grants connection-local relay admission only. |
 | [NIP-AE](NIP-AE.md) | implemented | unsupported | planned | Relay sees only an opaque NIP-44 envelope. |

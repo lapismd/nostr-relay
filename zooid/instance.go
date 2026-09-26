@@ -126,6 +126,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	instance.Relay.Info.Software = "https://github.com/coracle-social/zooid"
 	instance.Relay.Info.Version = "v0.1.0"
 	instance.Relay.Info.SupportedNIPs = append(instance.Relay.Info.SupportedNIPs, 43)
+	advertiseNIP94(instance.Relay)
 
 	// Handlers
 
@@ -843,6 +844,9 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 
 	if instance.IsReadOnlyEvent(event) {
 		return true, "invalid: this event's kind is not accepted"
+	}
+	if err := validateNIP94Event(event); err != nil {
+		return true, "invalid: " + err.Error()
 	}
 
 	if instance.Groups.IsGroupEvent(event) && !protocol.IsGlobalOnly(event.Kind) {

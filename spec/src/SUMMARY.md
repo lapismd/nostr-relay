@@ -53,6 +53,7 @@
   - [NIP-7D Forum threads](nips/NIP-7D.md)
   - [NIP-86 Relay management](nips/NIP-86.md)
   - [NIP-92 Media attachments](nips/NIP-92.md)
+  - [NIP-94 File metadata](nips/NIP-94.md)
   - [NIP-98 HTTP authentication](nips/NIP-98.md)
   - [NIP-AA Agent authentication](nips/NIP-AA.md)
   - [NIP-AE Agent engrams](nips/NIP-AE.md)

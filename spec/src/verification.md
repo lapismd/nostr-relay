@@ -6,6 +6,7 @@ in proportion to the affected boundary.
 | Area | Evidence |
 | --- | --- |
 | Runtime snapshots | Protocol, policy, signing, count and storage regressions cover encrypted addressable kinds 30180/30181, replacement and owner isolation; observer frames remain ephemeral. |
+| NIP-94 file metadata | `TestNIP94AdvertisementAndValidation` covers numeric NIP-11 advertisement and strict core kind `1063` URL, MIME, digest, size and dimension validation; `TestInstanceAppliesNIP94Validation` proves the authenticated write path enforces it. |
 | Keytr storage | `TestKeytrStoragePolicy` and `TestKeytrRecordValidation` cover opt-in bootstrap, closed-relay denial, unchanged ordinary-write authentication, and malformed or forged records. |
 | Specification | `just spec-check` builds the linked mdBook and validates local Markdown targets. The shared `lapis-relay-ci` image pins mdBook 0.5.4 with Go 1.25.0; `just ci` and GitHub Actions run `go test ./internal/specdocs`, `go test ./internal/architecture`, and the three manifest `--check` scripts, then rebuild the book inside that image. |
 | GitHub Actions | `.github/workflows/ci.yml` and `just ci` run the same scripts. Both `verify` jobs check out full history (`fetch-depth: 0`) because the architecture manifest check reads the pinned upstream commit. `scripts/ci-images.sh` builds `lapis-relay-ci:local` from `docker/Dockerfile.ci` plus the WalGit and fake-GitHub fixture images. Verify runs inside that toolchain image through `scripts/ci-in-image.sh`; integration and the candidate `relay` image plus Trivy stay on the host Docker daemon. `.github/workflows/publish-image.yml` runs `scripts/ci.sh` on trusted `main` pushes, `v*.*.*` tags, and dispatch, then publishes attested `linux/amd64` and `linux/arm64` `ghcr.io/<owner>/lapis-relay` images and fails until the digest is anonymously readable. Run `just ci-images` and `just ci` locally before pushing workflow or integration changes. |
@@ -34,4 +35,3 @@ provider credentials, service tokens, webhook secrets, or production
 hostnames. Image publication is the GitHub Actions publish workflow after
 those same gates. Deploying a running service remains an explicit manual
 gate.
-
