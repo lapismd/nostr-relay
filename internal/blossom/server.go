@@ -20,6 +20,8 @@ func Wrap(next http.Handler, options Options) http.Handler {
 			return
 		}
 		switch {
+		case r.URL.Path == "/api/assets/history" && r.Method == http.MethodGet:
+			handleHistoryList(w, r, options)
 		case r.URL.Path == "/api/assets/reports" && r.Method == http.MethodGet:
 			handleReportList(w, r, options)
 		case r.URL.Path == "/report" && r.Method == http.MethodPut:
@@ -80,6 +82,20 @@ func Wrap(next http.Handler, options Options) http.Handler {
 				if err != nil || auth == nil {
 					http.Error(w, "delete authorization required or invalid", http.StatusUnauthorized)
 					return
+				}
+				if options.CanDelete != nil {
+					allowed, reason, err := options.CanDelete(r.Context(), *auth, hash)
+					if err != nil {
+						http.Error(w, "failed to check asset references", http.StatusServiceUnavailable)
+						return
+					}
+					if !allowed {
+						if reason == "" {
+							reason = "asset deletion blocked"
+						}
+						http.Error(w, reason, http.StatusConflict)
+						return
+					}
 				}
 				deleteBlob(next, w, r, *auth, hash, options.OnDelete)
 				return

@@ -430,6 +430,10 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	// Enable extra functionality
 
 	if config.Blossom.Enabled {
+		if err := instance.Blossom.backfillProfileReferences(ctx); err != nil {
+			instance.Events.Close()
+			return nil, fmt.Errorf("backfill asset references: %w", err)
+		}
 		instance.Blossom.Enable(instance)
 	}
 
@@ -880,6 +884,11 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 }
 
 func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
+	if instance.Config.Blossom.Enabled {
+		if err := instance.Blossom.projectProfileReferences(ctx, event); err != nil {
+			log.Printf("Failed to project asset references for event %s: %v", event.ID.Hex(), err)
+		}
+	}
 	if instance.Agents != nil {
 		instance.Agents.RememberStored(event)
 	}
@@ -1016,7 +1025,12 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 	}
 }
 
-func (instance *Instance) OnEventDeleted(_ context.Context, event nostr.Event) {
+func (instance *Instance) OnEventDeleted(ctx context.Context, event nostr.Event) {
+	if instance.Config.Blossom.Enabled {
+		if err := instance.Blossom.removeProfileReferences(ctx, event); err != nil {
+			log.Printf("Failed to remove asset references for event %s: %v", event.ID.Hex(), err)
+		}
+	}
 	if instance.Agents != nil {
 		instance.Agents.ForgetStored(event)
 	}

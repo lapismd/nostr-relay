@@ -26,8 +26,11 @@ type Options struct {
 	SaveReport       func(event nostr.Event) error
 	CanReviewReports func(pubkey nostr.PubKey) bool
 	ListReports      func(r *http.Request, limit int, cursor string) ([]ReportedBlob, error)
+	CanViewHistory   func(actor, owner nostr.PubKey) bool
+	ListHistory      func(r *http.Request, owner nostr.PubKey, limit int, cursor string) (AssetHistoryPage, error)
 	ListBlobs        func(r *http.Request, owner nostr.PubKey, query ListQuery) ([]ListedBlob, error)
 	OnUpload         func(auth nostr.Event, descriptor blossom.BlobDescriptor) error
+	CanDelete        func(ctx context.Context, auth nostr.Event, hash string) (bool, string, error)
 	OnDelete         func(auth nostr.Event, hash string) error
 	StageIndex       func(r *http.Request) *http.Request
 	CanUpload        func(pubkey nostr.PubKey) bool

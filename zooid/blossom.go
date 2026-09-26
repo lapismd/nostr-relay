@@ -74,6 +74,7 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		},
 		ListBlobs:  bl.listBlobs,
 		OnUpload:   bl.saveUploadTags,
+		CanDelete:  bl.canDeleteAsset,
 		OnDelete:   bl.removeUploadTags,
 		StageIndex: stageBlobIndex,
 		CanUpload: func(pubkey nostr.PubKey) bool {
@@ -88,6 +89,10 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 			return instance.Config.CanManage(pubkey) || instance.Management.IsAdmin(pubkey)
 		},
 		ListReports: bl.listReports,
+		CanViewHistory: func(actor, owner nostr.PubKey) bool {
+			return actor == owner || instance.Config.CanManage(actor) || instance.Management.IsAdmin(actor)
+		},
+		ListHistory: bl.listAssetHistory,
 		CanMedia: func(pubkey nostr.PubKey) bool {
 			return allowBlobWrite(instance.Config, instance.Management.IsMember(pubkey))
 		},
