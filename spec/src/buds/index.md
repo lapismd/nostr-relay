@@ -12,8 +12,8 @@ The [pinned source](provenance.md) is included verbatim in every BUD page. Statu
 | [BUD-05](05.md) | unsupported | unsupported | Media optimization |
 | [BUD-06](06.md) | partial | unsupported | Upload requirements |
 | [BUD-07](07.md) | unsupported | unsupported | Payments |
-| [BUD-08](08.md) | unsupported | unsupported | NIP-94 tags |
-| [BUD-09](09.md) | unsupported | unsupported | Blob reports |
+| [BUD-08](08.md) | implemented | partial | NIP-94 tags |
+| [BUD-09](09.md) | implemented | unsupported | Blob reports |
 | [BUD-10](10.md) | unsupported | unsupported | Blossom URIs |
 | [BUD-11](11.md) | partial | partial | Nostr authorization |
 | [BUD-12](12.md) | partial | unsupported | Blob management |

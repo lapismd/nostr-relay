@@ -85,7 +85,7 @@ downward.
 | --- | --- | --- |
 | -1 | Executables | `cmd/relay`, `cmd/forge-worker`, `cmd/local-admin`, `cmd/migrate` |
 | 0 | Composition root | `zooid` |
-| 1 | Relay adapters | `internal/agentbunker`, `internal/buzzcompat` |
+| 1 | Relay adapters | `internal/agentbunker`, `internal/blossom`, `internal/buzzcompat` |
 | 2 | Provider adapters | `internal/auth`, `internal/gitforge`, `internal/githubforge`, `modules/buzzagents/auth`, `modules/buzzagents/policy` |
 | 3 | Domain leaves | `internal/forge`, `internal/keywrap`, `internal/presence`, `internal/projecttask`, `modules/buzzagents/presence` |
 | 4 | Wire format | `modules/buzzagents/protocol` |

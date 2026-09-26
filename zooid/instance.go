@@ -79,6 +79,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	blossom := &BlossomStore{
 		Config: config,
 		Events: events,
+		Schema: events.Schema,
 	}
 
 	management := &ManagementStore{

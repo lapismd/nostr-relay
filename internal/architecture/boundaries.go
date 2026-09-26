@@ -38,6 +38,7 @@ var packageRanks = map[string]int{
 	"zooid": rankZooid,
 
 	"internal/agentbunker": rankAdapter,
+	"internal/blossom":     rankAdapter,
 	"internal/buzzcompat":  rankAdapter,
 
 	"internal/auth":             rankProvider,

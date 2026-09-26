@@ -4,18 +4,21 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
 	"github.com/spf13/afero"
+	lapisblossom "zooid/internal/blossom"
 	"zooid/internal/khatru/blossom"
 )
 
 type BlossomStore struct {
 	Config *Config
 	Events eventstore.Store
+	Schema *Schema
 }
 
 func allowBlobRead(config *Config, isMember bool) bool {
@@ -38,6 +41,23 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 	fs := afero.NewOsFs()
 	publicURL := blossomPublicURL(bl.Config)
 	backend := blossom.New(instance.Relay, publicURL)
+	baseRouter := instance.Relay.Router()
+	outerRouter := http.NewServeMux()
+	outerRouter.Handle("/", lapisblossom.Wrap(baseRouter, lapisblossom.Options{
+		ServiceURL: publicURL,
+		CanRead: func(pubkey *nostr.PubKey) bool {
+			return allowBlobRead(instance.Config, pubkey != nil && instance.Management.IsMember(*pubkey))
+		},
+		CanList: func(pubkey nostr.PubKey) bool {
+			return allowBlobWrite(instance.Config, instance.Management.IsMember(pubkey))
+		},
+		ListBlobs:  bl.listBlobs,
+		OnUpload:   bl.saveUploadTags,
+		OnDelete:   bl.removeUploadTags,
+		LoadBlob:   func(hash string) (io.ReadCloser, error) { return fs.Open(dir + "/" + hash) },
+		SaveReport: bl.saveReport,
+	}))
+	instance.Relay.SetRouter(outerRouter)
 
 	backend.Store = blossom.EventStoreBlobIndexWrapper{
 		Store:      bl.Events,
@@ -49,6 +69,7 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		if err != nil {
 			return err
 		}
+		defer file.Close()
 
 		if _, err := io.Copy(file, bytes.NewReader(body)); err != nil {
 			return err
