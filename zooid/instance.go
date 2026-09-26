@@ -108,6 +108,11 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		Groups:     groups,
 	}
 	instance.Registry = NewRegistryPolicy(config, groups, events)
+	if config.Blossom.Enabled {
+		instance.Registry.ValidateHeadAssets = func(event nostr.Event) error {
+			return blossom.validateRegistryHeadAssets(ctx, event)
+		}
+	}
 	instance.ProjectTasks = NewProjectTaskPolicy(events, groups)
 	instance.Agents = NewAgentPolicy(config, management, groups)
 	instance.Agents.Events = events
@@ -433,6 +438,10 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		if err := instance.Blossom.backfillProfileReferences(ctx); err != nil {
 			instance.Events.Close()
 			return nil, fmt.Errorf("backfill asset references: %w", err)
+		}
+		if err := instance.Blossom.backfillRegistryReferences(ctx); err != nil {
+			instance.Events.Close()
+			return nil, fmt.Errorf("backfill registry asset references: %w", err)
 		}
 		instance.Blossom.Enable(instance)
 	}
@@ -888,6 +897,9 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 		if err := instance.Blossom.projectProfileReferences(ctx, event); err != nil {
 			log.Printf("Failed to project asset references for event %s: %v", event.ID.Hex(), err)
 		}
+		if err := instance.Blossom.projectRegistryReferences(ctx, event); err != nil {
+			log.Printf("Failed to project registry asset references for event %s: %v", event.ID.Hex(), err)
+		}
 	}
 	if instance.Agents != nil {
 		instance.Agents.RememberStored(event)
@@ -1029,6 +1041,9 @@ func (instance *Instance) OnEventDeleted(ctx context.Context, event nostr.Event)
 	if instance.Config.Blossom.Enabled {
 		if err := instance.Blossom.removeProfileReferences(ctx, event); err != nil {
 			log.Printf("Failed to remove asset references for event %s: %v", event.ID.Hex(), err)
+		}
+		if err := instance.Blossom.rebuildRegistryReferences(ctx, event); err != nil {
+			log.Printf("Failed to rebuild registry asset references after event %s: %v", event.ID.Hex(), err)
 		}
 	}
 	if instance.Agents != nil {

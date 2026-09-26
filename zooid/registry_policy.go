@@ -39,11 +39,6 @@ type registryHeadContent struct {
 	ValidUntil           string                `json:"validUntil"`
 }
 
-type registryHeadReservation struct {
-	revision *big.Int
-	id       nostr.ID
-}
-
 // RegistryPolicy enforces Lapis release management at the relay boundary. It
 // stores no Registry projection: signed events remain the source of truth.
 type RegistryPolicy struct {
@@ -55,6 +50,7 @@ type RegistryPolicy struct {
 	reserved           map[string]registryHeadReservation
 	findEventOverride  func(nostr.ID) (nostr.Event, bool)
 	latestHeadOverride func(string) (*big.Int, nostr.ID, bool)
+	ValidateHeadAssets func(nostr.Event) error
 }
 
 func NewRegistryPolicy(config *Config, groups *GroupStore, events *EventStore) *RegistryPolicy {
@@ -152,6 +148,9 @@ func (p *RegistryPolicy) checkHead(event nostr.Event) (bool, string) {
 	}
 	if (!found && head.PreviousHeadEventID != "") || (found && head.PreviousHeadEventID != previousID.Hex()) {
 		return true, "restricted: registry head compare-and-swap failed"
+	}
+	if reason := p.validateHeadAssets(event); reason != "" {
+		return true, reason
 	}
 	p.reserved[head.PluginID] = registryHeadReservation{revision: revision, id: event.ID}
 	return true, ""

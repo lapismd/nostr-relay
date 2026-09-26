@@ -22,9 +22,10 @@ import (
 )
 
 type BlossomStore struct {
-	Config *Config
-	Events eventstore.Store
-	Schema *Schema
+	Config   *Config
+	Events   eventstore.Store
+	Schema   *Schema
+	MediaDir string
 }
 
 func allowBlobRead(config *Config, isMember bool) bool {
@@ -43,7 +44,7 @@ func blossomPublicURL(config *Config) string {
 }
 
 func (bl *BlossomStore) Enable(instance *Instance) {
-	dir := Env("MEDIA")
+	dir := bl.mediaDir()
 	fs := afero.NewOsFs()
 	publicURL := blossomPublicURL(bl.Config)
 	backend := blossom.New(instance.Relay, publicURL)
@@ -173,6 +174,13 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 
 		return false, "", 200
 	}
+}
+
+func (bl *BlossomStore) mediaDir() string {
+	if bl.MediaDir != "" {
+		return bl.MediaDir
+	}
+	return Env("MEDIA")
 }
 
 func writeBlobAtomic(dir, hash string, body []byte) error {
