@@ -47,6 +47,21 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 	fs := afero.NewOsFs()
 	publicURL := blossomPublicURL(bl.Config)
 	backend := blossom.New(instance.Relay, publicURL)
+	storeBytes := func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (upstream.BlobDescriptor, error) {
+		sum := sha256.Sum256(data)
+		hash := hex.EncodeToString(sum[:])
+		if err := writeBlobAtomic(dir, hash, data); err != nil {
+			return upstream.BlobDescriptor{}, err
+		}
+		descriptor := upstream.BlobDescriptor{
+			URL:    publicURL + "/" + hash + upstream.GetExtension(mediaType),
+			SHA256: hash, Size: len(data), Type: mediaType, Uploaded: nostr.Now(),
+		}
+		if err := backend.Store.Keep(ctx, descriptor, auth.PubKey); err != nil {
+			return upstream.BlobDescriptor{}, err
+		}
+		return descriptor, nil
+	}
 	baseRouter := instance.Relay.Router()
 	outerRouter := http.NewServeMux()
 	outerRouter.Handle("/", lapisblossom.Wrap(baseRouter, lapisblossom.Options{
@@ -62,6 +77,9 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		OnDelete:   bl.removeUploadTags,
 		StageIndex: stageBlobIndex,
 		LoadBlob:   func(hash string) (io.ReadCloser, error) { return fs.Open(dir + "/" + hash) },
+		LoadDescriptor: func(ctx context.Context, hash string) (*upstream.BlobDescriptor, error) {
+			return backend.Store.Get(ctx, hash)
+		},
 		SaveReport: bl.saveReport,
 		CanReviewReports: func(pubkey nostr.PubKey) bool {
 			return instance.Config.CanManage(pubkey) || instance.Management.IsAdmin(pubkey)
@@ -70,21 +88,8 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		CanMedia: func(pubkey nostr.PubKey) bool {
 			return allowBlobWrite(instance.Config, instance.Management.IsMember(pubkey))
 		},
-		StoreMedia: func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (upstream.BlobDescriptor, error) {
-			sum := sha256.Sum256(data)
-			hash := hex.EncodeToString(sum[:])
-			if err := writeBlobAtomic(dir, hash, data); err != nil {
-				return upstream.BlobDescriptor{}, err
-			}
-			descriptor := upstream.BlobDescriptor{
-				URL:    publicURL + "/" + hash + upstream.GetExtension(mediaType),
-				SHA256: hash, Size: len(data), Type: mediaType, Uploaded: nostr.Now(),
-			}
-			if err := backend.Store.Keep(ctx, descriptor, auth.PubKey); err != nil {
-				return upstream.BlobDescriptor{}, err
-			}
-			return descriptor, nil
-		},
+		StoreMedia:  storeBytes,
+		StoreMirror: storeBytes,
 	}))
 	instance.Relay.SetRouter(outerRouter)
 

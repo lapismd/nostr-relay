@@ -22,6 +22,7 @@ type Options struct {
 	CanRead          func(pubkey *nostr.PubKey) bool
 	CanList          func(pubkey nostr.PubKey) bool
 	LoadBlob         func(hash string) (io.ReadCloser, error)
+	LoadDescriptor   func(ctx context.Context, hash string) (*blossom.BlobDescriptor, error)
 	SaveReport       func(event nostr.Event) error
 	CanReviewReports func(pubkey nostr.PubKey) bool
 	ListReports      func(r *http.Request, limit int, cursor string) ([]ReportedBlob, error)
@@ -31,6 +32,8 @@ type Options struct {
 	StageIndex       func(r *http.Request) *http.Request
 	CanMedia         func(pubkey nostr.PubKey) bool
 	StoreMedia       func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (blossom.BlobDescriptor, error)
+	StoreMirror      func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (blossom.BlobDescriptor, error)
+	MirrorClient     *http.Client
 }
 
 type enrichedDescriptor struct {

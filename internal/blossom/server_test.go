@@ -68,6 +68,155 @@ func TestUploadReturnsNIP94Tags(t *testing.T) {
 	}
 }
 
+func TestMirrorBoundsFetchAndReturnsVerifiedDescriptor(t *testing.T) {
+	payload := []byte("mirrored bytes")
+	digest := blobDigest(payload)
+	secret := nostr.MustSecretKeyFromHex(strings.Repeat("0", 63) + "1")
+	auth := nostr.Event{Kind: nostr.KindBlobs, CreatedAt: nostr.Now(), Content: "Mirror file", Tags: nostr.Tags{
+		{"t", "upload"}, {"x", digest}, {"expiration", strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)}, {"server", "media.example"},
+	}}
+	if err := auth.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(auth)
+	stored := false
+	uploadRecorded := false
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://source.example/file.bin" {
+			t.Fatalf("unexpected mirror URL %s", request.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type":   []string{"application/octet-stream"},
+				"Content-Length": []string{strconv.Itoa(len(payload))},
+			},
+			ContentLength: int64(len(payload)), Body: io.NopCloser(bytes.NewReader(payload)),
+		}, nil
+	})}
+	server := Wrap(http.NotFoundHandler(), Options{
+		ServiceURL: "https://media.example", MirrorClient: client,
+		LoadBlob: func(string) (io.ReadCloser, error) {
+			if !stored {
+				return nil, io.EOF
+			}
+			return io.NopCloser(bytes.NewReader(payload)), nil
+		},
+		StoreMirror: func(_ context.Context, owner nostr.Event, body []byte, mediaType string) (upstream.BlobDescriptor, error) {
+			if owner.ID != auth.ID || !bytes.Equal(body, payload) || mediaType != "application/octet-stream" {
+				t.Fatalf("unexpected mirror store input")
+			}
+			stored = true
+			return upstream.BlobDescriptor{
+				URL: "https://media.example/" + digest + ".bin", SHA256: digest,
+				Size: len(body), Type: mediaType, Uploaded: nostr.Now(),
+			}, nil
+		},
+		OnUpload: func(owner nostr.Event, descriptor upstream.BlobDescriptor) error {
+			uploadRecorded = owner.ID == auth.ID && descriptor.SHA256 == digest
+			return nil
+		},
+	})
+	makeRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPut, "/mirror", strings.NewReader(`{"url":"https://source.example/file.bin"}`))
+		request.Header.Set("Authorization", "Nostr "+base64.RawURLEncoding.EncodeToString(encoded))
+		return request
+	}
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, makeRequest())
+	if response.Code != http.StatusCreated || !stored || !uploadRecorded {
+		t.Fatalf("mirror result status=%d stored=%t tagged=%t body=%s", response.Code, stored, uploadRecorded, response.Body.String())
+	}
+	var descriptor enrichedDescriptor
+	if err := json.Unmarshal(response.Body.Bytes(), &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if len(descriptor.NIP94) < 4 || descriptor.SHA256 != digest || !reflect.DeepEqual(descriptor.NIP94[:4], [][]string{
+		{"url", descriptor.URL}, {"m", "application/octet-stream"}, {"x", digest}, {"size", strconv.Itoa(len(payload))},
+	}) {
+		t.Fatalf("unexpected mirror descriptor %#v", descriptor)
+	}
+
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, makeRequest())
+	if response.Code != http.StatusOK {
+		t.Fatalf("duplicate mirror status=%d", response.Code)
+	}
+}
+
+func TestMirrorRejectsUpstreamFailureAndHashMismatch(t *testing.T) {
+	payload := []byte("remote bytes")
+	secret := nostr.MustSecretKeyFromHex(strings.Repeat("0", 63) + "1")
+	auth := nostr.Event{Kind: nostr.KindBlobs, CreatedAt: nostr.Now(), Content: "Mirror file", Tags: nostr.Tags{
+		{"t", "upload"}, {"x", strings.Repeat("a", 64)}, {"expiration", strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)},
+	}}
+	if err := auth.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(auth)
+	status := http.StatusOK
+	contentLength := int64(len(payload))
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: status, Header: http.Header{}, ContentLength: contentLength, Body: io.NopCloser(bytes.NewReader(payload))}, nil
+	})}
+	server := Wrap(http.NotFoundHandler(), Options{ServiceURL: "https://media.example", MirrorClient: client})
+	makeRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPut, "/mirror", strings.NewReader(`{"url":"https://source.example/file"}`))
+		request.Header.Set("Authorization", "Nostr "+base64.RawURLEncoding.EncodeToString(encoded))
+		return request
+	}
+	status = http.StatusNotFound
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, makeRequest())
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("upstream failure status=%d", response.Code)
+	}
+	status = http.StatusOK
+	contentLength = maxUploadBytes + 1
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, makeRequest())
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized mirror status=%d", response.Code)
+	}
+	contentLength = int64(len(payload))
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, makeRequest())
+	if response.Code != http.StatusConflict {
+		t.Fatalf("hash mismatch status=%d", response.Code)
+	}
+	if _, err := decodeMirrorRequest(strings.NewReader(`{"url":"https://source.example","extra":true}`)); err == nil {
+		t.Fatal("unknown mirror request field was accepted")
+	}
+}
+
+func TestBlobReadMethodsExposeConsistentCacheHeaders(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	server := Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), Options{
+		CanRead: func(*nostr.PubKey) bool { return true },
+		LoadBlob: func(string) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("blob")), nil
+		},
+		LoadDescriptor: func(context.Context, string) (*upstream.BlobDescriptor, error) {
+			return &upstream.BlobDescriptor{Type: "application/octet-stream", Size: 4}, nil
+		},
+	})
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(method, "/"+hash+".bin", nil))
+		if response.Code != http.StatusOK || response.Header().Get("ETag") != hash || response.Header().Get("Accept-Ranges") != "bytes" || response.Header().Get("Cache-Control") == "" || response.Header().Get("Content-Length") != "4" || response.Header().Get("Content-Type") != "application/octet-stream" {
+			t.Fatalf("%s headers=%v status=%d", method, response.Header(), response.Code)
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
 func TestReportValidatesAndPersistsSignedEvent(t *testing.T) {
 	secret := nostr.MustSecretKeyFromHex(strings.Repeat("0", 63) + "1")
 	event := nostr.Event{Kind: nostr.KindReporting, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"x", strings.Repeat("b", 64), "spam"}}, Content: "report"}

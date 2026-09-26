@@ -3,6 +3,7 @@ package blossom
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 
 	"fiatjaf.com/nostr"
@@ -11,6 +12,7 @@ import (
 func Wrap(next http.Handler, options Options) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range, Content-Type, ETag")
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-SHA-256, X-Content-Type, X-Content-Length, *")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, PUT, DELETE")
@@ -42,12 +44,7 @@ func Wrap(next http.Handler, options Options) http.Handler {
 		case r.URL.Path == "/media" && r.Method == http.MethodPut:
 			handleMedia(w, r, options)
 		case r.URL.Path == "/mirror" && r.Method == http.MethodPut:
-			auth, err := authorize(r, options.ServiceURL, "upload", "", true)
-			if err != nil || auth == nil {
-				http.Error(w, "mirror authorization required or invalid", http.StatusUnauthorized)
-				return
-			}
-			enrichDescriptor(next, w, r, *auth, options, 0)
+			handleMirror(w, r, options)
 		case strings.HasPrefix(r.URL.Path, "/list/") && r.Method == http.MethodGet:
 			pubkey, err := nostr.PubKeyFromHex(strings.TrimPrefix(r.URL.Path, "/list/"))
 			if err != nil {
@@ -92,12 +89,37 @@ func Wrap(next http.Handler, options Options) http.Handler {
 					http.Error(w, "unauthorized", http.StatusForbidden)
 					return
 				}
+				setBlobReadHeaders(w, r, hash, options)
 			}
 			next.ServeHTTP(w, r)
 		default:
 			next.ServeHTTP(w, r)
 		}
 	})
+}
+
+func setBlobReadHeaders(w http.ResponseWriter, r *http.Request, hash string, options Options) {
+	if options.LoadBlob == nil {
+		return
+	}
+	reader, err := options.LoadBlob(hash)
+	if err != nil {
+		return
+	}
+	_ = reader.Close()
+	w.Header().Set("ETag", hash)
+	w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+	w.Header().Set("Accept-Ranges", "bytes")
+	if options.LoadDescriptor != nil {
+		if descriptor, err := options.LoadDescriptor(r.Context(), hash); err == nil && descriptor != nil {
+			mediaType := descriptor.Type
+			if mediaType == "" {
+				mediaType = "application/octet-stream"
+			}
+			w.Header().Set("Content-Type", mediaType)
+			w.Header().Set("Content-Length", strconv.Itoa(descriptor.Size))
+		}
+	}
 }
 
 func deleteBlob(next http.Handler, w http.ResponseWriter, r *http.Request, auth nostr.Event, hash string, onDelete func(nostr.Event, string) error) {

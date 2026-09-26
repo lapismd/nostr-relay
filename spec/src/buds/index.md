@@ -5,16 +5,16 @@ The [pinned source](provenance.md) is included verbatim in every BUD page. Statu
 | BUD | Relay | Community | Scope |
 | --- | --- | --- | --- |
 | [BUD-00](00.md) | implemented | not applicable | Definitions |
-| [BUD-01](01.md) | partial | partial | Blob retrieval |
+| [BUD-01](01.md) | implemented | partial | Blob retrieval |
 | [BUD-02](02.md) | partial | partial | Blob upload |
 | [BUD-03](03.md) | transport-only | partial | User server list |
-| [BUD-04](04.md) | partial | unsupported | Mirroring |
+| [BUD-04](04.md) | implemented | unsupported | Mirroring |
 | [BUD-05](05.md) | partial | unsupported | Static JPEG/PNG media optimization |
 | [BUD-06](06.md) | partial | unsupported | Upload requirements |
 | [BUD-07](07.md) | unsupported | unsupported | Payments |
 | [BUD-08](08.md) | implemented | partial | NIP-94 descriptor tags |
 | [BUD-09](09.md) | implemented | unsupported | Blob reports |
-| [BUD-10](10.md) | unsupported | unsupported | Blossom URIs |
+| [BUD-10](10.md) | not applicable | implemented | Blossom URIs |
 | [BUD-11](11.md) | partial | partial | Nostr authorization |
 | [BUD-12](12.md) | partial | unsupported | Blob management |
 
