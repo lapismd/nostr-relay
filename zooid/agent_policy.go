@@ -197,6 +197,9 @@ func (agentPolicy *AgentPolicy) CheckWrite(ctx context.Context, event nostr.Even
 		return "restricted: owner credential does not allow this event kind"
 	}
 
+	if protocol.IsRuntimeKind(event.Kind) {
+		return agentPolicy.runtimeWriteReason(event)
+	}
 	if event.Kind == protocol.KindPrivateManagedAgent {
 		return "invalid: kind 30179 is reserved until CAS and privacy enforcement are complete"
 	}
@@ -281,6 +284,9 @@ func managedAuthTag(tags nostr.Tags) (nostr.Tag, bool) {
 }
 
 func (agentPolicy *AgentPolicy) CanRead(reader nostr.PubKey, event nostr.Event) bool {
+	if protocol.IsRuntimeKind(event.Kind) {
+		return agentPolicy.canReadRuntime(reader, event)
+	}
 	if event.Kind == repositoryLiveContextKind {
 		h, valid := agentPolicy.liveContextGroup(event)
 		return valid && agentPolicy.Groups.IsMember(h, reader) && agentPolicy.Groups.IsMember(h, event.PubKey)
@@ -387,7 +393,7 @@ func (agentPolicy *AgentPolicy) PreserveSignature(event nostr.Event) bool {
 	case protocol.KindAgentProfile, protocol.KindAgentEngram, protocol.KindPersona,
 		protocol.KindAgentTeam, protocol.KindManagedAgent, protocol.KindSharedTeamCatalog,
 		protocol.KindMemberAddedNotification, protocol.KindMemberRemovedNotification,
-		protocol.KindAgentTurnMetric:
+		protocol.KindAgentTurnMetric, protocol.KindRuntimeSnapshot, protocol.KindRuntimeRequest:
 		return true
 	default:
 		return false
@@ -458,32 +464,6 @@ func (agentPolicy *AgentPolicy) authTimestampFresh(createdAt uint64) bool {
 	created := time.Unix(int64(createdAt), 0)
 	now := agentPolicy.now()
 	return !created.Before(now.Add(-agentAuthFreshness)) && !created.After(now.Add(agentAuthFreshness))
-}
-
-func (agentPolicy *AgentPolicy) validateOwnerScoped(event nostr.Event, requireAgentTag bool) string {
-	agent := event.PubKey
-	if requireAgentTag {
-		agentRaw, err := exactRequiredTag(event.Tags, "agent")
-		if err != nil {
-			return "invalid: " + err.Error()
-		}
-		parsed, err := nostr.PubKeyFromHex(agentRaw)
-		if err != nil || parsed != event.PubKey {
-			return "invalid: agent tag must equal the event author"
-		}
-	}
-	ownerRaw, err := exactRequiredTag(event.Tags, "p")
-	if err != nil {
-		return "invalid: " + err.Error()
-	}
-	owner, err := nostr.PubKeyFromHex(ownerRaw)
-	if err != nil || !agentPolicy.isOwner(agent, owner) {
-		return "auth-required: verified agent ownership is required"
-	}
-	if err := protocol.ValidateNIP44V2(event.Content); err != nil {
-		return "invalid: content " + err.Error()
-	}
-	return ""
 }
 
 func (agentPolicy *AgentPolicy) allowRate(pubkey nostr.PubKey, class string, maximum int, period time.Duration) bool {

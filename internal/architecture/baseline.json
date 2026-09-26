@@ -25,10 +25,6 @@
       "budget": 486
     },
     {
-      "path": "zooid/count.go",
-      "budget": 335
-    },
-    {
       "path": "zooid/forge_ci.go",
       "budget": 468
     },

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"zooid/buzzagents/protocol"
 )
 
 func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
@@ -35,7 +36,7 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if a.Status != StatusActive {
 		return errors.New("agent is inactive")
 	}
-	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 3901, 3902, 3903, 3904, 3905, 3906, 3907, 3908, 20001, 20002, 23908, 24200, 27235, 30023, 30617, 30621, 33901, 40100, nostr.KindDMRelayList}, event.Kind) {
+	if !slices.Contains([]nostr.Kind{nostr.KindSeal, 22242, 9, 7, 5, 1111, 1621, 1630, 1631, 1632, 1633, 3901, 3902, 3903, 3904, 3905, 3906, 3907, 3908, 20001, 20002, 23908, 24200, 30180, 27235, 30023, 30617, 30621, 33901, 40100, nostr.KindDMRelayList}, event.Kind) {
 		return errors.New("event kind is not allowed")
 	}
 	if event.Kind == nostr.KindSeal && (len(event.Tags) != 0 || event.Content == "") {
@@ -52,6 +53,15 @@ func (s *Service) authorizeSigning(a Agent, event nostr.Event) error {
 	if event.Kind == 27235 {
 		if err := s.authorizeGitAuthentication(a, event); err != nil {
 			return err
+		}
+	}
+	if event.Kind == protocol.KindRuntimeSnapshot {
+		route, err := protocol.ValidateRuntimeEnvelope(event)
+		if err != nil {
+			return err
+		}
+		if route.Owner.Hex() != a.OwnerPubkey {
+			return errors.New("runtime owner does not match")
 		}
 	}
 	h := exactTag(event.Tags, "h")

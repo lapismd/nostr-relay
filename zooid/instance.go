@@ -58,6 +58,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	}
 
 	relay := khatru.NewRelay()
+	relay.Info.Malformed = map[string]any{"lapis_runtime_snapshots": 1}
 
 	// Enable WebSocket per-message compression (permessage-deflate).
 	// The upgrader field is unexported, so we use reflect/unsafe to set it.
@@ -247,6 +248,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 				info.Malformed = map[string]any{}
 			}
 			info.Malformed["lapis_managed_agents"] = instance.AgentBunker.NIP11()
+			info.Malformed["lapis_runtime_snapshots"] = 1
 			return info
 		}
 	}

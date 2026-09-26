@@ -19,7 +19,7 @@ func CanReadPrivateEvent(reader nostr.PubKey, event nostr.Event) bool {
 	case protocol.KindMemberAddedNotification, protocol.KindMemberRemovedNotification,
 		protocol.KindAgentTurnMetric:
 		return hasP(event.Tags, reader)
-	case protocol.KindAgentEngram:
+	case protocol.KindAgentEngram, protocol.KindRuntimeSnapshot, protocol.KindRuntimeRequest:
 		return event.PubKey == reader || hasP(event.Tags, reader)
 	case protocol.KindPrivateManagedAgent:
 		return event.PubKey == reader
