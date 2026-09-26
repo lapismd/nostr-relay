@@ -80,7 +80,15 @@ func enrichDescriptor(next http.Handler, w http.ResponseWriter, r *http.Request,
 }
 
 func writeEnrichedDescriptor(w http.ResponseWriter, status int, headers http.Header, descriptor blossom.BlobDescriptor, options Options) {
-	tags := [][]string{{"url", descriptor.URL}, {"m", descriptor.Type}, {"x", descriptor.SHA256}, {"size", fmt.Sprint(descriptor.Size)}}
+	writeEnrichedDescriptorWithOriginal(w, status, headers, descriptor, options, "")
+}
+
+func writeEnrichedDescriptorWithOriginal(w http.ResponseWriter, status int, headers http.Header, descriptor blossom.BlobDescriptor, options Options, originalHash string) {
+	tags := [][]string{{"url", descriptor.URL}, {"m", descriptor.Type}, {"x", descriptor.SHA256}}
+	if originalHash != "" {
+		tags = append(tags, []string{"ox", originalHash})
+	}
+	tags = append(tags, []string{"size", fmt.Sprint(descriptor.Size)})
 	if options.LoadBlob != nil && strings.HasPrefix(descriptor.Type, "image/") {
 		if reader, err := options.LoadBlob(descriptor.SHA256); err == nil {
 			if config, _, err := image.DecodeConfig(io.LimitReader(reader, 10<<20)); err == nil && config.Width > 0 && config.Height > 0 {

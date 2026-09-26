@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -360,6 +361,11 @@ func TestMediaPreflightAndStaticImageProcessing(t *testing.T) {
 	}
 	if len(stored) == 0 || descriptor.SHA256 != descriptor.NIP94[2][1] || !reflect.DeepEqual(descriptor.NIP94[len(descriptor.NIP94)-1], []string{"dim", "3x2"}) {
 		t.Fatalf("invalid descriptor: %#v", descriptor)
+	}
+	if !slices.ContainsFunc(descriptor.NIP94, func(tag []string) bool {
+		return reflect.DeepEqual(tag, []string{"ox", hash})
+	}) {
+		t.Fatalf("descriptor is missing original hash: %#v", descriptor.NIP94)
 	}
 	badAuth := httptest.NewRequest(http.MethodPut, "/media", bytes.NewReader(original))
 	badAuth.Header.Set("Authorization", strings.Replace(header, "Nostr ", "Bearer ", 1))

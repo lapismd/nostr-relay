@@ -9,7 +9,7 @@ The [pinned source](provenance.md) is included verbatim in every BUD page. Statu
 | [BUD-02](02.md) | implemented | partial | Blob upload |
 | [BUD-03](03.md) | transport-only | partial | User server list |
 | [BUD-04](04.md) | implemented | unsupported | Mirroring |
-| [BUD-05](05.md) | partial | unsupported | Static JPEG/PNG media optimization |
+| [BUD-05](05.md) | implemented | unsupported | Static JPEG/PNG/WebP media optimization |
 | [BUD-06](06.md) | implemented | unsupported | Upload requirements |
 | [BUD-07](07.md) | unsupported | unsupported | Payments |
 | [BUD-08](08.md) | implemented | partial | NIP-94 descriptor tags |
