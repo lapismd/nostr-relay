@@ -128,6 +128,9 @@ func normalizedMediaType(header string, body []byte) string {
 	if parsed, _, err := mime.ParseMediaType(header); err == nil && parsed != "" {
 		return parsed
 	}
+	if len(body) == 0 {
+		return "application/octet-stream"
+	}
 	return http.DetectContentType(body)
 }
 

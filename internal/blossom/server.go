@@ -30,14 +30,22 @@ func Wrap(next http.Handler, options Options) http.Handler {
 			}
 		case r.URL.Path == "/upload" && r.Method == http.MethodPut:
 			if auth := prepareUpload(w, r, options.ServiceURL, "upload"); auth != nil {
-				status := http.StatusCreated
-				if options.LoadBlob != nil {
-					if reader, err := options.LoadBlob(r.Header.Get("X-SHA-256")); err == nil {
-						reader.Close()
-						status = http.StatusOK
-					}
+				if options.CanUpload != nil && !options.CanUpload(auth.PubKey) {
+					http.Error(w, "upload forbidden", http.StatusForbidden)
+					return
 				}
-				enrichDescriptor(next, w, r, *auth, options, status)
+				if options.StoreUpload != nil {
+					handlePreparedUpload(w, r, *auth, options)
+				} else {
+					status := http.StatusCreated
+					if options.LoadBlob != nil {
+						if reader, err := options.LoadBlob(r.Header.Get("X-SHA-256")); err == nil {
+							_ = reader.Close()
+							status = http.StatusOK
+						}
+					}
+					enrichDescriptor(next, w, r, *auth, options, status)
+				}
 			}
 		case r.URL.Path == "/media" && r.Method == http.MethodHead:
 			handleMediaCheck(w, r, options)

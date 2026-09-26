@@ -30,7 +30,9 @@ type Options struct {
 	OnUpload         func(auth nostr.Event, descriptor blossom.BlobDescriptor) error
 	OnDelete         func(auth nostr.Event, hash string) error
 	StageIndex       func(r *http.Request) *http.Request
+	CanUpload        func(pubkey nostr.PubKey) bool
 	CanMedia         func(pubkey nostr.PubKey) bool
+	StoreUpload      func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (blossom.BlobDescriptor, error)
 	StoreMedia       func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (blossom.BlobDescriptor, error)
 	StoreMirror      func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (blossom.BlobDescriptor, error)
 	MirrorClient     *http.Client

@@ -68,6 +68,68 @@ func TestUploadReturnsNIP94Tags(t *testing.T) {
 	}
 }
 
+func TestMaintainedUploadAcceptsZeroByteBlob(t *testing.T) {
+	digest := blobDigest(nil)
+	secret := nostr.MustSecretKeyFromHex(strings.Repeat("0", 63) + "1")
+	auth := nostr.Event{Kind: nostr.KindBlobs, CreatedAt: nostr.Now(), Content: "Upload empty blob", Tags: nostr.Tags{
+		{"t", "upload"}, {"x", digest}, {"expiration", strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)}, {"server", "media.example"},
+	}}
+	if err := auth.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(auth)
+	header := "Nostr " + base64.RawURLEncoding.EncodeToString(encoded)
+	stored := false
+	server := Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), Options{
+		ServiceURL: "https://media.example",
+		CanUpload:  func(nostr.PubKey) bool { return true },
+		LoadBlob: func(string) (io.ReadCloser, error) {
+			if stored {
+				return io.NopCloser(bytes.NewReader(nil)), nil
+			}
+			return nil, io.EOF
+		},
+		StoreUpload: func(_ context.Context, owner nostr.Event, body []byte, mediaType string) (upstream.BlobDescriptor, error) {
+			if owner.ID != auth.ID || len(body) != 0 || mediaType != "application/octet-stream" {
+				t.Fatalf("unexpected zero-byte upload input")
+			}
+			stored = true
+			return upstream.BlobDescriptor{
+				URL: "https://media.example/" + digest + ".bin", SHA256: digest,
+				Size: 0, Type: mediaType, Uploaded: nostr.Now(),
+			}, nil
+		},
+	})
+	makeUpload := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPut, "/upload", bytes.NewReader(nil))
+		request.Header.Set("Authorization", header)
+		request.Header.Set("X-SHA-256", digest)
+		return request
+	}
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, makeUpload())
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"size":0`) {
+		t.Fatalf("zero-byte upload status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, makeUpload())
+	if response.Code != http.StatusOK {
+		t.Fatalf("duplicate zero-byte upload status=%d", response.Code)
+	}
+	preflight := httptest.NewRequest(http.MethodHead, "/upload", nil)
+	preflight.Header.Set("Authorization", header)
+	preflight.Header.Set("X-SHA-256", digest)
+	preflight.Header.Set("X-Content-Length", "0")
+	preflight.Header.Set("X-Content-Type", "application/octet-stream")
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, preflight)
+	if response.Code != http.StatusOK {
+		t.Fatalf("zero-byte preflight status=%d", response.Code)
+	}
+}
+
 func TestMirrorBoundsFetchAndReturnsVerifiedDescriptor(t *testing.T) {
 	payload := []byte("mirrored bytes")
 	digest := blobDigest(payload)

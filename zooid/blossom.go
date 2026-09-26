@@ -76,7 +76,10 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		OnUpload:   bl.saveUploadTags,
 		OnDelete:   bl.removeUploadTags,
 		StageIndex: stageBlobIndex,
-		LoadBlob:   func(hash string) (io.ReadCloser, error) { return fs.Open(dir + "/" + hash) },
+		CanUpload: func(pubkey nostr.PubKey) bool {
+			return allowBlobWrite(instance.Config, instance.Management.IsMember(pubkey))
+		},
+		LoadBlob: func(hash string) (io.ReadCloser, error) { return fs.Open(dir + "/" + hash) },
 		LoadDescriptor: func(ctx context.Context, hash string) (*upstream.BlobDescriptor, error) {
 			return backend.Store.Get(ctx, hash)
 		},
@@ -88,6 +91,7 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		CanMedia: func(pubkey nostr.PubKey) bool {
 			return allowBlobWrite(instance.Config, instance.Management.IsMember(pubkey))
 		},
+		StoreUpload: storeBytes,
 		StoreMedia:  storeBytes,
 		StoreMirror: storeBytes,
 	}))

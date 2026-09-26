@@ -66,7 +66,7 @@ func prepareUploadCheck(w http.ResponseWriter, r *http.Request, serviceURL, acti
 	length := r.Header.Get("X-Content-Length")
 	mediaType := r.Header.Get("X-Content-Type")
 	size, err := strconv.Atoi(length)
-	if !blobHash.MatchString(hash) || err != nil || size <= 0 || mediaType == "" {
+	if !blobHash.MatchString(hash) || err != nil || size < 0 || mediaType == "" {
 		http.Error(w, "invalid upload preflight headers", http.StatusBadRequest)
 		return nil
 	}
@@ -84,4 +84,36 @@ func prepareUploadCheck(w http.ResponseWriter, r *http.Request, serviceURL, acti
 		return nil
 	}
 	return auth
+}
+
+func handlePreparedUpload(w http.ResponseWriter, r *http.Request, auth nostr.Event, options Options) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read prepared upload", http.StatusBadRequest)
+		return
+	}
+	digest := r.Header.Get("X-SHA-256")
+	status := http.StatusCreated
+	if options.LoadBlob != nil {
+		if reader, err := options.LoadBlob(digest); err == nil {
+			_ = reader.Close()
+			status = http.StatusOK
+		}
+	}
+	descriptor, err := options.StoreUpload(r.Context(), auth, body, normalizedMediaType(r.Header.Get("Content-Type"), body))
+	if err != nil {
+		http.Error(w, "failed to store upload", http.StatusServiceUnavailable)
+		return
+	}
+	if descriptor.SHA256 != digest || descriptor.Size != len(body) {
+		http.Error(w, "stored upload descriptor is inconsistent", http.StatusServiceUnavailable)
+		return
+	}
+	if options.OnUpload != nil {
+		if err := options.OnUpload(auth, descriptor); err != nil {
+			http.Error(w, "failed to save upload tags", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	writeEnrichedDescriptor(w, status, nil, descriptor, options)
 }
