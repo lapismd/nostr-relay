@@ -18,6 +18,8 @@ func Wrap(next http.Handler, options Options) http.Handler {
 			return
 		}
 		switch {
+		case r.URL.Path == "/api/assets/reports" && r.Method == http.MethodGet:
+			handleReportList(w, r, options)
 		case r.URL.Path == "/report" && r.Method == http.MethodPut:
 			handleReport(w, r, options.SaveReport)
 		case r.URL.Path == "/upload" && r.Method == http.MethodHead:

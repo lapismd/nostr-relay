@@ -74,4 +74,24 @@ func TestBlossomTagFilteringAndReportPersistence(t *testing.T) {
 	if err := GetDb().QueryRow("SELECT COUNT(*) FROM " + events.Schema.Prefix("blossom_reports")).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("report count=%d error=%v", count, err)
 	}
+	second := nostr.Event{Kind: nostr.KindReporting, CreatedAt: report.CreatedAt + 1, Tags: nostr.Tags{{"x", pluginHash, "malware"}}}
+	if err := second.Sign(nostr.Generate()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.saveReport(second); err != nil {
+		t.Fatal(err)
+	}
+	reportRequest := httptest.NewRequest("GET", "/api/assets/reports", nil)
+	page, err := store.listReports(reportRequest, 1, "")
+	if err != nil || len(page) != 1 || page[0].Event.ID != second.ID || page[0].Status != "open" {
+		t.Fatalf("first report page: %#v, %v", page, err)
+	}
+	page, err = store.listReports(reportRequest, 1, second.ID.Hex())
+	if err != nil || len(page) != 1 || page[0].Event.ID != report.ID {
+		t.Fatalf("second report page: %#v, %v", page, err)
+	}
+	_, err = store.listReports(reportRequest, 1, strings.Repeat("c", 64))
+	if !errors.Is(err, lapisblossom.ErrCursorNotFound) {
+		t.Fatalf("missing report cursor: %v", err)
+	}
 }

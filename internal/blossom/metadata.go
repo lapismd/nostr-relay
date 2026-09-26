@@ -18,17 +18,19 @@ import (
 )
 
 type Options struct {
-	ServiceURL string
-	CanRead    func(pubkey *nostr.PubKey) bool
-	CanList    func(pubkey nostr.PubKey) bool
-	LoadBlob   func(hash string) (io.ReadCloser, error)
-	SaveReport func(event nostr.Event) error
-	ListBlobs  func(r *http.Request, owner nostr.PubKey, query ListQuery) ([]ListedBlob, error)
-	OnUpload   func(auth nostr.Event, descriptor blossom.BlobDescriptor) error
-	OnDelete   func(auth nostr.Event, hash string) error
-	StageIndex func(r *http.Request) *http.Request
-	CanMedia   func(pubkey nostr.PubKey) bool
-	StoreMedia func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (blossom.BlobDescriptor, error)
+	ServiceURL       string
+	CanRead          func(pubkey *nostr.PubKey) bool
+	CanList          func(pubkey nostr.PubKey) bool
+	LoadBlob         func(hash string) (io.ReadCloser, error)
+	SaveReport       func(event nostr.Event) error
+	CanReviewReports func(pubkey nostr.PubKey) bool
+	ListReports      func(r *http.Request, limit int, cursor string) ([]ReportedBlob, error)
+	ListBlobs        func(r *http.Request, owner nostr.PubKey, query ListQuery) ([]ListedBlob, error)
+	OnUpload         func(auth nostr.Event, descriptor blossom.BlobDescriptor) error
+	OnDelete         func(auth nostr.Event, hash string) error
+	StageIndex       func(r *http.Request) *http.Request
+	CanMedia         func(pubkey nostr.PubKey) bool
+	StoreMedia       func(ctx context.Context, auth nostr.Event, data []byte, mediaType string) (blossom.BlobDescriptor, error)
 }
 
 type enrichedDescriptor struct {

@@ -63,6 +63,10 @@ func (bl *BlossomStore) Enable(instance *Instance) {
 		StageIndex: stageBlobIndex,
 		LoadBlob:   func(hash string) (io.ReadCloser, error) { return fs.Open(dir + "/" + hash) },
 		SaveReport: bl.saveReport,
+		CanReviewReports: func(pubkey nostr.PubKey) bool {
+			return instance.Config.CanManage(pubkey) || instance.Management.IsAdmin(pubkey)
+		},
+		ListReports: bl.listReports,
 		CanMedia: func(pubkey nostr.PubKey) bool {
 			return allowBlobWrite(instance.Config, instance.Management.IsMember(pubkey))
 		},

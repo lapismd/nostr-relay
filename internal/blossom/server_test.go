@@ -159,3 +159,45 @@ func TestMediaPreflightAndStaticImageProcessing(t *testing.T) {
 		t.Fatalf("invalid auth status=%d", response.Code)
 	}
 }
+
+func TestReportQueueRequiresOperatorAuthorization(t *testing.T) {
+	secret := nostr.MustSecretKeyFromHex(strings.Repeat("0", 63) + "1")
+	auth := nostr.Event{Kind: nostr.KindBlobs, CreatedAt: nostr.Now(), Content: "Review blob reports", Tags: nostr.Tags{
+		{"t", "list"}, {"expiration", strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)}, {"server", "media.example"},
+	}}
+	if err := auth.Sign(secret); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(auth)
+	called := false
+	allow := false
+	server := Wrap(http.NotFoundHandler(), Options{
+		ServiceURL:       "https://media.example",
+		CanReviewReports: func(pubkey nostr.PubKey) bool { return allow && pubkey == auth.PubKey },
+		ListReports: func(_ *http.Request, limit int, cursor string) ([]ReportedBlob, error) {
+			called = true
+			if limit != 1 || cursor != "" {
+				t.Fatalf("unexpected query: limit=%d cursor=%s", limit, cursor)
+			}
+			return []ReportedBlob{{Status: "open"}}, nil
+		},
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/assets/reports?limit=1", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || called {
+		t.Fatalf("anonymous request: status=%d called=%t", response.Code, called)
+	}
+	request.Header.Set("Authorization", "Nostr "+base64.RawURLEncoding.EncodeToString(encoded))
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || called {
+		t.Fatalf("non-admin request: status=%d called=%t", response.Code, called)
+	}
+	allow = true
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !called || !strings.Contains(response.Body.String(), `"status":"open"`) {
+		t.Fatalf("admin request: status=%d called=%t body=%s", response.Code, called, response.Body.String())
+	}
+}
