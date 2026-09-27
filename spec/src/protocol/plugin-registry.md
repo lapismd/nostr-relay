@@ -79,7 +79,10 @@ index. Only hashes owned by the release publisher are retained, preventing a
 manifest from pinning another uploader's blob. New heads reconcile the
 projection; deleting the newest head rebuilds it from the remaining latest
 head. Startup performs the same reconstruction before enabling Blossom
-deletion and fails closed when an active manifest cannot be verified.
+deletion. New head validation fails closed when an active manifest cannot be
+verified; startup reconstruction logs and clears retained references for an
+already-persisted invalid active head so stale historical data cannot prevent
+the relay instance from serving WebSocket or authenticated HTTP routes.
 
 ## Query behavior
 

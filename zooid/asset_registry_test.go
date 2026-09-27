@@ -216,8 +216,11 @@ func TestRegistryManifestRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
-func TestRegistryReferenceBackfillFailsClosedWithoutActiveManifest(t *testing.T) {
-	store, _, _, release, _, _ := registryAssetFixture(t)
+func TestRegistryReferenceBackfillDropsInvalidActiveManifest(t *testing.T) {
+	store, publisher, _, release, head, artworkHash := registryAssetFixture(t)
+	if err := store.projectRegistryReferences(context.Background(), head); err != nil {
+		t.Fatal(err)
+	}
 	attachment, err := store.releaseManifestAttachment(release)
 	if err != nil {
 		t.Fatal(err)
@@ -225,8 +228,12 @@ func TestRegistryReferenceBackfillFailsClosedWithoutActiveManifest(t *testing.T)
 	if err := os.Remove(filepath.Join(store.MediaDir, attachment.Hash)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.backfillRegistryReferences(context.Background()); err == nil {
-		t.Fatal("registry backfill accepted an active release with no local manifest")
+	if err := store.backfillRegistryReferences(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	allowed, _, err := store.canDeleteAsset(context.Background(), nostr.Event{PubKey: publisher.Public()}, artworkHash)
+	if err != nil || !allowed {
+		t.Fatalf("invalid head retained artwork: allowed=%t err=%v", allowed, err)
 	}
 }
 

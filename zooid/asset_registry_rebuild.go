@@ -3,6 +3,7 @@ package zooid
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"fiatjaf.com/nostr"
@@ -58,9 +59,12 @@ func (store *BlossomStore) backfillRegistryReferences(ctx context.Context) error
 			return err
 		}
 	}
-	for _, event := range latest {
+	for pluginID, event := range latest {
 		if err := store.projectRegistryHead(ctx, event, int64(event.CreatedAt)); err != nil {
-			return err
+			log.Printf("Skipping registry asset reference backfill for %s at head %s: %v", pluginID, event.ID.Hex(), err)
+			if err := store.reconcileRegistryReferences(ctx, event, pluginID, "", nil, time.Now().Unix()); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
