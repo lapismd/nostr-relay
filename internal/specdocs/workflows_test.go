@@ -125,7 +125,7 @@ func assertLocalCIScripts(t *testing.T) {
 	requireContains(t, inImage, "TESTCONTAINERS_HOST_OVERRIDE")
 
 	dockerfile := readRepoFile(t, "docker/Dockerfile.ci")
-	requireContains(t, dockerfile, "golang:1.25.0-bookworm@sha256:")
+	requireContains(t, dockerfile, "golang:1.27.4-bookworm@sha256:")
 	requireContains(t, dockerfile, "docker:27.5.1-cli@sha256:")
 	requireContains(t, dockerfile, "MDBOOK_VERSION=0.5.4")
 	assertFalseContains(t, dockerfile, "COPY go.mod")
