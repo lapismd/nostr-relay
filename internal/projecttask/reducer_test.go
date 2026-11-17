@@ -28,7 +28,7 @@ func TestReduceTaskMatchesBuzzAuthorityAndCausalAssignmentRules(t *testing.T) {
 		assignmentEvent(t, selfAssignID, 30, member, issueID, true, member, nil),
 		// Applied first within Buzz's authoritative category, even though its
 		// timestamp is earlier than the uncaused self-assignment.
-		assignmentEvent(t, ownerUnassignID, 20, repoOwner, issueID, false, member, nil),
+		assignmentEvent(t, ownerUnassignID, 20, maintainer, issueID, false, member, nil),
 		// This causal self-operation matches the authoritative head and wins.
 		assignmentEvent(t, id(t, "d"), 10, member, issueID, true, member, &ownerUnassignID),
 		// An unrelated signer cannot assign somebody else.
@@ -42,9 +42,9 @@ func TestReduceTaskMatchesBuzzAuthorityAndCausalAssignmentRules(t *testing.T) {
 		nip22Comment(id(t, "0"), 90, member, issueID),
 	}
 
-	state, err := ReduceTask(issue, repository, events)
+	state, err := ReduceTask(issue, repository, events, Maintainers(maintainer))
 	require.NoError(t, err)
-	require.Equal(t, nostr.KindStatusDraft, state.Status, "lowest id wins equal timestamp")
+	require.Equal(t, nostr.KindStatusApplied, state.Status, "only CanMaintain status is trusted")
 	require.NotNil(t, state.StatusEvent)
 	require.Equal(t, []nostr.PubKey{member}, state.Assignees)
 	require.Equal(t, id(t, "d"), state.AssignmentHeads[member])
@@ -54,6 +54,24 @@ func TestReduceTaskMatchesBuzzAuthorityAndCausalAssignmentRules(t *testing.T) {
 	require.Len(t, state.Activity, 7)
 	require.Equal(t, CommentBuzzKind1, state.Activity[0].Encoding)
 	require.Equal(t, CommentNIP22, state.Activity[len(state.Activity)-1].Encoding)
+}
+
+func TestReduceTaskIgnoresOwnerWithoutCanMaintain(t *testing.T) {
+	issueAuthor := pubkey(t, "1")
+	repoOwner := pubkey(t, "2")
+	member := pubkey(t, "4")
+	issueID := id(t, "a")
+	issue := nostr.Event{ID: issueID, Kind: nostr.KindIssue, PubKey: issueAuthor}
+	repository := nostr.Event{Kind: nostr.KindRepositoryAnnouncement, PubKey: repoOwner}
+	events := []nostr.Event{
+		assignmentEvent(t, id(t, "b"), 10, repoOwner, issueID, true, member, nil),
+		statusEvent(id(t, "c"), 20, repoOwner, issueID, nostr.KindStatusClosed),
+	}
+
+	state, err := ReduceTask(issue, repository, events)
+	require.NoError(t, err)
+	require.Equal(t, nostr.KindStatusOpen, state.Status)
+	require.Empty(t, state.Assignees)
 }
 
 func TestReduceTaskDefaultsToOpen(t *testing.T) {

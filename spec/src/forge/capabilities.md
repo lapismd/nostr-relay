@@ -84,8 +84,21 @@ URL and `clone.auth=provider`, even when WalGit is the content backend.
 The additive `/api/forge` routes are NIP-98 authenticated. Capabilities require
 repository read access; provider commands require repository write access.
 Connection, attachment, health, import, migration, and mirror administration
-require `Config.CanManage`. Merge additionally requires the repository owner
-or relay administrator and the expected current head.
+require `Config.CanManage`. Merge requires `CanMaintain` on the repository channel and the expected
+current head. Hosted WalGit repositories with `collaboration=relay` advertise
+`capabilities.merge=true` plus the relay-owned default-branch protection
+document. `GET`/`PUT /api/forge/repositories/<owner>/<repo>/protection`
+stores a versioned named-ruleset document in relay state so deleting a Git
+file cannot loosen enforcement. Each rule may set Active/Disabled,
+include/exclude targets including all heads, bypass actors, independent
+restrict create/update/delete flags, and required approvals. The capability
+document advertises those `rules` plus compiled extras as
+`protected_patterns`, `required_approvals`, and `admin_bypass`. Announcement
+`protected-ref` tags remain an additive Active rule. Empty new documents do
+not imply default-branch protection. Legacy single-document fields migrate
+to one Active Default rule. GitHub-authoritative repositories keep
+clone/push/protection on GitHub and say so in that document. `PUT` requires
+`CanMaintain` and is rejected when GitHub is authoritative.
 
 Provider commands are durable and return `202` plus an operation ID. A caller
 can poll `/api/forge/operations/<operation-id>`. An `Idempotency-Key` is scoped

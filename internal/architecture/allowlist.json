@@ -1,0 +1,14 @@
+{
+  "edges": [
+    {
+      "from": "internal/auth",
+      "to": "internal/gitforge",
+      "reason": "internal/auth/service_session.go:57 calls gitforge.VerifyRequestAuth to authenticate a Git smart-HTTP request. Both are provider adapters, so this edge is horizontal. Retire it by moving VerifyRequestAuth into internal/auth or a leaf internal/reqauth, since it is an authentication concern rather than a WalGit one."
+    },
+    {
+      "from": "internal/forge",
+      "to": "internal/projecttask",
+      "reason": "internal/forge/types.go:37,91 and internal/forge/types_ci.go:57 use projecttask.RepositoryCoordinate as the provider-neutral repository identity. Both are domain leaves, so this edge is horizontal. Retire it by moving RepositoryCoordinate into internal/forge or a shared leaf."
+    }
+  ]
+}

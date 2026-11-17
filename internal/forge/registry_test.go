@@ -69,7 +69,9 @@ func TestRegistryResolvesOnlyExplicitCapabilities(t *testing.T) {
 	require.NotNil(t, resolved.Content)
 	require.True(t, resolved.Capabilities.Browse)
 	require.True(t, resolved.Capabilities.Compare)
-	require.False(t, resolved.Capabilities.Merge)
+	require.True(t, resolved.Capabilities.Merge)
+	require.NotNil(t, resolved.Capabilities.Protection)
+	require.True(t, resolved.Capabilities.Protection.PullRequestsRequired)
 	require.False(t, resolved.Capabilities.CI)
 	require.Equal(t, BackendRelay, resolved.Capabilities.CollaborationBackend)
 }

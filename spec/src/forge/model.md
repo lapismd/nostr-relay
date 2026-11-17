@@ -118,6 +118,7 @@ GitHub is accessed only through its fixed public API. Provider credentials and
 types remain inside the GitHub adapter. No client can supply a WalGit service
 token, trusted principal header, arbitrary provider API host, or bridge secret.
 
-Current unavailable behavior—including protected-ref compilation, automatic
-`1619` publication, and the WalGit merge coordinator—is tracked in
-[Deferred forge work](../roadmap/deferred-forge-work.md).
+Current unavailable behavior—including automatic `1619` publication and a
+merge-queue scheduler—is tracked in
+[Deferred forge work](../roadmap/deferred-forge-work.md). Default-branch
+protection and the native WalGit merge coordinator are implemented.

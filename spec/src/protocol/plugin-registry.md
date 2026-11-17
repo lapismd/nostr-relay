@@ -65,6 +65,25 @@ revision increments by exactly one and names the immediately preceding head
 event. The relay reserves accepted revisions while concurrent writes are in
 flight so two events cannot claim the same next revision.
 
+When Blossom storage is enabled, a head with an active release is accepted
+only after the relay resolves that release event and its matching manifest
+hash. The manifest must be a single local `application/json` attachment owned
+by the publisher, no larger than 2 MiB, and its bytes must match the signed
+size and SHA-256. Trailing JSON content is rejected. A cleared head has no
+active manifest requirement.
+
+The accepted active head is also the authority for retained registry assets.
+The relay projects the manifest, plugin artifact, index and detail logos,
+banner and overview variants, and gallery variants into the Blossom lifecycle
+index. Only hashes owned by the release publisher are retained, preventing a
+manifest from pinning another uploader's blob. New heads reconcile the
+projection; deleting the newest head rebuilds it from the remaining latest
+head. Startup performs the same reconstruction before enabling Blossom
+deletion. New head validation fails closed when an active manifest cannot be
+verified; startup reconstruction logs and clears retained references for an
+already-persisted invalid active head so stale historical data cannot prevent
+the relay instance from serving WebSocket or authenticated HTTP routes.
+
 ## Query behavior
 
 Registry reads use ordinary Nostr filters and NIP-29 visibility. The relay's
@@ -72,4 +91,5 @@ generic count implementation recognizes the bounded registry discussion
 filter shape and returns an exact count rather than an estimate. Registry
 policy does not grant public access to a private group, synthesize releases or
 decisions, download plugin archives, or decide whether a client should install
-a plugin.
+a plugin. Registry asset retention follows the active signed head; upload
+labels alone never activate a release or retain its artwork.

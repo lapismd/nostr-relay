@@ -2,6 +2,7 @@ package zooid
 
 import (
 	"encoding/json"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -108,6 +109,11 @@ func TestRegistryPolicyHeadCompareAndSwap(t *testing.T) {
 		Content:   string(content),
 		Tags:      nostr.Tags{{"h", "plugin-releases"}, {"t", registryHeadTopic}, {"t", "plugin:ai"}},
 	}
+	policy.ValidateHeadAssets = func(nostr.Event) error { return errors.New("manifest missing") }
+	if handled, reason := policy.CheckWrite(head); !handled || !strings.Contains(reason, "assets are unavailable") {
+		t.Fatalf("head with unavailable assets should fail before reservation: handled=%v reason=%q", handled, reason)
+	}
+	policy.ValidateHeadAssets = nil
 	if handled, reason := policy.CheckWrite(head); !handled || reason != "" {
 		t.Fatalf("initial head rejected: handled=%v reason=%q", handled, reason)
 	}

@@ -32,13 +32,39 @@ may still publish NIP-25 reactions; a closed group still requires membership
 before reacting.
 
 Roles are carried by kind `9000` put-user events, for example
-`["p", "<pubkey>", "writer"]`, and appear on the group's kind `39002` member
-snapshot. Each new member snapshot advances beyond the previous stored
-relay-signed snapshot timestamp, with per-group serialization. This preserves
-NIP-01 replacement ordering across rapid updates and backwards clock movement,
-so clients cannot retain a stale list after a successful membership change.
-Only relay administrators may create a write-restricted group or
-add that flag later.
+`["p", "<pubkey>", "writer"]` or `["p", "<pubkey>", "maintainer"]`, and appear
+on the group's kind `39002` member snapshot. Each new member snapshot advances
+beyond the previous stored relay-signed snapshot timestamp, with per-group
+serialization. This preserves NIP-01 replacement ordering across rapid updates
+and backwards clock movement, so clients cannot retain a stale list after a
+successful membership change. Only relay administrators may create a
+write-restricted group or add that flag later.
+
+The `writer` role is chat and posting policy only. It does not grant repository
+create, review, or merge authority.
+
+## Channel maintainers
+
+`CanMaintain(channel, pubkey)` is true when the channel exists and the pubkey
+is the group creator, a group administrator listed on kind `39001` (including
+relay `can_manage` administrators surfaced there), or a current member whose
+`39002` snapshot carries the `maintainer` role. The role is cached from
+put-user the same way `writer` is. Only administrators (`manageMembers`) may
+assign or remove `maintainer`. Maintainers cannot escalate themselves to
+administrator.
+
+`CanMaintain` is the only channel authority for creating or replacing a
+`kind:30617` repository or project-task-anchor, for trusted pull-request
+review decisions, and for merge or trusted close. A pull-request author who
+only holds `maintainer` cannot approve or request changes on that pull
+request. The `30617` announcement signer or a channel operator
+(`Administers`: group creator or relay `can_manage`) may publish those
+decisions on their own pull request when they still `CanMaintain`. The
+`30617` announcement signer remains the NIP-01 address owner and can still
+replace or tombstone that coordinate, but losing `maintainer` or
+administrator status removes create, review, and merge authority. A
+`30617` `maintainers` tag and a requested-reviewer `p` tag are not
+authority.
 
 ## Retention
 

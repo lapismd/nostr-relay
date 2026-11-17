@@ -261,7 +261,7 @@ func IsGlobalOnly(kind nostr.Kind) bool {
 	switch kind {
 	case KindAgentProfile, KindAgentEngram, KindPersona, KindAgentTeam,
 		KindManagedAgent, KindPrivateManagedAgent, KindSharedTeamCatalog,
-		KindAgentTurnMetric:
+		KindAgentTurnMetric, KindRuntimeSnapshot, KindRuntimeRequest:
 		return true
 	default:
 		return false

@@ -85,6 +85,9 @@ func (policy *ProjectTaskPolicy) CheckWrite(ctx context.Context, event nostr.Eve
 			return true, reason
 		}
 	}
+	if reason := policy.checkMaintainRules(ctx, event); reason != "" {
+		return true, reason
+	}
 	return true, ""
 }
 

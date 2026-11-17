@@ -6,7 +6,7 @@ them Nostr standards.
 
 | Interface | Purpose and authority | Lapis support | Compatibility boundary |
 | --- | --- | --- | --- |
-| Blossom BUDs | Content-addressed media upload and retrieval, authorized by signed Nostr events | Relay and Community implemented | Resource hashes, sizes, publisher signatures, and registry policy remain authoritative; a successful upload is not plugin approval. |
+| [Blossom BUDs](../buds/index.md) | Content-addressed media upload and retrieval, authorized by signed Nostr events | Mixed; see the per-BUD inventory | Resource hashes, sizes, publisher signatures, and registry policy remain authoritative; a successful upload is not plugin approval. |
 | Buzz-compatible HTTP bridge | Authenticated query, count, event publication, and presence projection over HTTP | Relay implemented; Community primarily uses WebSocket transport | NIP-98 authenticates calls, while route shapes and response bodies are application contracts. |
 | Git Smart HTTP and forge APIs | Repository clone/push, browser, diff, review, and provider integration | Relay implemented for documented WalGit and GitHub profiles | Repository authorization is derived from signed Nostr state and NIP-29 policy; HTTP endpoints are not NIPs. |
 | Lapis plugin registry events | Signed release manifests, publisher authorization, curator decisions, and deterministic registry heads | Relay and Community implemented | These are application schemas carried by NIP-29 events. Relay membership does not establish catalog authority. |

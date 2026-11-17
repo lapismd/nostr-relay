@@ -31,7 +31,7 @@ func IsWebSocketOnly(kind nostr.Kind) bool {
 // into full-text search.
 func IsPrivateContent(kind nostr.Kind) bool {
 	switch kind {
-	case KindAgentEngram, KindPersona, KindPrivateManagedAgent, KindAgentTurnMetric:
+	case KindAgentEngram, KindPersona, KindPrivateManagedAgent, KindAgentTurnMetric, KindRuntimeSnapshot, KindRuntimeRequest:
 		return true
 	default:
 		return false

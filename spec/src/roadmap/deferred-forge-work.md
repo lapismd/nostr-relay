@@ -34,15 +34,16 @@ remain manual operator gates.
 
 ### Protected refs and policy synchronization
 
-Repository writes still use the group's repository-level `CanWrite` decision.
-The relay does not compile NIP-29 roles into WalGit per-ref rules, protect main
-or release branches, or define a constrained merge-coordinator bypass.
-
-A follow-up must define an explicit role-to-ref policy, reconcile only hard Git
-rules to WalGit, and keep policy mutation behind an admin-authorized internal
-operation. Acceptance needs ordinary branch pushes, protected target rejection,
-coordinator access, idempotent reconciliation, replacement generations, and
-restart recovery.
+Hosted WalGit repositories now protect the live default branch at the relay
+receive-pack boundary together with additive `protected-ref` announcement
+patterns: user principals cannot update, force-push, or delete those refs,
+feature branches and `refs/heads/jj-sync/**` stay writable, empty
+repositories allow a `CanMaintain` bootstrap create of the default, maintainers
+may create a new extra protected ref once, and the merge coordinator plus
+replica principals remain the only privileged writers of later updates.
+Required-approval counts and admin bypass live on named rulesets in the
+relay-owned NIP-98 protection document; deleting `OWNERS.md` or omitting
+`protected-ref` tags cannot loosen a matching Active ruleset.
 
 ### Ref-driven activity and automatic PR revisions
 
@@ -58,16 +59,12 @@ repository-state publication remains a separate protocol decision.
 
 ### WalGit merge coordinator and execution
 
-GitHub provider-first merge commands exist, but there is no native WalGit
-`MergePolicy`, eligibility service, Git merge executor, or automatic confirmed
-`kind:1631` publication.
-
-A native coordinator must evaluate the current immutable PR tip, trusted
-reviews, changes requested, required approvals, optional current-tip CI, and
-the current target ref without a time-of-check/time-of-use gap. It must update
-a protected target with a constrained service identity, wait for durable
-WalGit ref confirmation, then publish one Buzz/NIP-34 merged status carrying
-the full merge commit. A merge queue scheduler remains out of scope.
+Native WalGit merge eligibility, coordinator execution, durable ref
+confirmation, and `capabilities.merge` advertisement are implemented. Extra
+`protected-ref` patterns compile into that same eligibility and receive-pack
+path. The merging maintainer publishes confirmed `kind:1631` after the
+operation returns the merge commit. A merge-queue scheduler and automatic
+CI-as-a-merge-gate remain out of scope.
 
 ### Repository retirement
 
@@ -98,10 +95,10 @@ Only the original native WalGit automation outcomes remain open:
 
 | Original item | Current status | Follow-up |
 | --- | --- | --- |
-| Protected branches reject ordinary direct updates | repository-level write ACL only | protected refs |
+| Protected branches reject ordinary direct updates | implemented for the live default branch, additive `protected-ref` patterns, required-approval counts, and admin bypass | dismiss-stale remains tip-scoped |
 | Branch updates drive PR revision | refs durable; no automatic `1619` signer | ref-driven revisions |
-| A coordinator updates a protected WalGit target | not implemented | WalGit merge coordinator |
-| Confirmed WalGit merge publishes `1631` | manual signed state only | WalGit merge coordinator |
+| A coordinator updates a protected WalGit target | implemented | merge-queue leftover |
+| Confirmed WalGit merge publishes `1631` | maintainer-signed after confirmed coordinator merge | merge-queue leftover |
 
 The earlier CI outcomes are complete: `CIBackend` is provider-neutral,
 GitHub Actions runs against an exact immutable commit, and WalGit uses an

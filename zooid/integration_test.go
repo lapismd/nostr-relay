@@ -988,6 +988,22 @@ func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T)
 			}
 		}
 	}
+	reviewerSecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000006")
+	reviewerPubkey := reviewerSecret.Public()
+	for _, putUser := range []*nostr.Event{
+		{
+			Kind: nostr.Kind(KindPutUser), CreatedAt: nostr.Now(),
+			Tags: nostr.Tags{{"h", "pr-repository-private"}, {"p", reviewerPubkey.Hex(), "maintainer"}},
+		},
+		{
+			Kind: nostr.Kind(KindPutUser), CreatedAt: nostr.Now(),
+			Tags: nostr.Tags{{"h", "pr-origin-private"}, {"p", reviewerPubkey.Hex()}},
+		},
+	} {
+		if result := admin.sendEvent(ctx, t, putUser); result != "ok" {
+			t.Fatalf("grant reviewer access: %s", result)
+		}
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	coordinate := fmt.Sprintf("30617:%s:review-repo", adminPubkey.Hex())
@@ -1053,7 +1069,9 @@ func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T)
 		Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Approved these changes",
 		Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate}, {"t", "approval"}, {"c", currentCommit}},
 	}
-	if result := writer.sendEvent(ctx, t, reviewDecision); result != "ok" {
+	reviewer := newNostrClient(ctx, t, relay.URI, reviewerSecret)
+	defer reviewer.close()
+	if result := reviewer.sendEvent(ctx, t, reviewDecision); result != "ok" {
 		t.Fatalf("publish review decision: %s", result)
 	}
 	nip22Comment := &nostr.Event{
@@ -1132,7 +1150,7 @@ func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T)
 	if tag := httpRoot[0].Tags.Find("h"); tag == nil || len(tag) < 2 || tag[1] != "pr-origin-private" || httpRoot[0].Tags.FindWithValue("h", "pr-repository-private") != nil {
 		t.Fatalf("stored signed PR h tags were mutated: %#v", httpRoot[0].Tags)
 	}
-	state, err := projecttask.ReducePullRequest(httpRoot[0], repository, related)
+	state, err := projecttask.ReducePullRequest(httpRoot[0], repository, related, projecttask.Maintainers(adminPubkey))
 	if err != nil {
 		t.Fatalf("reduce queried PR graph: %v", err)
 	}

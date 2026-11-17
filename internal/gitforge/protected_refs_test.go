@@ -1,0 +1,199 @@
+package gitforge
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestLiveDefaultRefUsesSummaryHeadAndNamedMain(t *testing.T) {
+	refs := map[string]string{"community-visible": strings.Repeat("a", 40), "main": strings.Repeat("b", 40)}
+	require.Equal(t, "refs/heads/main", LiveDefaultRef("", refs))
+	require.Equal(t, "refs/heads/trunk", LiveDefaultRef("trunk", refs))
+}
+
+func TestEvaluateProtectedRefUpdatesDeniesUserDefaultBranch(t *testing.T) {
+	old := strings.Repeat("a", 40)
+	next := strings.Repeat("b", 40)
+	decision := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "main",
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.Equal(t, "protected_ref_update_denied", decision.Code)
+}
+
+func TestEvaluateProtectedRefUpdatesAllowsFeatureAndJJSync(t *testing.T) {
+	old := strings.Repeat("0", 40)
+	next := strings.Repeat("b", 40)
+	decision := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/feature"},
+			{OldOID: old, NewOID: next, Ref: "refs/heads/jj-sync/scope"},
+		},
+	})
+	require.True(t, decision.Allow)
+}
+
+func TestEvaluateProtectedRefUpdatesAllowsEmptyBootstrapAndCoordinator(t *testing.T) {
+	old := strings.Repeat("0", 40)
+	next := strings.Repeat("b", 40)
+	bootstrap := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		EmptyRepo:    true,
+		CanMaintain:  true,
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.True(t, bootstrap.Allow)
+	coordinator := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    MergeCoordinatorPrincipal("aa", "notes"),
+		ProtectedRef: "refs/heads/main",
+		Commands: []ReceivePackCommand{
+			{OldOID: strings.Repeat("a", 40), NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.True(t, coordinator.Allow)
+	replica := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    ReplicaPrincipalPrefix + "connection",
+		ProtectedRef: "refs/heads/main",
+		Commands: []ReceivePackCommand{
+			{OldOID: strings.Repeat("a", 40), NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.True(t, replica.Allow)
+}
+
+func TestEvaluateProtectedRefUpdatesDeniesExtraPatternUpdate(t *testing.T) {
+	old := strings.Repeat("a", 40)
+	next := strings.Repeat("b", 40)
+	decision := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:         strings.Repeat("c", 64),
+		ProtectedRef:      "refs/heads/main",
+		ProtectedPatterns: []string{"release/*", "*", "jj-sync/*"},
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/release/1.0"},
+		},
+	})
+	require.Equal(t, "protected_ref_update_denied", decision.Code)
+
+	create := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:         strings.Repeat("c", 64),
+		ProtectedRef:      "refs/heads/main",
+		ProtectedPatterns: []string{"refs/heads/release/*"},
+		CanMaintain:       true,
+		Commands: []ReceivePackCommand{
+			{OldOID: strings.Repeat("0", 40), NewOID: next, Ref: "refs/heads/release/1.0"},
+		},
+	})
+	require.True(t, create.Allow)
+
+	unrelated := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:         strings.Repeat("c", 64),
+		ProtectedRef:      "refs/heads/main",
+		ProtectedPatterns: []string{"release/*"},
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/feature"},
+		},
+	})
+	require.True(t, unrelated.Allow)
+}
+
+func TestEvaluateProtectedRefUpdatesAllowsAdminBypassUpdate(t *testing.T) {
+	old := strings.Repeat("a", 40)
+	next := strings.Repeat("b", 40)
+	admin := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		AdminBypass:  true,
+		IsAdmin:      true,
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.True(t, admin.Allow)
+
+	deleteDenied := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		AdminBypass:  true,
+		IsAdmin:      true,
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: strings.Repeat("0", 40), Ref: "refs/heads/main"},
+		},
+	})
+	require.Equal(t, "protected_ref_delete_denied", deleteDenied.Code)
+
+	maintainer := EvaluateProtectedRefUpdates(ProtectedRefRequest{
+		Principal:    strings.Repeat("c", 64),
+		ProtectedRef: "refs/heads/main",
+		AdminBypass:  true,
+		CanMaintain:  true,
+		Commands: []ReceivePackCommand{
+			{OldOID: old, NewOID: next, Ref: "refs/heads/main"},
+		},
+	})
+	require.Equal(t, "protected_ref_update_denied", maintainer.Code)
+}
+
+func TestCompileProtectionIgnoresInvalidAndDefaultPatterns(t *testing.T) {
+	compiled := CompileProtection("main", []string{
+		"release/*", "refs/heads/main", "*", "jj-sync/*", "release/*",
+	})
+	require.Equal(t, "refs/heads/main", compiled.DefaultRef)
+	require.Equal(t, []string{"refs/heads/release/*"}, compiled.Patterns)
+	require.True(t, compiled.Matches("release/1.0"))
+	require.Equal(t, "refs/heads/release/1.0", compiled.TargetRef("release/1.0"))
+	require.False(t, compiled.Matches("feature"))
+}
+
+func TestCompiledProtectionTargetRefUsesDefaultWhenMissing(t *testing.T) {
+	compiled := CompileRulesets("refs/heads/trunk", ProtectionDocument{
+		Rules: []ProtectionRule{{
+			Name:        "All heads",
+			Enforcement: RulesetEnforcementActive,
+			Targets:     []RulesetTarget{{Type: RulesetTargetAll}},
+		}},
+	}, nil)
+	require.Equal(t, "refs/heads/trunk", compiled.TargetRef(""))
+	require.Equal(t, "refs/heads/trunk", compiled.TargetRef("   "))
+	require.Equal(t, "refs/heads/develop", compiled.TargetRef("develop"))
+}
+
+func TestCompiledProtectionPolicyForRefUsesDefaultWhenMissing(t *testing.T) {
+	compiled := CompileRulesets("refs/heads/trunk", ProtectionDocument{
+		Rules: []ProtectionRule{{
+			Name:              "Default",
+			Enforcement:       RulesetEnforcementActive,
+			Targets:           []RulesetTarget{{Type: RulesetTargetDefault}},
+			RequiredApprovals: 2,
+			Bypass:            []RulesetBypass{{Kind: RulesetBypassAdmin}},
+		}},
+	}, nil)
+	approvals, adminBypass := compiled.PolicyForRef("")
+	require.Equal(t, 2, approvals)
+	require.True(t, adminBypass)
+	approvals, adminBypass = compiled.PolicyForRef("develop")
+	require.Equal(t, DefaultRequiredApprovals, approvals)
+	require.False(t, adminBypass)
+}
+
+func TestParseReceivePackCommands(t *testing.T) {
+	old := strings.Repeat("0", 40)
+	next := strings.Repeat("a", 40)
+	body := EncodeReceivePackCommands([]ReceivePackCommand{
+		{OldOID: old, NewOID: next, Ref: "refs/heads/feature"},
+	})
+	commands, err := ParseReceivePackCommands(body)
+	require.NoError(t, err)
+	require.Equal(t, []ReceivePackCommand{{
+		OldOID: old, NewOID: next, Ref: "refs/heads/feature",
+	}}, commands)
+}

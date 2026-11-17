@@ -31,7 +31,7 @@ type TaskState struct {
 
 // ReduceTask derives deterministic current state from ordinary wire events.
 // It does not write synthetic events or hide the raw event stream.
-func ReduceTask(issue, repository nostr.Event, related []nostr.Event) (TaskState, error) {
+func ReduceTask(issue, repository nostr.Event, related []nostr.Event, authority ...CollaborationAuthority) (TaskState, error) {
 	if issue.Kind != nostr.KindIssue {
 		return TaskState{}, fmt.Errorf("task root must be kind 1621")
 	}
@@ -46,16 +46,9 @@ func ReduceTask(issue, repository nostr.Event, related []nostr.Event) (TaskState
 		AssignmentHeads: make(map[nostr.PubKey]nostr.ID),
 	}
 
-	trustedStatus := map[nostr.PubKey]struct{}{issue.PubKey: {}, repository.PubKey: {}}
-	for _, tag := range repository.Tags {
-		if len(tag) == 0 || tag[0] != "maintainers" {
-			continue
-		}
-		for _, value := range tag[1:] {
-			if pubkey, err := nostr.PubKeyFromHex(value); err == nil {
-				trustedStatus[pubkey] = struct{}{}
-			}
-		}
+	auth := CollaborationAuthority{}
+	if len(authority) > 0 {
+		auth = authority[0]
 	}
 
 	var uncausedSelf, authoritative, causalSelf []assignmentOperation
@@ -66,13 +59,13 @@ func ReduceTask(issue, repository nostr.Event, related []nostr.Event) (TaskState
 		}
 		switch event.Kind {
 		case nostr.KindStatusOpen, nostr.KindStatusApplied, nostr.KindStatusClosed, nostr.KindStatusDraft:
-			if _, trusted := trustedStatus[event.PubKey]; trusted && statusNewer(event, state.StatusEvent) {
+			if auth.Allows(event.PubKey) && statusNewer(event, state.StatusEvent) {
 				copy := event
 				state.Status = event.Kind
 				state.StatusEvent = &copy
 			}
 		case nostr.KindTextNote:
-			op, ok := parseAssignment(event, issue.PubKey, repository.PubKey)
+			op, ok := parseAssignment(event, auth)
 			state.Activity = append(state.Activity, Activity{
 				Event:               event,
 				Encoding:            CommentBuzzKind1,
@@ -127,7 +120,7 @@ type assignmentOperation struct {
 	accepted bool
 }
 
-func parseAssignment(event nostr.Event, issueAuthor, repositoryOwner nostr.PubKey) (assignmentOperation, bool) {
+func parseAssignment(event nostr.Event, authority CollaborationAuthority) (assignmentOperation, bool) {
 	assignment := tagHasValue(event.Tags, "t", "assignment")
 	unassignment := tagHasValue(event.Tags, "t", "unassignment")
 	if assignment == unassignment {
@@ -144,7 +137,7 @@ func parseAssignment(event nostr.Event, issueAuthor, repositoryOwner nostr.PubKe
 			pubkeys = append(pubkeys, pubkey)
 		}
 	}
-	authoritative := event.PubKey == issueAuthor || event.PubKey == repositoryOwner
+	authoritative := authority.Allows(event.PubKey)
 	self := len(pubkeys) == 1 && pubkeys[0] == event.PubKey
 	if !authoritative && !self {
 		return assignmentOperation{}, false

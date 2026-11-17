@@ -34,6 +34,13 @@ PostgreSQL event store       forge capability resolver
 - `internal/gitforge` adapts WalGit; `internal/githubforge` contains GitHub API
   and credential translation. Provider SDK objects never cross those adapters.
 
+These boundaries are machine-checked. `internal/architecture` ranks every
+package as a layer and fails on an import that points horizontally or upward, on
+an import cycle, and on a provider SDK imported outside its adapter. The two
+horizontal edges that exist today are recorded with reasons in
+`internal/architecture/allowlist.json`, which may only shrink. See
+[Architecture budgets](maintenance/architecture-budgets.md).
+
 PostgreSQL stores signed events and durable operational state. Project and
 repository coordinates are stable Nostr identifiers. Forge integration rows,
 outbox jobs, webhook deliveries, replicas, and CI runs can be retried or

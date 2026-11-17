@@ -1097,6 +1097,25 @@ func (g *GroupStore) HasRole(h string, pubkey nostr.PubKey, role string) bool {
 	return false
 }
 
+// CanMaintain is channel repository authority: the group creator, a group
+// administrator (kind 39001 / relay can_manage), or a current member with the
+// maintainer role. Writer does not imply maintainer. Missing groups fail closed.
+func (g *GroupStore) CanMaintain(h string, pubkey nostr.PubKey) bool {
+	if h == "" || pubkey == (nostr.PubKey{}) {
+		return false
+	}
+	if _, found := g.GetMetadata(h); !found {
+		return false
+	}
+	if g.IsGroupCreator(h, pubkey) {
+		return true
+	}
+	if g.IsMember(h, pubkey) && g.HasRole(h, pubkey, "maintainer") {
+		return true
+	}
+	return g.Config != nil && g.Config.Info.Pubkey != "" && g.Config.CanManage(pubkey)
+}
+
 // CanWrite checks if a user can post content to a write-restricted group.
 // Returns true if the group is not write-restricted, or if the user is an
 // admin, group creator, or has the "writer" role AND is a current member.

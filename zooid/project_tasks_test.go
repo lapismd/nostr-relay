@@ -247,6 +247,7 @@ func createProjectTaskTestPolicy(t *testing.T, channel string, private bool) (*P
 	store := createTestEventStore()
 	store.Config.Policy.Open = true
 	store.Config.Groups.Enabled = true
+	store.Config.Info.Pubkey = nostr.Generate().Public().Hex()
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

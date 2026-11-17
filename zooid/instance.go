@@ -58,6 +58,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	}
 
 	relay := khatru.NewRelay()
+	relay.Info.Malformed = map[string]any{"lapis_runtime_snapshots": 1}
 
 	// Enable WebSocket per-message compression (permessage-deflate).
 	// The upgrader field is unexported, so we use reflect/unsafe to set it.
@@ -78,6 +79,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	blossom := &BlossomStore{
 		Config: config,
 		Events: events,
+		Schema: events.Schema,
 	}
 
 	management := &ManagementStore{
@@ -106,6 +108,11 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		Groups:     groups,
 	}
 	instance.Registry = NewRegistryPolicy(config, groups, events)
+	if config.Blossom.Enabled {
+		instance.Registry.ValidateHeadAssets = func(event nostr.Event) error {
+			return blossom.validateRegistryHeadAssets(ctx, event)
+		}
+	}
 	instance.ProjectTasks = NewProjectTaskPolicy(events, groups)
 	instance.Agents = NewAgentPolicy(config, management, groups)
 	instance.Agents.Events = events
@@ -124,6 +131,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	instance.Relay.Info.Software = "https://github.com/coracle-social/zooid"
 	instance.Relay.Info.Version = "v0.1.0"
 	instance.Relay.Info.SupportedNIPs = append(instance.Relay.Info.SupportedNIPs, 43)
+	advertiseNIP94(instance.Relay)
 
 	// Handlers
 
@@ -193,6 +201,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 		}
 		instance.AgentBunker, err = agentbunker.NewService(agentbunker.Config{
 			PublicURL:             config.Agents.Bunker.PublicURL,
+			GitPublicURL:          config.Git.PublicURL,
 			AllowedBrowserOrigins: config.Agents.Bunker.AllowedBrowserOrigins,
 			InvitationLifetime:    config.AgentBunkerInvitationLifetime(),
 			MaxActivePerOwner:     config.Agents.Bunker.MaxActivePerOwner,
@@ -246,6 +255,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 				info.Malformed = map[string]any{}
 			}
 			info.Malformed["lapis_managed_agents"] = instance.AgentBunker.NIP11()
+			info.Malformed["lapis_runtime_snapshots"] = 1
 			return info
 		}
 	}
@@ -342,6 +352,7 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	if config.Git.Enabled {
 		forgeRegistry := forge.NewRegistry()
 		instance.GitForge = NewGitForgePolicyWithRegistry(ctx, config, events, groups, instance.ProjectTasks, forgeRegistry)
+		instance.GitForge.IsManagedAgent = instance.Agents.IsKnownActiveAgent
 		if instance.Auth != nil {
 			instance.GitForge.UserCredentialMode = instance.Auth.GitHubCredentialMode
 		}
@@ -424,6 +435,14 @@ func MakeInstance(ctx context.Context, filename string) (*Instance, error) {
 	// Enable extra functionality
 
 	if config.Blossom.Enabled {
+		if err := instance.Blossom.backfillProfileReferences(ctx); err != nil {
+			instance.Events.Close()
+			return nil, fmt.Errorf("backfill asset references: %w", err)
+		}
+		if err := instance.Blossom.backfillRegistryReferences(ctx); err != nil {
+			instance.Events.Close()
+			return nil, fmt.Errorf("backfill registry asset references: %w", err)
+		}
 		instance.Blossom.Enable(instance)
 	}
 
@@ -839,6 +858,9 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 	if instance.IsReadOnlyEvent(event) {
 		return true, "invalid: this event's kind is not accepted"
 	}
+	if err := validateNIP94Event(event); err != nil {
+		return true, "invalid: " + err.Error()
+	}
 
 	if instance.Groups.IsGroupEvent(event) && !protocol.IsGlobalOnly(event.Kind) {
 		handled, registryReason := instance.Registry.CheckWrite(event)
@@ -871,6 +893,14 @@ func (instance *Instance) OnEvent(ctx context.Context, event nostr.Event) (rejec
 }
 
 func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
+	if instance.Config.Blossom.Enabled {
+		if err := instance.Blossom.projectProfileReferences(ctx, event); err != nil {
+			log.Printf("Failed to project asset references for event %s: %v", event.ID.Hex(), err)
+		}
+		if err := instance.Blossom.projectRegistryReferences(ctx, event); err != nil {
+			log.Printf("Failed to project registry asset references for event %s: %v", event.ID.Hex(), err)
+		}
+	}
 	if instance.Agents != nil {
 		instance.Agents.RememberStored(event)
 	}
@@ -1007,7 +1037,15 @@ func (instance *Instance) OnEventSaved(ctx context.Context, event nostr.Event) {
 	}
 }
 
-func (instance *Instance) OnEventDeleted(_ context.Context, event nostr.Event) {
+func (instance *Instance) OnEventDeleted(ctx context.Context, event nostr.Event) {
+	if instance.Config.Blossom.Enabled {
+		if err := instance.Blossom.removeProfileReferences(ctx, event); err != nil {
+			log.Printf("Failed to remove asset references for event %s: %v", event.ID.Hex(), err)
+		}
+		if err := instance.Blossom.rebuildRegistryReferences(ctx, event); err != nil {
+			log.Printf("Failed to rebuild registry asset references after event %s: %v", event.ID.Hex(), err)
+		}
+	}
 	if instance.Agents != nil {
 		instance.Agents.ForgetStored(event)
 	}

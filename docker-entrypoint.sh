@@ -75,6 +75,23 @@ AUTH_TEST_GOOGLE_ISSUER_URL="${AUTH_TEST_GOOGLE_ISSUER_URL:-}"
 FORGE_WORKER_MODE="${FORGE_WORKER_MODE:-embedded}"
 LAPIS_PROCESS_BIN="${LAPIS_PROCESS_BIN:-/bin/lapis-relay}"
 
+# A provider stays disabled unless both values are present. Clearing the
+# pair here covers a newly generated config and an appended auth section.
+if [ -z "$AUTH_GITHUB_CLIENT_ID" ] || [ -z "$AUTH_GITHUB_CLIENT_SECRET_REF" ]; then
+	if [ -n "$AUTH_GITHUB_CLIENT_ID" ] || [ -n "$AUTH_GITHUB_CLIENT_SECRET_REF" ]; then
+		echo "GitHub OAuth disabled: client ID and secret reference are both required"
+	fi
+	AUTH_GITHUB_CLIENT_ID=""
+	AUTH_GITHUB_CLIENT_SECRET_REF=""
+fi
+if [ -z "$AUTH_GOOGLE_CLIENT_ID" ] || [ -z "$AUTH_GOOGLE_CLIENT_SECRET_REF" ]; then
+	if [ -n "$AUTH_GOOGLE_CLIENT_ID" ] || [ -n "$AUTH_GOOGLE_CLIENT_SECRET_REF" ]; then
+		echo "Google OAuth disabled: client ID and secret reference are both required"
+	fi
+	AUTH_GOOGLE_CLIENT_ID=""
+	AUTH_GOOGLE_CLIENT_SECRET_REF=""
+fi
+
 # Create directories
 mkdir -p "$CONFIG_DIR" "$MEDIA_DIR"
 

@@ -108,7 +108,7 @@ type PullRequestState struct {
 // ReducePullRequest matches the Buzz Desktop v0.5.23 reducer while retaining
 // both Buzz kind-1 notes and standards-based NIP-22 comments as their original
 // encodings.
-func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (PullRequestState, error) {
+func ReducePullRequest(root, repository nostr.Event, related []nostr.Event, authority ...CollaborationAuthority) (PullRequestState, error) {
 	if root.Kind != KindPullRequest {
 		return PullRequestState{}, fmt.Errorf("pull request root must be kind 1618")
 	}
@@ -145,6 +145,10 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (Pul
 		UpdatedAt:     root.CreatedAt,
 	}
 
+	auth := CollaborationAuthority{}
+	if len(authority) > 0 {
+		auth = authority[0]
+	}
 	trustedRootActors := map[nostr.PubKey]struct{}{root.PubKey: {}, repository.PubKey: {}}
 	events := append([]nostr.Event(nil), related...)
 	slices.SortFunc(events, chronological)
@@ -173,7 +177,7 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (Pul
 			if !referencesPullRequest(event, root.ID) || !repositoryTagMatchesIfPresent(event, coordinate) {
 				continue
 			}
-			if _, trusted := trustedRootActors[event.PubKey]; !trusted {
+			if !trustedPullRequestStatus(event, root, auth) {
 				continue
 			}
 			if latestStatus == nil || eventNewerSmallestID(event, *latestStatus) {
@@ -209,13 +213,6 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (Pul
 	}
 
 	state.Reviewers = pullRequestReviewers(root, comments, trustedRootActors)
-	trustedReviewers := make(map[nostr.PubKey]struct{}, len(state.Reviewers)+1)
-	for _, reviewer := range state.Reviewers {
-		trustedReviewers[reviewer] = struct{}{}
-	}
-	if repository.PubKey != root.PubKey {
-		trustedReviewers[repository.PubKey] = struct{}{}
-	}
 
 	latestDecisionByReviewer := make(map[nostr.PubKey]PullRequestDecision)
 	for i := range comments {
@@ -224,10 +221,9 @@ func ReducePullRequest(root, repository nostr.Event, related []nostr.Event) (Pul
 			_, comment.IsTrustedReviewRequest = trustedRootActors[comment.Event.PubKey]
 		}
 		if comment.ReviewDecision != "" {
-			_, comment.IsTrustedReviewDecision = trustedReviewers[comment.Event.PubKey]
-			if comment.Event.PubKey == root.PubKey {
-				comment.IsTrustedReviewDecision = false
-			}
+			comment.IsTrustedReviewDecision = TrustsReviewDecision(
+				comment.Event.PubKey, root.PubKey, repository.PubKey, auth,
+			)
 			if comment.IsTrustedReviewDecision {
 				commit := comment.Commit
 				if commit == "" {
@@ -415,6 +411,17 @@ func defaultPullRequestLifecycle(root nostr.Event) PullRequestLifecycle {
 		}
 	}
 	return PullRequestOpen
+}
+
+func trustedPullRequestStatus(event, root nostr.Event, authority CollaborationAuthority) bool {
+	if event.Kind == nostr.KindStatusApplied {
+		return authority.Allows(event.PubKey) || providerAuthoredStatus(event, root)
+	}
+	return event.PubKey == root.PubKey || authority.Allows(event.PubKey)
+}
+
+func providerAuthoredStatus(event, root nostr.Event) bool {
+	return event.PubKey == root.PubKey && firstTagValue(root.Tags, "external-provider") != ""
 }
 
 func lifecycleForKind(kind nostr.Kind) PullRequestLifecycle {

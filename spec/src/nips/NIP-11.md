@@ -18,7 +18,7 @@ HTTP `GET` with `Accept: application/nostr+json`; JSON includes `supported_nips`
 
 ## Validation, lifecycle and visibility
 
-Khatru builds base metadata and Zooid adds configured or active capabilities. The compatibility inventory is audited against those additions.
+Khatru builds base metadata and Zooid adds configured or active capabilities, including NIP-94 when its kind `1063` validator is active. The compatibility inventory is audited against those additions.
 
 ## Component support
 
@@ -36,4 +36,4 @@ Khatru builds base metadata and Zooid adds configured or active capabilities. Th
 
 ## Evidence and refresh
 
-Primary evidence: `internal/khatru/nip11.go`, `zooid/buzz_compat.go`, `src/community/agent-session.ts`. Re-audit this page when the pinned source, NIP-11 advertising, relevant validators, authorization hooks, storage/query code, Community reducer, configuration, or cited tests change. Upstream changes after the pin are recorded separately and do not change runtime behavior by documentation alone.
+Primary evidence: `internal/khatru/nip11.go`, `zooid/buzz_compat.go`, `zooid/file_metadata.go`, `src/community/agent-session.ts`. Re-audit this page when the pinned source, NIP-11 advertising, relevant validators, authorization hooks, storage/query code, Community reducer, configuration, or cited tests change. Upstream changes after the pin are recorded separately and do not change runtime behavior by documentation alone.

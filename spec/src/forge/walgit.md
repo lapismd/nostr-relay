@@ -126,9 +126,24 @@ ambiguous or oversized authorization headers.
 
 After authentication, the `30617` is resolved from the event store. Reads
 require access to its `buzz-channel`; pushes additionally require the existing
-group write policy. The PR diff path checks the complete derived scope
-intersection. The public client cannot supply the service token or trusted
-WalGit principal: the reverse proxy strips them and creates both internally.
+group write policy. Receive-pack commands are then parsed and every Active
+ruleset whose targets match the ref is evaluated. Disabled rules do not
+apply. A matching rule denies create, update, or delete only when that
+rule's corresponding restrict flag is on and the actor is not on that
+rule's bypass list. Announcement `protected-ref` tags remain an implicit
+Active rule that restricts updates and deletions without bypass. Empty new
+documents leave unmatched refs unrestricted. Legacy documents migrate to one
+Active Default rule that includes the default branch plus stored patterns
+and restricts updates and deletions. Feature branches and
+`refs/heads/jj-sync/**` remain writable unless a matching Active rule
+restricts them. Active managed-agent principals are restricted to that JJ
+replication namespace for receive-pack even when they otherwise have channel
+write access. Replica principals (`github-replica:…`) and the merge
+coordinator principal update protected refs outside this user path. Tags are
+unprotected unless later configured. The PR diff path checks the complete
+derived scope intersection. The public client cannot supply the service token
+or trusted WalGit principal: the reverse proxy strips them and creates both
+internally.
 
 ## Git and browser APIs
 
@@ -180,8 +195,9 @@ configured post-cutover Git replication target. CI is explicitly requested for
 an immutable commit; a ref update alone grants no signing or execution
 authority.
 
-The remaining ref-policy, activity, automatic PR-revision, native merge, and
-repository-retirement work is tracked with its acceptance boundaries in
+Default-branch protection and the native WalGit merge coordinator are
+implemented. Remaining ref-driven activity, automatic PR revision, merge-queue
+scheduling, and repository retirement stay in
 [Deferred forge work](../roadmap/deferred-forge-work.md).
 
 ## Failure and recovery
