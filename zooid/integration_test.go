@@ -988,12 +988,21 @@ func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T)
 			}
 		}
 	}
-	promote := &nostr.Event{
-		Kind: nostr.Kind(KindPutUser), CreatedAt: nostr.Now(),
-		Tags: nostr.Tags{{"h", "pr-repository-private"}, {"p", writerPubkey.Hex(), "maintainer"}},
-	}
-	if result := admin.sendEvent(ctx, t, promote); result != "ok" {
-		t.Fatalf("grant writer maintainer role: %s", result)
+	reviewerSecret := nostr.MustSecretKeyFromHex("0000000000000000000000000000000000000000000000000000000000000006")
+	reviewerPubkey := reviewerSecret.Public()
+	for _, putUser := range []*nostr.Event{
+		{
+			Kind: nostr.Kind(KindPutUser), CreatedAt: nostr.Now(),
+			Tags: nostr.Tags{{"h", "pr-repository-private"}, {"p", reviewerPubkey.Hex(), "maintainer"}},
+		},
+		{
+			Kind: nostr.Kind(KindPutUser), CreatedAt: nostr.Now(),
+			Tags: nostr.Tags{{"h", "pr-origin-private"}, {"p", reviewerPubkey.Hex()}},
+		},
+	} {
+		if result := admin.sendEvent(ctx, t, putUser); result != "ok" {
+			t.Fatalf("grant reviewer access: %s", result)
+		}
 	}
 	time.Sleep(100 * time.Millisecond)
 
@@ -1060,7 +1069,9 @@ func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T)
 		Kind: nostr.KindTextNote, CreatedAt: nostr.Now(), Content: "Approved these changes",
 		Tags: nostr.Tags{{"e", root.ID.Hex(), "", "root"}, {"a", coordinate}, {"t", "approval"}, {"c", currentCommit}},
 	}
-	if result := writer.sendEvent(ctx, t, reviewDecision); result != "ok" {
+	reviewer := newNostrClient(ctx, t, relay.URI, reviewerSecret)
+	defer reviewer.close()
+	if result := reviewer.sendEvent(ctx, t, reviewDecision); result != "ok" {
 		t.Fatalf("publish review decision: %s", result)
 	}
 	nip22Comment := &nostr.Event{
