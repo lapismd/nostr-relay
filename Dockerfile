@@ -15,7 +15,7 @@ COPY cmd cmd
 RUN CGO_ENABLED=0 GOOS=linux go build -o bin/lapis-relay cmd/relay/main.go && \
     CGO_ENABLED=0 GOOS=linux go build -o bin/lapis-forge-worker cmd/forge-worker/main.go
 
-FROM alpine:3.20 AS runtime
+FROM alpine:3.22 AS runtime
 
 RUN apk add --no-cache ca-certificates git git-lfs
 
