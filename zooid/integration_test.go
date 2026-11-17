@@ -988,6 +988,13 @@ func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T)
 			}
 		}
 	}
+	promote := &nostr.Event{
+		Kind: nostr.Kind(KindPutUser), CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{{"h", "pr-repository-private"}, {"p", writerPubkey.Hex(), "maintainer"}},
+	}
+	if result := admin.sendEvent(ctx, t, promote); result != "ok" {
+		t.Fatalf("grant writer maintainer role: %s", result)
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	coordinate := fmt.Sprintf("30617:%s:review-repo", adminPubkey.Hex())
