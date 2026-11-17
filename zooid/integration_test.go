@@ -1150,7 +1150,7 @@ func TestIntegration_BuzzPullRequestsAcrossWebSocketHTTPAndRestart(t *testing.T)
 	if tag := httpRoot[0].Tags.Find("h"); tag == nil || len(tag) < 2 || tag[1] != "pr-origin-private" || httpRoot[0].Tags.FindWithValue("h", "pr-repository-private") != nil {
 		t.Fatalf("stored signed PR h tags were mutated: %#v", httpRoot[0].Tags)
 	}
-	state, err := projecttask.ReducePullRequest(httpRoot[0], repository, related)
+	state, err := projecttask.ReducePullRequest(httpRoot[0], repository, related, projecttask.Maintainers(adminPubkey))
 	if err != nil {
 		t.Fatalf("reduce queried PR graph: %v", err)
 	}
